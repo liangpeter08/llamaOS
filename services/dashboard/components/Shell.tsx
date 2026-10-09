@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { post } from "@/lib/api";
 import { cls, et } from "@/lib/format";
+import { Logo } from "./Logo";
 import { Pill } from "./ui";
 import { useSession } from "./session";
 
@@ -43,9 +44,12 @@ export function Shell({ children }: { children: ReactNode }) {
   return (
     <div className="layout">
       <nav className="side">
-        <div className="brand">
-          llamaOS<small>news-driven day trading · {status?.mode ?? "…"}</small>
-        </div>
+        <Link href="/" className="brand" aria-label="llamaOS home">
+          <Logo size={34} />
+          <span>
+            llamaOS<small>news-driven day trading · {status?.mode ?? "…"}</small>
+          </span>
+        </Link>
         {NAV.map(link)}
         <div className="sep" />
         {NAV2.map(link)}

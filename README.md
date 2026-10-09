@@ -1,3 +1,5 @@
+<img src="services/dashboard/public/logo.svg" alt="llamaOS logo" width="88">
+
 # News-Driven Day Trading System (Alpaca)
 
 **Version:** 0.3 (working prototype)

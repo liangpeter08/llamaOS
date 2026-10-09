@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { get, post } from "@/lib/api";
 import { Notice } from "@/components/ui";
+import { Logo } from "@/components/Logo";
 
 export default function Login() {
   const [hasUsers, setHasUsers] = useState(true);
@@ -30,7 +31,10 @@ export default function Login() {
 
   return (
     <div className="login card">
-      <h1>llamaOS</h1>
+      <div className="row" style={{ gap: 12, marginBottom: 6 }}>
+        <Logo size={48} />
+        <h1 style={{ margin: 0, fontSize: 24 }}>llamaOS</h1>
+      </div>
       <p className="muted">Owner and viewer accounts only. 2FA is required.</p>
       {!hasUsers && (
         <Notice kind="warn">
