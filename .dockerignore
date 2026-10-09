@@ -1,0 +1,6 @@
+.venv
+.git
+data
+secrets
+services/dashboard
+**/__pycache__

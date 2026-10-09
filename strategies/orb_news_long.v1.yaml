@@ -1,0 +1,59 @@
+dsl: 0.1
+id: orb_news_long
+version: 1
+source:
+  text: >-
+    On liquid stocks with fresh, positive company-specific news this morning (earnings,
+    guidance, product or contract news, not analyst notes), buy if price breaks above the
+    first 15-minute high on strong volume. Stop just below the opening-range low, take
+    profit at 2R, flat by 3:50pm. Risk 0.5% per trade, max 3 trades a day.
+  compiled_by: claude-opus-5-5
+  prompt: compiler@v1
+assumptions:
+  - liquid = prior close >= $10 and 20-day avg dollar volume >= $50M
+  - fresh = received since yesterday's 16:00 ET close
+  - positive = news.score >= 0.6
+  - strong volume = rvol(20) >= 2.0
+  - breaks above = a 1-min bar CLOSES above the range high, on that bar only
+  - just below = 0.1% under the range low
+  - no entry cutoff stated -> 09:45-11:30 ET (flagged)
+suggestions:
+  - add `close > vwap` to entry
+universe:
+  from: {news_today: true}
+  filters:
+    - prior_close >= min_price
+    - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_price:   {value: 10,         range: [5, 50]}
+  min_adv:     {value: 50_000_000, range: [10_000_000, 500_000_000]}
+  or_minutes:  {value: 15,         range: [5, 30]}
+  rvol_min:    {value: 2.0,        range: [1.2, 5.0]}
+  score_min:   {value: 0.6,        range: [0.3, 0.9]}
+  stop_buffer: {value: 0.1%,       range: [0%, 0.5%]}
+  target_r:    {value: 2.0,        range: [1.0, 4.0]}
+signals:
+  news.score:    {from: news_agent@v1, max_age: since_prior_close}
+  news.catalyst: {from: news_agent@v1, max_age: since_prior_close}
+vars:
+  range_high: or_high(or_minutes)
+  stop_level: or_low(or_minutes) * (1 - stop_buffer)
+entry:
+  side: long
+  window: "09:45-11:30"
+  when_all:
+    - crosses_above(close, range_high)
+    - rvol(20) >= rvol_min
+    - news.score >= score_min
+    - news.catalyst in [earnings, guidance, product, contract]
+sizing:
+  risk_per_trade: 0.5%
+exit:
+  stop: stop_level
+  target: entry_price + target_r * risk_per_share
+  flatten_at: "15:50"
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 3

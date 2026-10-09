@@ -1,0 +1,14 @@
+*.pyc
+*.tsbuildinfo
+.DS_Store
+.env
+.pytest_cache/
+.venv/
+__pycache__/
+config/risk.yaml
+data/
+secrets/*.env
+secrets/dev-owner.txt
+services/dashboard/.next/
+services/dashboard/next-env.d.ts
+services/dashboard/node_modules/

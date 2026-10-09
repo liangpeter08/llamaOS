@@ -1,0 +1,3 @@
+# Notification targets (not wired up in the prototype; events are visible on the dashboard).
+telegram: {enabled: false, chat_id: ""}
+email: {enabled: false, to: ""}

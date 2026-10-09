@@ -1,0 +1,5 @@
+# Replace with your hostname. Consider restricting to a VPN / Tailscale.
+trading.example.com {
+	encode gzip
+	reverse_proxy dashboard:3000
+}

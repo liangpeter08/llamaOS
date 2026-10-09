@@ -1,0 +1,26 @@
+# Hard limits. Owned by you, mounted read-only into every container.
+# A strategy can only tighten these; violations are rejected, never clamped.
+account:
+  max_gross_exposure: 1.0      # x equity, i.e. no leverage. Mirror at Alpaca (margin multiplier 1)
+  allow_short: false           # mirror at Alpaca (no-shorting flag)
+  max_open_positions: 3
+  max_trades_per_day: 10       # the only frequency brake (Alpaca no longer enforces PDT)
+  max_daily_loss: 2%           # breach -> kill switch
+per_trade:
+  default_risk: 0.25%
+  max_risk: 1%
+  max_position: 10%            # notional, of equity
+  require_bracket: true        # stop and target live at the broker
+execution:
+  entry_order: marketable_limit
+  max_slippage: 0.1%
+  cancel_unfilled_after: 2min
+  approval_expiry: 90s
+  max_drift: 0.3%              # price move allowed between intent and approval
+market:
+  entries: "09:35-15:30"       # ET; strategies can only narrow this
+  flatten_by: "15:55"          # clamped on early-close days (Alpaca calendar)
+  min_price: 5
+  min_adv: 10_000_000
+  stale_feed_halt: 3min
+  reconcile_every: 1min        # mismatch -> kill switch

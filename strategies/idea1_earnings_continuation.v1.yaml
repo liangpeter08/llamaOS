@@ -1,0 +1,49 @@
+dsl: 0.1
+id: idea1_earnings_continuation
+version: 1
+source:
+  text: "After positive earnings news, price keeps moving in the direction of the news over the next 60 minutes (mean +1.14% in the news direction, hit rate 82%, t=2.5, n=11)."
+  compiled_by: template@v1
+  prompt: none
+assumptions:
+  - "idea #1 (earnings / positive / continuation) traded long only"
+  - entry trigger = opening-range breakout after the news
+  - stop = 1.5 x 14-bar ATR below entry; target = 2R
+  - entry window 09:45-11:30 ET (most event drift happens in the first two hours)
+suggestions:
+  - tune or_minutes and atr_mult in a backtest before promoting
+universe:
+  from: {news_today: true}
+  filters:
+    - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_adv:    {value: 20_000_000, range: [10_000_000, 500_000_000]}
+  score_min:  {value: 0.5, range: [0.2, 0.9]}
+  or_minutes: {value: 15, range: [5, 30]}
+  atr_mult:   {value: 1.5, range: [0.5, 4.0]}
+  target_r:   {value: 2.0, range: [1.0, 4.0]}
+signals:
+  news.score:    {from: news_agent@v1, max_age: since_prior_close}
+  news.catalyst: {from: news_agent@v1, max_age: since_prior_close}
+  news.red_flag: {from: news_agent@v1, max_age: since_prior_close, default: false}
+entry:
+  side: long
+  window: "09:45-11:30"
+  when_all:
+    - news.catalyst in [earnings]
+    - news.score >= score_min
+    - crosses_above(close, or_high(or_minutes))
+    - not news.red_flag
+sizing:
+  risk_per_trade: 0.25%
+exit:
+  stop: entry_price - atr_mult * atr(14)
+  target: entry_price + target_r * risk_per_share
+  flatten_at: "15:50"
+  when_any:
+    - news.red_flag
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 3

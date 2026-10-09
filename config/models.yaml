@@ -1,0 +1,27 @@
+# Provider preference per tier. The first available provider wins; `heuristic` is the
+# offline keyword model and is always available, so the pipeline works with no API keys.
+tiers:
+  t1:
+    providers: [jev, gemini, claude_haiku, heuristic]
+    cross_check: false          # when true and two T1 providers are up, run both; disagreement escalates
+  t2:
+    providers: [claude_sonnet, heuristic]
+  authoring:
+    providers: [claude_opus]
+models:
+  claude_haiku: claude-haiku-5-5
+  claude_sonnet: claude-sonnet-5-5
+  claude_opus: claude-opus-5-5
+  gemini: ${GEMINI_MODEL}
+  jev: ${JEV_MODEL}
+escalation:
+  min_confidence: 0.6           # any key T1 answer below this escalates
+  on_materiality: [high]
+  on_active_note: true
+budgets:
+  t2_calls_per_day: 30
+  idealab_runs_per_day: 4
+timeouts_s:
+  t1: 15
+  t2: 60
+  authoring: 300

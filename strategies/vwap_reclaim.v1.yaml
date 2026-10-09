@@ -1,0 +1,49 @@
+dsl: 0.1
+id: vwap_reclaim
+version: 1
+source:
+  text: >-
+    Price-only: on liquid names that gapped down at least 1%, buy when price reclaims VWAP
+    after the first 30 minutes and holds above it for 3 bars. Skip anything with a red-flag
+    headline. Stop 1.5 ATR below entry, target 1.5R, out by 3:45pm.
+  compiled_by: hand-written
+  prompt: none
+assumptions:
+  - liquid = 20-day avg dollar volume >= $20M
+  - holds above = 3 consecutive 1-min closes above vwap
+  - ATR = 14-bar 1-minute ATR
+suggestions: []
+universe:
+  from: {news_today: false}
+  filters:
+    - adv(20) >= min_adv
+    - gap <= -min_gap
+timeframe: 1min
+params:
+  min_adv:   {value: 20_000_000, range: [10_000_000, 500_000_000]}
+  min_gap:   {value: 1%,         range: [0.5%, 5%]}
+  hold_bars: {value: 3,          range: [2, 10]}
+  atr_mult:  {value: 1.5,        range: [0.5, 4.0]}
+  target_r:  {value: 1.5,        range: [1.0, 4.0]}
+signals:
+  news.red_flag: {from: news_agent@v1, max_age: since_prior_close, default: false}
+vars:
+  above: close > vwap
+entry:
+  side: long
+  window: "10:00-14:30"
+  when_all:
+    - streak(above) >= hold_bars
+    - not news.red_flag
+sizing:
+  risk_per_trade: 0.25%
+exit:
+  stop: entry_price - atr_mult * atr(14)
+  target: entry_price + target_r * risk_per_share
+  flatten_at: "15:45"
+  when_any:
+    - news.red_flag
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 2

@@ -1,7 +1,7 @@
 # News-Driven Day Trading System (Alpaca)
 
-**Version:** 0.2 (design draft)
-**Status:** architecture and specs. Components are described here, but the code isn't written yet.
+**Version:** 0.3 (working prototype)
+**Status:** runs end to end against a **market simulator**: news triage, signals, strategies, risk guard, approvals, fills, backtests, Idea Lab and the dashboard. It isn't connected to Alpaca yet; see [Prototype status](#prototype-status).
 
 An automated intraday trading system for US equities on Alpaca. It turns news, real market events, and your own notes and assumptions into small, auditable trading strategies. Models (Jev, a lightweight Gemini, Claude) interpret news and propose ideas. Deterministic code evaluates the rules, enforces the hard risk limits, and places orders, with you approving strategies and, optionally, every trade.
 
@@ -11,22 +11,53 @@ An automated intraday trading system for US equities on Alpaca. It turns news, r
 
 ## Contents
 
-1. [Principles](#principles)
-2. [Architecture](#architecture)
-3. [Services (Docker)](#services-docker)
-4. [Model layers](#model-layers)
-5. [Idea Lab: event-driven discovery](#idea-lab-event-driven-discovery)
-6. [Strategy lifecycle](#strategy-lifecycle)
-7. [Dashboard](#dashboard)
-8. [Trade approval](#trade-approval)
-9. [Login and security](#login-and-security)
-10. [Hard risk rules](#hard-risk-rules-riskyaml)
-11. [Strategy DSL](#strategy-dsl-v01)
-12. [Quick start](#quick-start)
-13. [Configuration](#configuration)
-14. [Repository layout](#repository-layout)
-15. [Known constraints](#known-constraints)
-16. [Roadmap](#roadmap)
+1. [Prototype status](#prototype-status)
+2. [Principles](#principles)
+3. [Architecture](#architecture)
+4. [Services (Docker)](#services-docker)
+5. [Model layers](#model-layers)
+6. [Idea Lab: event-driven discovery](#idea-lab-event-driven-discovery)
+7. [Strategy lifecycle](#strategy-lifecycle)
+8. [Dashboard](#dashboard)
+9. [Trade approval](#trade-approval)
+10. [Login and security](#login-and-security)
+11. [Hard risk rules](#hard-risk-rules-riskyaml)
+12. [Strategy DSL](#strategy-dsl-v01)
+13. [Quick start](#quick-start)
+14. [Configuration](#configuration)
+15. [Repository layout](#repository-layout)
+16. [Known constraints](#known-constraints)
+17. [Roadmap](#roadmap)
+
+---
+
+## Prototype status
+
+**Run it locally**
+
+Needs Python 3.12+, Node 20.9+, and PostgreSQL 16 on `127.0.0.1:5432` with user `llamaos`, password `llamaos` and a UTF-8 database `llamaos` (override with `DATABASE_URL` in `.env`).
+
+```bash
+make init        # venv + pip, npm install, config/risk.yaml, .env with a SESSION_SECRET
+make demo        # 60 simulated sessions of history, recorded signals, dev owner, example strategies in paper
+make replay      # rebuild the equity history: replay the running strategies over stored sessions
+make dev         # broker + models + api + Next.js dashboard -> http://localhost:3000
+make dev-code    # current 2FA code for the dev owner (credentials in secrets/dev-owner.txt)
+make test        # pytest against the llamaos_test database
+```
+
+| Area | State |
+|---|---|
+| Market data and execution | **Simulated.** `common/sim.py` replays one synthetic session (fictional tickers) bar by bar, with news whose price impact depends on the catalyst. Fills go through `core/exchange.py`: next-bar open, marketable limit, broker-side bracket, stop assumed first. No Alpaca adapter yet. |
+| News triage | T0 code filters, then the T1/T2 tiers. With no API keys, an offline keyword model (`heuristic@v1`) answers both tiers, so the whole pipeline runs for free. Claude Haiku 5.5 (T1) and Sonnet 5.5 (T2) take over when `ANTHROPIC_API_KEY` is set. The Gemini adapter is written but untested. Jev isn't implemented. |
+| DSL | Parser, validator (all 8 rules) and evaluator are done, with code-generated back-translation. |
+| Risk guard, approvals, kill switch | Done. Approvals expire and re-check the risk guard and price drift. The kill switch is reset only on the host. Reconciliation runs every minute. |
+| Backtester | Uses the same `TradingSession` as the live loop. News-gated rules read recorded signals only. |
+| Idea Lab | Event studies, holdout scoring, the hypothesis counter, theses, and an offline rules generator. Claude Opus 5.5 hypotheses need a key. Accepted ideas compile into draft strategies. |
+| Claude authoring | Strategy chat, the English→DSL compiler and diff acceptance are written against the Anthropic SDK (Opus 5.5, adaptive thinking, server-side refusal fallback). They haven't been exercised without a key; the dashboard says when they're unavailable. |
+| Dashboard | Next.js 15 / React 19 (TypeScript) on Node. It proxies `/api/*` to a Python JSON API that holds auth (argon2 + TOTP), CSRF and every write. |
+| Storage | PostgreSQL (psycopg 3), with an advisory-locked, hash-chained audit log. |
+| Not built | Alpaca adapter and `make broker-guard`, notifications, backups, record-only mode, market calendar and holidays, post-trade narratives by Claude (a deterministic narrative is written instead). |
 
 ---
 
@@ -38,7 +69,7 @@ An automated intraday trading system for US equities on Alpaca. It turns news, r
 4. **Credentials follow trust.**
    - Only `broker` holds Alpaca keys.
    - Only `models` holds model API keys.
-   - `web` holds neither.
+   - `api` and `dashboard` hold neither.
 5. **Everything is replayable and logged.** Model outputs are recorded once and never recomputed. Every news item, signal, idea, strategy version, chat, approval, order and fill is written to a hash-chained audit log.
 6. **The edge isn't speed.** Interpretation of real events plus your context, confirmed by price. Holding periods run from minutes to hours, and positions are flat by the close.
 
@@ -53,10 +84,13 @@ An automated intraday trading system for US equities on Alpaca. It turns news, r
 [broker]  ingest -> features -> RULE ENGINE -> RISK GUARD -> APPROVAL GATE -> EXECUTOR
    |  ^   (no LLM; holds the only Alpaca keys)
    v  |
-[SQLite on ./data]  raw news · bars · signals · ideas · strategies · approvals · audit
+[PostgreSQL]  raw news · bars · signals · ideas · strategies · approvals · audit
    ^  |                                       ^  |
    |  v                                       |  v
-[models]  T0 code -> T1 quick layer           [web]  login · monitoring · trade approvals
+[models]  T0 code -> T1 quick layer           [api]  login · 2FA · approvals · trading rules (JSON)
+                                                ^
+                                                |  /api/* proxied
+                                              [dashboard]  Next.js + React (Node)
           (Jev | Gemini lite) -> T2 Claude           strategy chat · idea lab · kill switch
           Idea Lab · compiler · chat API  <-------- internal HTTP (chat, compile, ideas)
           (holds model keys only)                    (holds no API keys)
@@ -74,57 +108,21 @@ There are three lanes:
 
 ## Services (Docker)
 
-All services run on one small VPS via Docker Compose. The SQLite database lives on a local volume shared by the containers; don't put it on a network filesystem.
+All services run on one small VPS via Docker Compose and share one PostgreSQL database. The broker, models and API talk only through the database, plus the internal models HTTP API.
 
 | Service | Image base | Holds | Responsibilities |
 |---|---|---|---|
 | `broker` | python:3.12-slim | Alpaca keys | Bars and news WebSockets, feature calculation, rule engine, risk guard, approval gate, executor, reconciliation, EOD flatten, kill switch |
 | `models` | python:3.12-slim | Anthropic, Jev, Gemini keys | Tiered news triage, note/thesis parsing, Idea Lab, strategy compiler, back-translation, strategy chat API (internal only) |
-| `web` | python:3.12-slim | Session secret only | Dashboard: login, monitoring, approvals, chat UI, audit viewer |
+| `postgres` | postgres:16-alpine | DB password | Bars, news, signals, registry, intents, orders, trades, audit chain |
+| `api` | python:3.12-slim | Session secret only | JSON API for the dashboard: login + TOTP, CSRF, approvals, lifecycle, backtests, Idea Lab reads |
+| `dashboard` | node:22-alpine | Nothing | Next.js / React UI. Proxies `/api/*` to `api`; the only service Caddy talks to |
 | `caddy` | caddy:2-alpine | TLS certs | HTTPS reverse proxy. The only container with a published port |
-| `backup` | alpine | Backup target creds | Nightly SQLite snapshot + audit log copy off-host |
+| `backup` | alpine | Backup target creds | Nightly `pg_dump` + audit log copy off-host (not built yet) |
 
-```yaml
-# docker-compose.yml (sketch)
-services:
-  broker:
-    build: ./services/broker
-    env_file: ./secrets/broker.env          # ALPACA_* only
-    volumes:
-      - ./data:/data
-      - ./config/risk.yaml:/config/risk.yaml:ro
-      - ./strategies:/strategies:ro
-    restart: unless-stopped
-    mem_limit: 512m
-  models:
-    build: ./services/models
-    env_file: ./secrets/models.env          # ANTHROPIC_*, JEV_*, GEMINI_*
-    volumes:
-      - ./data:/data
-      - ./config/risk.yaml:/config/risk.yaml:ro
-    expose: ["8081"]                        # internal network only
-    restart: unless-stopped
-    mem_limit: 512m
-  web:
-    build: ./services/web
-    env_file: ./secrets/web.env             # SESSION_SECRET, no API keys
-    volumes:
-      - ./data:/data
-      - ./config/risk.yaml:/config/risk.yaml:ro
-    expose: ["8080"]
-    depends_on: [models]
-    restart: unless-stopped
-    mem_limit: 384m
-  caddy:
-    image: caddy:2-alpine
-    ports: ["443:443"]
-    volumes: ["./config/Caddyfile:/etc/caddy/Caddyfile:ro", "caddy_data:/data"]
-    restart: unless-stopped
-volumes:
-  caddy_data:
-```
+See [`docker-compose.yml`](docker-compose.yml). `risk.yaml` is mounted read-only into every service, model keys live only in `secrets/models.env`, and only Caddy publishes a port.
 
-The whole stack is designed to fit in about 2 GB RAM and 1–2 vCPUs. Nothing heavy runs locally: all models are API calls, and there's no vector DB. SQLite FTS5 covers "recent headlines for this ticker".
+The whole stack is designed to fit in about 2 GB RAM and 1–2 vCPUs. Nothing heavy runs locally: all models are API calls, and there's no vector DB. A Postgres full-text index covers "recent headlines for this ticker".
 
 ---
 
@@ -221,11 +219,12 @@ Status and approvals live in a registry keyed by the file's hash, so promoting a
 
 ## Dashboard
 
-The dashboard is served by `web` behind HTTPS. Pages:
+The dashboard is a Next.js app (`services/dashboard`) behind HTTPS. Pages:
 
 | Page | What you see / do |
 |---|---|
-| **Overview** | Equity, day P&L vs the daily loss limit, exposure, open positions, pending approvals, system health, kill switch |
+| **Overview → Portfolio** | The whole account over time: return % with a per-strategy overlay (each strategy's P&L as a % of the account, summing to Total) or equity $, presets 1W/1M/3M/YTD/All plus a custom date range, drawdown, best/worst day, per-strategy contribution table, per-session table |
+| **Overview → Today** | The current session: equity chart, day P&L vs the daily loss limit, exposure, open positions, pending approvals, system health, kill switch |
 | **Portfolio** | Positions, open orders and bracket legs, fills, P&L by strategy/day/symbol, exposure vs caps |
 | **Strategies** | Every strategy and version with its status, live vs paper vs backtest metrics, drift alerts, assumptions awaiting your OK, and a diff between versions |
 | **Strategy detail → Ask Claude** | A fresh Claude chat seeded with the strategy file, back-translation, backtest report, paper/live results and recent decision records. Ask "does this make sense?", challenge assumptions, request what-ifs |
@@ -244,7 +243,7 @@ The dashboard is served by `web` behind HTTPS. Pages:
 - Claude can explain, critique, and **propose a change as a DSL diff**. Accepting a proposal creates a new draft version. Chat can never edit an approved version, approve anything, or touch `risk.yaml`.
 - Claude's answers about performance must cite the decision records or reports they rely on.
 
-The front-end stack (default) is FastAPI with server-rendered templates and HTMX, plus a lightweight charting library. There's no SPA build step, which keeps the image small.
+The front end is Next.js 15 with React 19 and TypeScript, running on Node. It polls the API, draws charts as dependency-free SVG, and holds no secrets. Trading rules (validator, backtester, risk guard) stay in Python, so the dashboard and the broker run the same code.
 
 ---
 
@@ -282,7 +281,7 @@ Notifications for new approvals, fills, halts, and drift go to your phone (confi
 
 - **Accounts:** an `owner` role (full control) and a `viewer` role (read-only), both set up in the dashboard. No public sign-up.
 - **Authentication:** password (argon2) plus **TOTP 2FA**, which is mandatory for `owner`. Sessions are short-lived with secure HttpOnly cookies, and login attempts are rate-limited.
-- **Step-up re-auth (TOTP)** is required for: approving trades in a session older than 15 minutes, switching a strategy to `auto`, approving a strategy hash, and triggering the kill switch.
+- **2FA at login only.** Once logged in, an owner approves trades, approves strategy hashes, switches execution modes and triggers the kill switch without entering another code. Every such action still needs a valid session and CSRF token, and is written to the audit log with the user's name. The 8-hour session limit applies.
 - **Tightening is easy, loosening is hard.** The dashboard can pause strategies and trigger the kill switch. It cannot raise limits or reset the kill switch: those require editing `risk.yaml` on the host and running `make reset-kill-switch` over SSH.
 - **Network:** only Caddy (HTTPS) is exposed. The `models` API is internal to the Docker network. Consider restricting the dashboard to a VPN or Tailscale.
 - **Secrets:** one env file per service, outside the repo and never baked into images.
@@ -430,7 +429,7 @@ exit:
   target: entry_price + target_r * risk_per_share
   flatten_at: "15:50"
 execution:
-  mode: manual                   # manual | auto | paper; auto needs step-up approval
+  mode: manual                   # manual | auto | paper; the registry starts at manual, the owner switches modes on the dashboard
 limits:
   max_trades_per_day: 3
 ```
@@ -439,14 +438,14 @@ limits:
 
 ## Quick start
 
+Local development is covered under [Prototype status](#prototype-status). To deploy with Docker:
+
 ```bash
 git clone <repo> && cd <repo>
-cp secrets/broker.env.example secrets/broker.env    # Alpaca PAPER keys first
-cp secrets/models.env.example secrets/models.env    # Anthropic, Jev, Gemini keys
-cp secrets/web.env.example    secrets/web.env       # session secret
-cp config/risk.example.yaml   config/risk.yaml      # review every line
-docker compose up -d --build
-docker compose exec web python -m web.create_owner  # creates owner, prints TOTP QR
+for f in postgres db broker models web; do cp secrets/$f.env.example secrets/$f.env; done   # then fill them in
+cp config/risk.example.yaml config/risk.yaml        # review every line
+docker compose up -d --build                          # the broker seeds simulated history on first start
+docker compose exec api python -m services.api.create_owner --username admin   # prints the TOTP secret
 ```
 
 Then:
@@ -477,7 +476,9 @@ Key environment variables:
 | `ANTHROPIC_API_KEY` | models | |
 | `JEV_API_KEY`, `JEV_MODEL` | models | |
 | `GEMINI_API_KEY`, `GEMINI_MODEL` | models | A lightweight Gemini model ID |
-| `SESSION_SECRET` | web | |
+| `SESSION_SECRET` | api | Keep it stable, or every restart logs everyone out |
+| `DATABASE_URL` | broker, models, api | PostgreSQL DSN |
+| `MODELS_URL`, `API_URL` | api, dashboard | Internal service URLs |
 | `MODE=record_only` | all | `record_only` → `paper` → `live` |
 
 ---
@@ -490,11 +491,14 @@ Key environment variables:
 ├── config/                 # risk.yaml, models.yaml, idealab.yaml, Caddyfile, ...
 ├── secrets/                # *.env (git-ignored), *.env.example
 ├── strategies/             # DSL files: <id>.v<n>.yaml
-├── data/                   # SQLite db, audit JSONL (volume, git-ignored)
 ├── services/
 │   ├── broker/             # ingest, features, rule engine, risk guard, approval gate, executor
 │   ├── models/             # triage tiers, quick layer, idea lab, compiler, chat API
-│   └── web/                # dashboard, auth, approvals, chat UI
+│   ├── api/                # JSON API: auth + 2FA, approvals, lifecycle (no keys)
+│   └── dashboard/          # Next.js + React frontend (Node)
+├── core/                   # rule engine, risk guard, simulated exchange, trading session
+├── common/                 # config, Postgres access, audit chain, simulator, registry
+├── scripts/                # dev launcher, dev owner, demo setup, kill-switch reset
 ├── dsl/                    # grammar, builtins library (versioned), validator, evaluator
 ├── backtest/               # vectorized replay using dsl/ evaluator
 ├── prompts/                # versioned prompts: news_agent@v1, compiler@v1, idealab@v1, chat@v1
@@ -510,20 +514,24 @@ Key environment variables:
 - **Model look-ahead.** Models know what happened after historical news. News-gated strategies and Idea Lab statistics use recorded signals only.
 - **Jev availability.** Jev is in early access, so keep the quick layer swappable.
 - **Manual approval latency.** Per-trade approval suits strategies holding minutes to hours, not scalps. Expiry and the drift check protect against stale approvals.
-- **Single host.** SQLite on one VPS is intentional. Move to Postgres only if write contention appears.
+- **Single host.** One PostgreSQL instance on the same VPS. Services coordinate through tables (commands, intents) rather than a message bus.
+- **Simulator calendar.** Simulated sessions are weekdays without holidays or early closes.
 
 ---
 
 ## Roadmap
 
-- [ ] DSL parser, validator and evaluator, with the example strategies as test fixtures
-- [ ] Broker service: ingest, record-only mode, reconciliation, kill switch
-- [ ] Models service: T0/T1/T2 triage with the Jev + Gemini quick layer
-- [ ] Web: auth + 2FA, overview, system health, news & signals
-- [ ] Backtester and paper trading
-- [ ] Trade approval queue and per-strategy execution modes
-- [ ] Strategy chat and trade review
-- [ ] Idea Lab: event studies, theses, hypothesis counter, holdout scoring
+- [x] DSL parser, validator and evaluator, with the example strategies as test fixtures
+- [x] Broker service on the simulator: reconciliation, kill switch
+- [ ] Alpaca adapter: bars/news WebSockets, bracket orders, account guard, record-only mode
+- [x] Models service: T0/T1/T2 triage (offline model + Claude)
+- [ ] Jev adapter; Gemini adapter verified against the live API
+- [x] Dashboard (Next.js) + API: auth + 2FA, overview, system health, news & signals
+- [x] Backtester and simulated paper trading
+- [x] Trade approval queue and per-strategy execution modes
+- [x] Strategy chat and trade review (chat needs `ANTHROPIC_API_KEY`)
+- [x] Idea Lab: event studies, theses, hypothesis counter, holdout scoring
+- [ ] Notifications, backups, market calendar
 
 ---
 

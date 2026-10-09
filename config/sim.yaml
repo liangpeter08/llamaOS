@@ -1,0 +1,8 @@
+# Simulator settings (prototype only).
+speed: 30                 # simulated minutes per real minute (30 -> one 1-min bar every 2s)
+premarket_speed: 600      # fast-forward through 08:00-09:30
+start: "08:00"
+seed: 7
+starting_equity: 100000
+pause_on_approval: true   # hold the sim clock while a manual approval is pending
+fill_slippage: 0.02%

@@ -1,0 +1,67 @@
+# Single small VPS. Only Caddy publishes a port; everything else is on the internal network.
+services:
+  postgres:
+    image: postgres:16-alpine
+    env_file: ./secrets/postgres.env          # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+    mem_limit: 512m
+
+  broker:
+    build: .
+    command: ["python", "-m", "services.broker"]
+    env_file: [./secrets/db.env, ./secrets/broker.env]   # DATABASE_URL; ALPACA_* (unused by the simulator)
+    volumes:
+      - ./config:/app/config:ro                # risk.yaml is read-only to every service
+      - ./strategies:/app/strategies:ro
+    depends_on: { postgres: { condition: service_healthy } }
+    restart: unless-stopped
+    mem_limit: 512m
+
+  models:
+    build: .
+    command: ["python", "-m", "services.models"]
+    env_file: [./secrets/db.env, ./secrets/models.env]   # ANTHROPIC_API_KEY, GEMINI_*, JEV_*
+    environment: { MODELS_HOST: "0.0.0.0" }
+    volumes:
+      - ./config:/app/config:ro
+      - ./strategies:/app/strategies           # the compiler writes new draft versions here
+    expose: ["8081"]
+    depends_on: { postgres: { condition: service_healthy } }
+    restart: unless-stopped
+    mem_limit: 512m
+
+  api:
+    build: .
+    command: ["python", "-m", "services.api"]
+    env_file: [./secrets/db.env, ./secrets/web.env]      # SESSION_SECRET only; no model or broker keys
+    environment: { API_HOST: "0.0.0.0", MODELS_URL: "http://models:8081", COOKIE_SECURE: "true" }
+    volumes:
+      - ./config:/app/config:ro
+      - ./strategies:/app/strategies           # idea -> template compile writes drafts
+    expose: ["8080"]
+    depends_on: [models]
+    restart: unless-stopped
+    mem_limit: 384m
+
+  dashboard:
+    build: { context: ./services/dashboard, args: { API_URL: "http://api:8080" } }
+    expose: ["3000"]
+    depends_on: [api]
+    restart: unless-stopped
+    mem_limit: 384m
+
+  caddy:
+    image: caddy:2-alpine
+    ports: ["443:443"]
+    volumes: ["./config/Caddyfile:/etc/caddy/Caddyfile:ro", "caddy_data:/data"]
+    depends_on: [dashboard]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  caddy_data:
