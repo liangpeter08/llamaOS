@@ -36,7 +36,7 @@ def mutate(text, old, new):
     ("stop: stop_level", "stop: stop_level * (1 - news.score)", "may appear only in entry.when_all"),
     ("risk_per_trade: 0.5%", "risk_per_trade: 2%", "max_risk"),
     ('window: "09:45-11:30"', 'window: "09:00-11:30"', "can only narrow"),
-    ("max_trades_per_day: 3", "max_trades_per_day: 50", "loosens risk.yaml"),
+    ("max_trades_per_day: 3", "max_trades_per_day: 50", "loosens the risk control"),
     ("side: long", "side: short", "allow_short"),
     ("crosses_above(close, range_high)", "crosses_above(close, range_hi)", "undeclared name"),
     ("news.catalyst in [earnings, guidance, product, contract]", "news.catalyst in [earnings, rumor]", "not values"),

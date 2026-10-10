@@ -84,7 +84,7 @@ def back_translate(s: Strategy) -> str:
     lines.append(f"Universe: {uni}" + (", where " + "; and ".join(say(f, s) for f in s.universe_filters) if s.universe_filters else "") + ".")
     lines.append(f"Entries are considered at each bar close between {s.entry_window[0]:%H:%M} and {s.entry_window[1]:%H:%M} ET, only when ALL of:")
     lines += [f"  {k + 1}. {say(c, s)}" for k, c in enumerate(s.entry_when_all)]
-    lines.append(f"Size: risk {s.risk_per_trade:.2%} of equity between entry and stop, capped by the position limits in risk.yaml.")
+    lines.append(f"Size: risk {s.risk_per_trade:.2%} of equity between entry and stop, capped by the position and fund limits (Risk and Funds pages).")
     if s.exit_stop is not None:
         lines.append(f"Stop (set once, held at the broker): {say(s.exit_stop, s)}.")
     if s.exit_target is not None:
@@ -164,6 +164,6 @@ def back_translate_portfolio(s) -> str:
     lines.append(f"Sell everything {end}.{start}")
     dd = s.limits.get("max_drawdown")
     lines.append("Sleeve stop: sell everything if the sleeve falls "
-                 + (f"{dd:.0%}" if dd else "by risk.yaml portfolio.max_drawdown") + " from its peak value.")
-    lines.append("Not flattened at the close; checked against risk.yaml portfolio limits before every order. Uses no model signals (price-only).")
+                 + (f"{dd:.0%}" if dd else "by the sleeve drawdown stop on the Risk page") + " from its peak value.")
+    lines.append("Not flattened at the close; every buy is checked against the portfolio and fund controls (Risk and Funds pages). Uses no model signals (price-only).")
     return "\n".join(lines)

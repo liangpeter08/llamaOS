@@ -882,6 +882,7 @@ def audit_export(u: dict = Depends(user)):
 
 @app.get("/api/risk")
 def risk_page(u: dict = Depends(user)):
+    from common.risk_help import DETAILS
     c = conn()
     r = load_risk()
     base, _ = risk_defaults()
@@ -891,6 +892,7 @@ def risk_page(u: dict = Depends(user)):
     for ctl in RS.CATALOG:
         o = over.get(ctl.key)
         controls.append({"key": ctl.key, "section": ctl.section, "label": ctl.label, "help": ctl.help, "type": ctl.type,
+                         "details": dict(zip(("description", "example", "interaction"), DETAILS[ctl.key])),
                          "choices": list(ctl.choices), "default": defaults[ctl.section].get(ctl.name),
                          "value": o["value"] if o else defaults[ctl.section].get(ctl.name), "overridden": bool(o),
                          "updated_by": o["updated_by"] if o else None, "updated_at": o["updated_at"] if o else None})

@@ -5,6 +5,7 @@ import { usePoll } from "@/lib/hooks";
 import { wall } from "@/lib/format";
 import { Card, Loading, Notice, Pill } from "@/components/ui";
 import { isOwner, useSession } from "@/components/session";
+import { RiskHelp } from "@/components/RiskHelp";
 
 const TITLES: Record<string, string> = {
   account: "Account", per_trade: "Per trade (intraday)", execution: "Execution", market: "Market hours & liquidity",
@@ -14,6 +15,7 @@ const TITLES: Record<string, string> = {
 interface Control {
   key: string; section: string; label: string; help: string; type: string; choices: string[];
   default: any; value: any; overridden: boolean; updated_by: string | null; updated_at: number | null;
+  details: { description: string; example: string; interaction: string };
 }
 
 const show = (v: any) => (typeof v === "boolean" ? (v ? "yes" : "no") : v == null ? "—" : String(v));
@@ -58,14 +60,15 @@ export default function Risk() {
       return n;
     });
     if (!owner) return <b>{show(c.value)}</b>;
-    if (c.type === "bool") return <input type="checkbox" checked={!!cur} onChange={(e) => set(e.target.checked)} />;
-    if (c.type === "choice") return <select value={cur} onChange={(e) => set(e.target.value)}>{c.choices.map((x) => <option key={x}>{x}</option>)}</select>;
-    return <input value={String(cur ?? "")} onChange={(e) => set(e.target.value)} style={{ width: 150 }} className="mono" />;
+    if (c.type === "bool") return <input aria-label={c.label} type="checkbox" checked={!!cur} onChange={(e) => set(e.target.checked)} />;
+    if (c.type === "choice") return <select aria-label={c.label} value={cur} onChange={(e) => set(e.target.value)}>{c.choices.map((x) => <option key={x}>{x}</option>)}</select>;
+    return <input aria-label={c.label} value={String(cur ?? "")} onChange={(e) => set(e.target.value)} style={{ width: 150 }} className="mono" />;
   }
 
   return (
     <>
       <h1>Risk</h1>
+      <p className="muted">Hover over a setting name or its ⓘ icon for detailed help. You can also focus or tap the name.</p>
       <p className="muted">
         Live risk controls, stored in Postgres. {owner ? "Edit a value, give a reason and save; " : ""}the broker and watchdog apply changes within a few
         seconds. Every change is validated as a whole, kept in the history below and written to the audit log. A control you haven&apos;t set
@@ -94,7 +97,7 @@ export default function Risk() {
                 {(bySection[sec] ?? []).map((c) => (
                   <tr key={c.key}>
                     <td style={{ width: "42%" }}>
-                      {c.label}
+                      <RiskHelp label={c.label} details={c.details} />
                       {c.help && <div className="muted" style={{ fontSize: 12 }}>{c.help}</div>}
                     </td>
                     <td>{input(c)}</td>

@@ -1,5 +1,5 @@
 """Strategy validator: schema, declared names, params-only thresholds, signal fencing,
-fail-closed defaults and limits that may only tighten risk.yaml.
+fail-closed defaults and limits that may only tighten the risk controls.
 
 `validate(text, risk)` returns a Validation with errors, warnings and, when it passes,
 a compiled Strategy ready for the evaluator.
@@ -176,14 +176,14 @@ class _V:
         if side not in ("long", "short"):
             self.err("entry.side must be 'long' or 'short'")
         elif side == "short" and not self.risk.allow_short:
-            self.err("entry.side 'short' is not allowed: risk.yaml has allow_short: false")
+            self.err("entry.side 'short' is not allowed: allow_short is off on the Risk page")
         window = self.risk.entries
         if "window" in entry:
             try:
                 window = parse_window(entry["window"])
                 if window[0] < self.risk.entries[0] or window[1] > self.risk.entries[1]:
                     self.err(
-                        f"entry.window {entry['window']} is outside risk.yaml market.entries "
+                        f"entry.window {entry['window']} is outside the risk control market.entries "
                         f"{self.risk.entries[0]:%H:%M}-{self.risk.entries[1]:%H:%M}; strategies can only narrow it"
                     )
             except ValueError as e:
@@ -213,7 +213,7 @@ class _V:
                 self.err(f"sizing.risk_per_trade: {e}")
         if not 0 < rpt <= self.risk.max_risk:
             self.err(
-                f"sizing.risk_per_trade {rpt:.2%} must be > 0 and <= risk.yaml per_trade.max_risk "
+                f"sizing.risk_per_trade {rpt:.2%} must be > 0 and <= the risk control per_trade.max_risk "
                 f"{self.risk.max_risk:.2%}"
             )
 
@@ -231,14 +231,14 @@ class _V:
             if target is not None:
                 self.check_expr("exit.target", target, want="num", signals_ok=False, position_ok=True)
         if self.risk.require_bracket and (stop is None or target is None):
-            self.err("exit.stop and exit.target are required (risk.yaml require_bracket: true)")
+            self.err("exit.stop and exit.target are required (the risk controls require a bracket)")
         flatten = self.risk.flatten_by
         if "flatten_at" in ex:
             try:
                 flatten = parse_hhmm(ex["flatten_at"])
                 if flatten > self.risk.flatten_by:
                     self.err(
-                        f"exit.flatten_at {ex['flatten_at']} is later than risk.yaml flatten_by "
+                        f"exit.flatten_at {ex['flatten_at']} is later than the risk control flatten_by "
                         f"{self.risk.flatten_by:%H:%M}"
                     )
             except ValueError as e:
@@ -278,7 +278,7 @@ class _V:
                 "max_position": self.risk.max_position,
             }[k]
             if val > cap:
-                self.err(f"limits.{k} = {v} loosens risk.yaml ({cap}); strategies can only tighten limits")
+                self.err(f"limits.{k} = {v} loosens the risk control ({cap}); strategies can only tighten limits")
             limits[k] = val
 
         # unused declarations are a smell, not an error
@@ -315,7 +315,7 @@ class _V:
                 if k == "leverage":
                     self.warnings.append(
                         f"'{path}{k}' ignored: leverage is not part of the language "
-                        "(risk.yaml caps gross exposure at the account level)"
+                        "(the risk controls cap gross exposure at the account level)"
                     )
                 self._find_leverage(v, f"{path}{k}.")
 

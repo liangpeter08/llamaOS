@@ -168,3 +168,11 @@ details summary { cursor: pointer; color: var(--muted); }
 .tabs-main { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
 .tabs-main button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 8px 14px; font-weight: 500; color: var(--muted); }
 .tabs-main button.on { color: var(--text); border-bottom-color: var(--accent); }
+
+.risk-help-trigger { display: inline; padding: 0; border: 0; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: help; }
+.risk-help-trigger:hover { background: transparent; color: var(--accent); }
+.risk-help-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+.risk-help-icon { color: var(--accent); margin-left: 4px; }
+.risk-help-panel { position: fixed; z-index: 1000; overflow-y: auto; padding: 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--text); box-shadow: 0 12px 36px #0003; font-size: 13px; line-height: 1.55; }
+.risk-help-panel > strong { display: block; font-size: 15px; margin-bottom: 8px; }
+.risk-help-panel p { margin: 6px 0 14px; }
