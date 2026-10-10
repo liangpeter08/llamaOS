@@ -4,7 +4,7 @@
 
 config/models.yaml maps each tier to an ordered list of providers; the first available one
 answers. Providers: heuristic (offline, always available), claude_haiku, claude_sonnet,
-gemini (REST, needs GEMINI_API_KEY + GEMINI_MODEL), jev (not implemented in the prototype).
+gemini (REST, needs GEMINI_API_KEY + GEMINI_MODEL).
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from common import db
 from common.config import PROMPTS_DIR, load_yaml
 from dsl.builtins import CATALYSTS
 
-from . import heuristic, llm
+from . import heuristic, llm, laya_provider
 
 T1_QUESTIONS = ("new_info", "catalyst", "direction", "materiality", "fundamental", "red_flag")
 
@@ -82,9 +82,11 @@ def provider_available(name: str) -> bool:
         return True
     if name in ("claude_haiku", "claude_sonnet", "claude_opus"):
         return llm.available()
+    if name == "laya":
+        return laya_provider.available()
     if name == "gemini":
         return bool(os.environ.get("GEMINI_API_KEY") and _model_id("gemini"))
-    return False  # jev: adapter not implemented in the prototype
+    return False
 
 
 def tier_providers(tier: str) -> list[str]:
@@ -135,6 +137,8 @@ class QuickLayer:
 
     def decide(self, item: dict, questions=T1_QUESTIONS, provider: str | None = None) -> dict:
         provider = provider or first_available("t1")
+        if provider == "laya":
+            return laya_provider.decide(self.conn, item)
         if provider == "claude_haiku":
             model = _model_id("claude_haiku")
             _, parsed, _ = llm.call(self.conn, model=model, task="t1", system=prompt("news_agent@v1"),
@@ -210,13 +214,13 @@ def _gemini(conn, item: dict) -> dict:
 
 
 def provider_status() -> list[dict]:
-    names = ["heuristic", "jev", "gemini", "claude_haiku", "claude_sonnet", "claude_opus"]
+    names = ["heuristic", "laya", "gemini", "claude_haiku", "claude_sonnet", "claude_opus"]
     notes = {
-        "jev": "adapter not implemented in the prototype (early access)",
+        "laya": "local typed decisions, or configured LAYA_URL",
         "gemini": "needs GEMINI_API_KEY and GEMINI_MODEL",
         "heuristic": "offline keyword model, always on",
     }
-    return [{"name": n, "available": provider_available(n), "model": _model_id(n) if n != "heuristic" else heuristic.MODEL_ID,
+    return [{"name": n, "available": provider_available(n), "model": ("laya:" + os.environ.get("LAYA_MODEL", "typed-decisions")) if n == "laya" else _model_id(n) if n != "heuristic" else heuristic.MODEL_ID,
              "note": notes.get(n, "needs ANTHROPIC_API_KEY")} for n in names]
 
 

@@ -20,7 +20,7 @@ from datetime import date, timedelta
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
 from backtest import engine as bt
@@ -99,9 +99,9 @@ def j(s, default=None):
 
 # ---------------------------------------------------------------- auth
 class LoginIn(BaseModel):
-    username: str
-    password: str
-    code: str = ""
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=1024)
+    code: str = Field(default="", max_length=8)
 
 
 @app.get("/api/setup")
@@ -129,6 +129,7 @@ def login(request: Request, body: LoginIn):
 @app.post("/api/logout")
 def logout(request: Request, u: dict = Depends(user)):
     auth.check_csrf(request, None)
+    auth.revoke(request)
     request.session.clear()
     return ok()
 
@@ -152,10 +153,13 @@ def status(request: Request, u: dict = Depends(user)):
 # ---------------------------------------------------------------- overview
 def health(c) -> dict:
     out = {}
-    for k in ("broker", "models"):
+    for k in ("broker", "models", "watchdog", "operations", "triage"):
         age = db.kv_age(c, f"health.{k}")
-        out[k] = {"age": age, "ok": age is not None and age < 10}
+        out[k] = {"age": age, "ok": age is not None and age < 30}
     out["reconcile"] = db.kv_get(c, "reconcile") or {}
+    out["operations"] = {**out["operations"], **(db.kv_get(c,"health.operations") or {})}
+    out["backup"] = db.kv_get(c, "backup.latest")
+    out["paper_error"] = db.kv_get(c, "paper.error")
     out["last_bar"] = db.kv_get(c, "feed.last_bar")
     return out
 
@@ -490,18 +494,7 @@ def strategy_promote(h: str, body: PromoteIn, u: dict = Depends(owner)):
         command("reload", {}, u["username"])
         return ok("Promoted to paper. The broker picks it up within a few seconds.")
     if body.to == "live":
-        min_sessions = int(load_yaml("lifecycle.yaml").get("min_paper_sessions", 0))
-        sessions = db.row(c, "SELECT COUNT(DISTINCT to_timestamp(entry_ts)::date) n FROM trades WHERE strategy_hash=?", (h,))["n"]
-        if row["status"] != "paper":
-            fail("Only a strategy in paper can be approved for live.")
-        if sessions < min_sessions:
-            fail(f"Needs {min_sessions} paper sessions first (has {sessions}).")
-        if not body.reviewed:
-            fail("Confirm you reviewed the assumptions and the back-translation.")
-        registry.set_status(c, h, "live", u["username"], approved_by=u["username"], approved_at=time.time())
-        audit.log(c, "strategy.approved_hash", u["username"], {"hash": h, "assumptions": s.assumptions})
-        command("reload", {}, u["username"])
-        return ok(f"Approved hash {h[:12]}… for live. Execution stays on the simulator in this prototype.")
+        fail("Real-money execution is disabled; this release supports paper trading only.", 403)
     fail("unknown target")
 
 
@@ -734,11 +727,12 @@ def system(u: dict = Depends(user)):
     calls = db.rows(c, "SELECT provider, model, task, COUNT(*) n, AVG(latency_ms) lat, SUM(1-ok) errors,"
                        " COALESCE(SUM(cost_usd),0) cost FROM model_calls GROUP BY provider, model, task ORDER BY n DESC")
     triage = {r["triage"] or "pending": r["n"] for r in c.execute(
-        "SELECT triage, COUNT(*) n FROM news WHERE session='live' GROUP BY triage")}
+        "SELECT triage, COUNT(*) n FROM news WHERE session IN ('live','alpaca') GROUP BY triage")}
     db_size = db.row(c, "SELECT pg_size_pretty(pg_database_size(current_database())) s")["s"]
     return {"health": health(c), "providers": prov, "calls": calls, "triage": triage,
             "risk_sha256": load_risk().sha256, "acct": db.kv_get(c, "account") or {},
-            "history": db.kv_get(c, "sim.history") or {}, "suspend_trade": db.kv_get(c, "broker.suspend_trade"),
+            "source": (db.kv_get(c, "sim.state") or {}).get("source", "simulator"),
+            "history": db.kv_get(c, "sim.history") or db.kv_get(c,"paper.history_loaded") or {}, "suspend_trade": db.kv_get(c, "broker.suspend_trade"),
             "errors": db.rows(c, "SELECT ts, provider, model, task, error FROM model_calls WHERE ok=0 ORDER BY id DESC LIMIT 10"),
             "database": {"engine": "PostgreSQL", "size": db_size,
                          "version": db.row(c, "SHOW server_version")["server_version"]}}
@@ -807,7 +801,12 @@ def sim_control(action: str, body: SimIn, u: dict = Depends(owner)):
 
 @app.get("/api/healthz")
 def healthz():
-    return {"ok": True}
+    try:
+        c=conn()
+        c.execute("SELECT 1")
+        return {"ok": True, "dependencies": health(c)}
+    except Exception:
+        return JSONResponse({"ok":False,"detail":"database unavailable"},status_code=503)
 
 
 @app.exception_handler(HTTPException)

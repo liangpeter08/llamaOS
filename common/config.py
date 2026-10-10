@@ -31,7 +31,10 @@ def risk_path() -> Path:
 
 def mode() -> str:
     """record_only -> paper -> live. The prototype only ever trades the simulator."""
-    return os.environ.get("MODE", "paper")
+    value = os.environ.get("MODE", "paper")
+    if value not in ("paper", "record_only"):
+        raise ValueError("MODE must be paper or record_only; real-money execution is disabled")
+    return value
 
 
 @dataclass(frozen=True)
@@ -107,4 +110,5 @@ def load_yaml(name: str) -> dict:
 
 
 def universe() -> list[str]:
-    return list(load_yaml("universe.yaml").get("watchlist", []))
+    name = "universe.yaml" if os.environ.get("BROKER_BACKEND", "simulator") == "alpaca" else "universe.sim.yaml"
+    return list(load_yaml(name).get("watchlist", []))

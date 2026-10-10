@@ -5,6 +5,8 @@ export interface Me {
 }
 
 export interface SimState {
+  source?: string;
+  next_open?: string;
   session?: string;
   phase?: string;
   speed?: number;

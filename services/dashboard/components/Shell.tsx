@@ -47,7 +47,7 @@ export function Shell({ children }: { children: ReactNode }) {
         <Link href="/" className="brand" aria-label="llamaOS home">
           <Logo size={34} />
           <span>
-            llamaOS<small>news-driven day trading · {status?.mode ?? "…"}</small>
+            llamaOS<small>{status?.sim.source === "alpaca_paper" ? "Alpaca paper" : "simulator"} · {status?.mode ?? "…"}</small>
           </span>
         </Link>
         {NAV.map(link)}

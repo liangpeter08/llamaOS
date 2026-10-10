@@ -9,6 +9,7 @@ import os
 import time
 
 from common import db
+from common.config import load_yaml
 
 # $ per 1M tokens (input, output)
 PRICES = {
@@ -37,7 +38,7 @@ def client():
             raise LLMUnavailable("ANTHROPIC_API_KEY is not set for the models service")
         import anthropic
 
-        _client = anthropic.Anthropic(timeout=300.0, max_retries=2)
+        _client = anthropic.Anthropic(timeout=60.0, max_retries=1, default_headers={"anthropic-workspace-id": os.environ["ANTHROPIC_WORKSPACE_ID"]} if os.environ.get("ANTHROPIC_WORKSPACE_ID") else {})
     return _client
 
 
@@ -79,6 +80,18 @@ def call(conn, *, model: str, task: str, system: str, messages: list, max_tokens
     """Returns (text, parsed_json_or_None, response). Raises LLMUnavailable or anthropic errors."""
     import anthropic
 
+    # Reserve the daily call quota before making the external request.
+    cfg=load_yaml("models.yaml")
+    cap=int(cfg.get("budgets",{}).get("total_calls_per_day",200))
+    day=time.strftime("%Y-%m-%d",time.gmtime())
+    key="models.call_quota."+day
+    with db.tx(conn):
+        conn.execute("SELECT pg_advisory_xact_lock(?)",(0x4d4f44454c,))
+        used=int(db.kv_get(conn,key) or 0)
+        if used>=cap:raise LLMUnavailable("Daily model call limit reached")
+        db.kv_set(conn,key,used+1)
+    if len(json.dumps(messages))>64000:raise LLMUnavailable("Model context is too large; start a new conversation")
+    max_tokens=min(max_tokens,8000)
     t0 = time.time()
     try:
         resp = _request(model, system, messages, max_tokens, effort, schema, cache)

@@ -15,7 +15,8 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from common import audit, db
+from common import audit, db, timeutil as T
+from common.config import load_yaml
 
 from . import authoring, heuristic, idealab, llm, triage
 from .quicklayer import provider_status
@@ -114,6 +115,19 @@ def worker(stop: threading.Event):
             now = db.kv_get(c, "sim.now")
             if now is not None:
                 triage.run_pending(c, int(now))
+                db.kv_set(c,"health.triage",{"ts":time.time()})
+                state=db.kv_get(c,"sim.state") or {}
+                if state.get("source")=="alpaca_paper" and T.et(now).weekday()<5:
+                    local=T.et(now)
+                    schedule=load_yaml("idealab.yaml").get("schedule",{})
+                    for name,clock in schedule.items():
+                        due=local.strftime("%H:%M")>=clock
+                        if name=="premarket_brief":due=due and local.hour<9
+                        if name=="post_close_review":due=due and state.get("phase")=="closed"
+                        key=f"models.schedule.{local.date()}.{name}"
+                        if due and not db.kv_get(c,key):
+                            db.kv_set(c,key,{"started":time.time()})
+                            idealab.run(c,name.replace("_"," "),"scheduler")
             db.kv_set(c, "health.models", {"ts": time.time()})
         except Exception:  # noqa: BLE001 - keep the worker alive; errors land in the log
             log.exception("triage loop error")
@@ -126,6 +140,13 @@ def main():
     stop = threading.Event()
     t = threading.Thread(target=worker, args=(stop,), daemon=True)
     t.start()
+    # Inference may be slow on first load; process liveness is separate from triage progress.
+    def heartbeat():
+        c=db.connect()
+        while not stop.is_set():
+            db.kv_set(c,"health.models",{"ts":time.time()})
+            stop.wait(2)
+    threading.Thread(target=heartbeat,daemon=True).start()
     host = os.environ.get("MODELS_HOST", "127.0.0.1")
     port = int(os.environ.get("MODELS_PORT", "8081"))
     try:

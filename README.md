@@ -3,9 +3,9 @@
 # News-Driven Day Trading System (Alpaca)
 
 **Version:** 0.3 (working prototype)
-**Status:** runs end to end against a **market simulator**: news triage, signals, strategies, risk guard, approvals, fills, backtests, Idea Lab and the dashboard. It isn't connected to Alpaca yet; see [Prototype status](#prototype-status).
+**Status:** supports actual **Alpaca paper trading** with local Laya news decisions and Claude deep reads/authoring. Real-money execution is disabled. See [Paper trading](docs/paper-trading.md) for setup and operating limits. The simulator remains available separately.
 
-An automated intraday trading system for US equities on Alpaca. It turns news, real market events, and your own notes and assumptions into small, auditable trading strategies. Models (Jev, a lightweight Gemini, Claude) interpret news and propose ideas. Deterministic code evaluates the rules, enforces the hard risk limits, and places orders, with you approving strategies and, optionally, every trade.
+An automated intraday trading system for US equities on Alpaca. It turns news, real market events, and your own notes and assumptions into small, auditable trading strategies. Models (local Laya, Claude) interpret news and propose ideas. Deterministic code evaluates the rules, enforces the hard risk limits, and places orders, with you approving strategies and, optionally, every trade.
 
 > **Core idea:** models write features, ideas and rules; deterministic code makes trades.
 
@@ -50,16 +50,16 @@ make test        # pytest against the llamaos_test database
 
 | Area | State |
 |---|---|
-| Market data and execution | **Simulated.** `common/sim.py` replays one synthetic session (fictional tickers) bar by bar, with news whose price impact depends on the catalyst. Fills go through `core/exchange.py`: next-bar open, marketable limit, broker-side bracket, stop assumed first. No Alpaca adapter yet. |
-| News triage | T0 code filters, then the T1/T2 tiers. With no API keys, an offline keyword model (`heuristic@v1`) answers both tiers, so the whole pipeline runs for free. Claude Haiku 5.5 (T1) and Sonnet 5.5 (T2) take over when `ANTHROPIC_API_KEY` is set. The Gemini adapter is written but untested. Jev isn't implemented. |
+| Market data and execution | **Alpaca paper supported.** `services/broker/paper.py` ingests real bars/news and executes paper brackets. Separately, `common/sim.py` replays one synthetic session (fictional tickers) bar by bar, with news whose price impact depends on the catalyst. Fills go through `core/exchange.py`: next-bar open, marketable limit, broker-side bracket, stop assumed first. Live-money endpoints are refused. |
+| News triage | T0 code filters, then the T1/T2 tiers. With no API keys, an offline keyword model (`heuristic@v1`) answers both tiers, so the whole pipeline runs for free. Claude Haiku 5.5 (T1) and Sonnet 5.5 (T2) take over when `ANTHROPIC_API_KEY` is set. The Gemini adapter is written but untested. Laya runs locally; Gemini remains optional. |
 | DSL | Parser, validator (all 8 rules) and evaluator are done, with code-generated back-translation. |
 | Risk guard, approvals, kill switch | Done. Approvals expire and re-check the risk guard and price drift. The kill switch is reset only on the host. Reconciliation runs every minute. |
 | Backtester | Uses the same `TradingSession` as the live loop. News-gated rules read recorded signals only. |
 | Idea Lab | Event studies, holdout scoring, the hypothesis counter, theses, and an offline rules generator. Claude Opus 5.5 hypotheses need a key. Accepted ideas compile into draft strategies. |
-| Claude authoring | Strategy chat, the English→DSL compiler and diff acceptance are written against the Anthropic SDK (Opus 5.5, adaptive thinking, server-side refusal fallback). They haven't been exercised without a key; the dashboard says when they're unavailable. |
+| Claude authoring | Strategy chat, the English→DSL compiler and diff acceptance are written against the Anthropic SDK (Opus 5.5, adaptive thinking, server-side refusal fallback). Structured requests have been exercised against Haiku, Sonnet and Opus. |
 | Dashboard | Next.js 15 / React 19 (TypeScript) on Node. It proxies `/api/*` to a Python JSON API that holds auth (argon2 + TOTP), CSRF and every write. |
 | Storage | PostgreSQL (psycopg 3), with an advisory-locked, hash-chained audit log. |
-| Not built | Alpaca adapter and `make broker-guard`, notifications, backups, record-only mode, market calendar and holidays, post-trade narratives by Claude (a deterministic narrative is written instead). |
+| Not built | Off-host backup and phone/email delivery targets need operator configuration. Automatic Claude post-trade narratives remain optional (deterministic records exist). |
 
 ---
 
@@ -80,7 +80,7 @@ make test        # pytest against the llamaos_test database
 ## Architecture
 
 ```text
-[Alpaca]  bars WS · news WS · Trading API
+[Alpaca paper]  bars/news REST · Trading API
    ^  |
    |  v
 [broker]  ingest -> features -> RULE ENGINE -> RISK GUARD -> APPROVAL GATE -> EXECUTOR
@@ -93,7 +93,7 @@ make test        # pytest against the llamaos_test database
                                                 ^
                                                 |  /api/* proxied
                                               [dashboard]  Next.js + React (Node)
-          (Jev | Gemini lite) -> T2 Claude           strategy chat · idea lab · kill switch
+          (Laya | Gemini lite) -> T2 Claude           strategy chat · idea lab · kill switch
           Idea Lab · compiler · chat API  <-------- internal HTTP (chat, compile, ideas)
           (holds model keys only)                    (holds no API keys)
 ```
@@ -114,17 +114,17 @@ All services run on one small VPS via Docker Compose and share one PostgreSQL da
 
 | Service | Image base | Holds | Responsibilities |
 |---|---|---|---|
-| `broker` | python:3.12-slim | Alpaca keys | Bars and news WebSockets, feature calculation, rule engine, risk guard, approval gate, executor, reconciliation, EOD flatten, kill switch |
-| `models` | python:3.12-slim | Anthropic, Jev, Gemini keys | Tiered news triage, note/thesis parsing, Idea Lab, strategy compiler, back-translation, strategy chat API (internal only) |
+| `broker` | python:3.12-slim | Alpaca keys | Bars and news polling, feature calculation, rule engine, risk guard, approval gate, executor, reconciliation, EOD flatten, kill switch |
+| `models` | python:3.12-slim | Anthropic and optional remote provider keys | Tiered news triage, note/thesis parsing, Idea Lab, strategy compiler, back-translation, strategy chat API (internal only) |
 | `postgres` | postgres:16-alpine | DB password | Bars, news, signals, registry, intents, orders, trades, audit chain |
 | `api` | python:3.12-slim | Session secret only | JSON API for the dashboard: login + TOTP, CSRF, approvals, lifecycle, backtests, Idea Lab reads |
 | `dashboard` | node:22-alpine | Nothing | Next.js / React UI. Proxies `/api/*` to `api`; the only service Caddy talks to |
 | `caddy` | caddy:2-alpine | TLS certs | HTTPS reverse proxy. The only container with a published port |
-| `backup` | alpine | Backup target creds | Nightly `pg_dump` + audit log copy off-host (not built yet) |
+| `operations` | python:3.12-slim | Optional alert/backup credentials | Durable alerts, daily `pg_dump`, strategy backup and optional off-host copy |
 
 See [`docker-compose.yml`](docker-compose.yml). `risk.yaml` is mounted read-only into every service, model keys live only in `secrets/models.env`, and only Caddy publishes a port.
 
-The whole stack is designed to fit in about 2 GB RAM and 1–2 vCPUs. Nothing heavy runs locally: all models are API calls, and there's no vector DB. A Postgres full-text index covers "recent headlines for this ticker".
+Local Laya requires additional memory; allow at least 4–6 GB RAM for the deployed stack. Claude uses API calls and there is no vector DB. A Postgres full-text index covers "recent headlines for this ticker".
 
 ---
 
@@ -133,7 +133,7 @@ The whole stack is designed to fit in about 2 GB RAM and 1–2 vCPUs. Nothing he
 | Tier | Provider | Used for | Output |
 |---|---|---|---|
 | **T0** | Code | Universe filter, dedupe (normalized-headline hash over 6h), recap/roundup removal | keep / drop |
-| **T1 quick layer** | **Jev** (typed decisions) | Fixed typed questions per story: new info? catalyst? direction? materiality? | Enum answers + confidence |
+| **T1 quick layer** | **Local Laya** (typed decisions) | Fixed typed questions per story: new info? catalyst? direction? materiality? | Enum answers + confidence |
 | | **Gemini lightweight** (configurable model ID) | Quick decisions that need short text: note and thesis parsing, one-line summaries, routing | Schema-checked JSON |
 | | Claude Haiku 5.5 (fallback) | Used when the other T1 providers are unavailable | Schema-checked JSON |
 | **T2** | **Claude Sonnet 5.5** | Deep read of escalated stories with recent headlines and your notes | Signal contract + short rationale |
@@ -145,7 +145,7 @@ The whole stack is designed to fit in about 2 GB RAM and 1–2 vCPUs. Nothing he
 - the ticker has an active note or thesis from you;
 - the T1 providers disagree.
 
-**Routing.** All T1 calls go through one `QuickLayer.decide(item, questions)` interface. `config/models.yaml` maps each question set to a provider, so Jev and Gemini are swappable per task without code changes.
+**Routing.** All T1 calls go through one `QuickLayer.decide(item, questions)` interface. `config/models.yaml` maps each question set to a provider, so Laya and Gemini are swappable per task without code changes.
 
 **Budget targets.** Alpaca's news stream carries roughly 600–900 items/day. The targets are no more than about 30 T2 calls/day and a capped number of Idea Lab runs. Per-provider call counts and cost appear on the dashboard.
 
@@ -299,7 +299,7 @@ account:
   max_gross_exposure: 1.0      # x equity, i.e. no leverage. Mirrored at Alpaca (margin multiplier 1)
   allow_short: false           # mirrored at Alpaca (no-shorting flag)
   max_open_positions: 3
-  max_trades_per_day: 10       # the only frequency brake (Alpaca no longer enforces PDT)
+  max_trades_per_day: 10       # the only frequency brake (subject to broker account rules)
   max_daily_loss: 2%           # breach -> kill switch
 per_trade:
   default_risk: 0.25%
@@ -323,9 +323,9 @@ market:
 
 **Kill switch.** Triggers: a daily-loss breach, a reconciliation mismatch, a stale feed that persists, or you (via the dashboard). It does three things, in this order:
 
-1. Cancel all orders.
-2. Close all positions.
-3. Set Alpaca's suspend flag.
+1. Persist the kill switch and block new entries.
+2. Cancel all orders.
+3. Close positions and verify the outcome; the independent watchdog retries failures.
 
 Resetting it is host-only.
 
@@ -463,7 +463,7 @@ Then:
 | File | Purpose |
 |---|---|
 | `config/risk.yaml` | Hard limits (read-only to the app) |
-| `config/models.yaml` | Provider per tier and task (Jev / Gemini lite / Haiku / Sonnet / Opus), model IDs, timeouts, daily budgets |
+| `config/models.yaml` | Provider per tier and task (Laya / Gemini lite / Haiku / Sonnet / Opus), model IDs, timeouts, daily budgets |
 | `config/idealab.yaml` | Event-study windows, minimum sample sizes, holdout length, run schedule |
 | `config/universe.yaml` | Watchlists and universe size cap |
 | `config/alerts.yaml` | Telegram or email notification targets |
@@ -476,12 +476,12 @@ Key environment variables:
 | `ALPACA_KEY_ID`, `ALPACA_SECRET_KEY`, `ALPACA_PAPER=true` | broker | Paper by default |
 | `ALPACA_DATA_FEED=iex` | broker | Switch to `sip` with Algo Trader Plus before volume-based rules go live |
 | `ANTHROPIC_API_KEY` | models | |
-| `JEV_API_KEY`, `JEV_MODEL` | models | |
+| `LAYA_URL`, `LAYA_MODEL` | models | |
 | `GEMINI_API_KEY`, `GEMINI_MODEL` | models | A lightweight Gemini model ID |
 | `SESSION_SECRET` | api | Keep it stable, or every restart logs everyone out |
 | `DATABASE_URL` | broker, models, api | PostgreSQL DSN |
 | `MODELS_URL`, `API_URL` | api, dashboard | Internal service URLs |
-| `MODE=record_only` | all | `record_only` → `paper` → `live` |
+| `MODE=record_only` | all | `record_only` or `paper`; real-money trading is disabled |
 
 ---
 
@@ -512,9 +512,9 @@ Key environment variables:
 ## Known constraints
 
 - **Data feed.** Alpaca's free plan streams real-time equities from IEX only. RVOL and VWAP will differ from the consolidated tape. Use the same feed in backtest and live.
-- **No PDT throttle.** Alpaca no longer enforces the pattern-day-trader rule. `max_trades_per_day` is the only frequency brake.
+- **No PDT throttle.** Broker restrictions are enforced by Alpaca; the app does not bypass them. `max_trades_per_day` is the only frequency brake.
 - **Model look-ahead.** Models know what happened after historical news. News-gated strategies and Idea Lab statistics use recorded signals only.
-- **Jev availability.** Jev is in early access, so keep the quick layer swappable.
+- **Laya inference.** Local typed decisions run in the models service; Claude provides fallback.
 - **Manual approval latency.** Per-trade approval suits strategies holding minutes to hours, not scalps. Expiry and the drift check protect against stale approvals.
 - **Single host.** One PostgreSQL instance on the same VPS. Services coordinate through tables (commands, intents) rather than a message bus.
 - **Simulator calendar.** Simulated sessions are weekdays without holidays or early closes.
@@ -525,15 +525,15 @@ Key environment variables:
 
 - [x] DSL parser, validator and evaluator, with the example strategies as test fixtures
 - [x] Broker service on the simulator: reconciliation, kill switch
-- [ ] Alpaca adapter: bars/news WebSockets, bracket orders, account guard, record-only mode
+- [x] Alpaca paper adapter: REST bars/news polling, durable bracket orders, account guard, record-only entry blocking
 - [x] Models service: T0/T1/T2 triage (offline model + Claude)
-- [ ] Jev adapter; Gemini adapter verified against the live API
+- [x] Local Laya adapter and verified Claude models; Gemini remains optional
 - [x] Dashboard (Next.js) + API: auth + 2FA, overview, system health, news & signals
 - [x] Backtester and simulated paper trading
 - [x] Trade approval queue and per-strategy execution modes
 - [x] Strategy chat and trade review (chat needs `ANTHROPIC_API_KEY`)
 - [x] Idea Lab: event studies, theses, hypothesis counter, holdout scoring
-- [ ] Notifications, backups, market calendar
+- [x] Durable alert outbox with optional Telegram/email, daily backups and Alpaca market calendar
 
 ---
 

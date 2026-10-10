@@ -1,4 +1,3 @@
-# Symbols the system may trade. The prototype's simulator generates data for these.
-# They are fictional tickers: nothing here refers to a real listed company.
-watchlist: [ACMX, BOLT, CRUX, DYNA, ECHX, FLUX, GRVY, HALO]
+# Real, liquid US equities for the Alpaca paper account.
+watchlist: [AAPL, MSFT, NVDA, AMZN, META, GOOGL, TSLA, AMD]
 max_universe: 50

@@ -1,0 +1,4 @@
+# Symbols the system may trade. The prototype's simulator generates data for these.
+# They are fictional tickers: nothing here refers to a real listed company.
+watchlist: [ACMX, BOLT, CRUX, DYNA, ECHX, FLUX, GRVY, HALO]
+max_universe: 50

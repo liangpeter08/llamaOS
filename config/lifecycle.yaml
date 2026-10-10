@@ -1,2 +1,2 @@
-# Strategy lifecycle gates.
-min_paper_sessions: 0      # sessions with paper trades required before live approval (prototype: 0)
+# Real-money promotion is disabled by the API.
+min_paper_sessions: 20

@@ -151,7 +151,7 @@ function TodayTab() {
         {isOwner(me) && (
           <div className="grid">
             <KillSwitch active={!!status?.kill?.active} reason={status?.kill?.reason} ts={status?.kill?.ts} />
-            <SimControls speed={sim.speed} paused={!!sim.paused} onChange={refresh} />
+            <SimControls paper={sim.source === "alpaca_paper"} speed={sim.speed} paused={!!sim.paused} onChange={refresh} />
           </div>
         )}
       </div>
@@ -159,16 +159,16 @@ function TodayTab() {
   );
 }
 
-function SimControls({ speed, paused, onChange }: { speed?: number; paused: boolean; onChange: () => void }) {
+function SimControls({ paper, speed, paused, onChange }: { paper?: boolean; speed?: number; paused: boolean; onChange: () => void }) {
   const act = (a: string, value = 0) => post(`/api/sim/${a}`, { value }).then(onChange);
   return (
-    <Card title="Simulator">
-      <p className="muted">Replays one synthetic session for fictional tickers. Nothing here reaches a real broker.</p>
+    <Card title={paper ? "Alpaca paper trading" : "Simulator"}>
+      <p className="muted">{paper ? "Real market data and Alpaca paper orders. Pause blocks new entries; existing positions keep their exits and broker brackets." : "Replays one synthetic session for fictional tickers. Nothing here reaches a real broker."}</p>
       <div className="row">
         {paused ? <button onClick={() => act("resume")}>Resume</button> : <button onClick={() => act("pause")}>Pause</button>}
-        <select value={Math.round(speed ?? 30)} onChange={(e) => act("speed", Number(e.target.value))}>
+        {!paper && <select value={Math.round(speed ?? 30)} onChange={(e) => act("speed", Number(e.target.value))}>
           {[10, 30, 60, 120, 300].map((v) => <option key={v} value={v}>{v}× speed</option>)}
-        </select>
+        </select>}
       </div>
     </Card>
   );

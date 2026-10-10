@@ -113,7 +113,10 @@ def triage(conn, item: dict, stamp_ts: int, allow_paid: bool = True) -> dict:
         t1 = ql.decide(item, provider=None if allow_paid else "heuristic")
         t1_provider = t1["provider"]
     except Exception as e:  # noqa: BLE001 - provider down -> offline model
-        t1 = ql.decide(item, provider="heuristic")
+        try:
+            t1 = ql.decide(item, provider="claude_haiku" if allow_paid and llm.available() else "heuristic")
+        except Exception:
+            t1 = ql.decide(item, provider="heuristic")
         t1["rationale"] += f" (fallback: {type(e).__name__})"
     disagreement = False
     if allow_paid and (cfg.get("tiers", {}).get("t1", {}) or {}).get("cross_check"):

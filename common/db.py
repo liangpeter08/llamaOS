@@ -20,6 +20,12 @@ from psycopg.rows import dict_row
 DEFAULT_URL = "postgresql://llamaos:llamaos@127.0.0.1:5432/llamaos"
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS auth_sessions(
+ token_hash TEXT PRIMARY KEY, user_id BIGINT NOT NULL, expires DOUBLE PRECISION NOT NULL);
+CREATE TABLE IF NOT EXISTS login_failures(
+ id BIGSERIAL PRIMARY KEY, key TEXT NOT NULL, ts DOUBLE PRECISION NOT NULL);
+CREATE INDEX IF NOT EXISTS login_failures_lookup ON login_failures(key,ts);
+
 CREATE TABLE IF NOT EXISTS bars(
   symbol TEXT NOT NULL, ts BIGINT NOT NULL,
   o DOUBLE PRECISION, h DOUBLE PRECISION, l DOUBLE PRECISION, c DOUBLE PRECISION, v BIGINT,

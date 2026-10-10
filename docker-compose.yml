@@ -13,8 +13,10 @@ services:
 
   broker:
     build: .
+    user: "${APP_UID:-10001}:${APP_GID:-10001}"
     command: ["python", "-m", "services.broker"]
-    env_file: [./secrets/db.env, ./secrets/broker.env]   # DATABASE_URL; ALPACA_* (unused by the simulator)
+    environment: { BROKER_BACKEND: "alpaca", MODE: "paper" }
+    env_file: [./secrets/db.env, ./secrets/broker.env]   # DATABASE_URL; Alpaca paper credentials
     volumes:
       - ./config:/app/config:ro                # risk.yaml is read-only to every service
       - ./strategies:/app/strategies:ro
@@ -24,22 +26,25 @@ services:
 
   models:
     build: .
+    user: "${APP_UID:-10001}:${APP_GID:-10001}"
     command: ["python", "-m", "services.models"]
-    env_file: [./secrets/db.env, ./secrets/models.env]   # ANTHROPIC_API_KEY, GEMINI_*, JEV_*
-    environment: { MODELS_HOST: "0.0.0.0" }
+    env_file: [./secrets/db.env, ./secrets/models.env]   # ANTHROPIC_API_KEY; optional remote Laya/Gemini credentials
+    environment: { MODELS_HOST: "0.0.0.0", BROKER_BACKEND: "alpaca", MODE: "paper", HF_HOME: "/app/data/model-cache" }
     volumes:
       - ./config:/app/config:ro
       - ./strategies:/app/strategies           # the compiler writes new draft versions here
+      - ./data:/app/data
     expose: ["8081"]
     depends_on: { postgres: { condition: service_healthy } }
     restart: unless-stopped
-    mem_limit: 512m
+    mem_limit: 3g
 
   api:
     build: .
+    user: "${APP_UID:-10001}:${APP_GID:-10001}"
     command: ["python", "-m", "services.api"]
     env_file: [./secrets/db.env, ./secrets/web.env]      # SESSION_SECRET only; no model or broker keys
-    environment: { API_HOST: "0.0.0.0", MODELS_URL: "http://models:8081", COOKIE_SECURE: "true" }
+    environment: { API_HOST: "0.0.0.0", MODELS_URL: "http://models:8081", COOKIE_SECURE: "true", BROKER_BACKEND: "alpaca", MODE: "paper" }
     volumes:
       - ./config:/app/config:ro
       - ./strategies:/app/strategies           # idea -> template compile writes drafts
@@ -47,6 +52,28 @@ services:
     depends_on: [models]
     restart: unless-stopped
     mem_limit: 384m
+
+  watchdog:
+    build: .
+    user: "${APP_UID:-10001}:${APP_GID:-10001}"
+    command: ["python", "-m", "services.broker.watchdog"]
+    env_file: [./secrets/db.env, ./secrets/broker.env]
+    environment: { MODE: "paper" }
+    volumes: ["./config:/app/config:ro"]
+    depends_on: { postgres: { condition: service_healthy } }
+    restart: unless-stopped
+    mem_limit: 256m
+
+  operations:
+    build: .
+    user: "${APP_UID:-10001}:${APP_GID:-10001}"
+    command: ["python", "-m", "services.operations"]
+    env_file: [./secrets/db.env, ./secrets/alerts.env]
+    environment: { MODE: "paper" }
+    volumes: ["./strategies:/app/strategies:ro", "./config:/app/config:ro", "./data:/app/data"]
+    depends_on: { postgres: { condition: service_healthy } }
+    restart: unless-stopped
+    mem_limit: 256m
 
   dashboard:
     build: { context: ./services/dashboard, args: { API_URL: "http://api:8080" } }

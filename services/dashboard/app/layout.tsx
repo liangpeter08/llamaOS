@@ -4,6 +4,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: { default: "llamaOS", template: "%s · llamaOS" },
+  icons: { icon: "/logo.svg" },
   description: "News-driven day trading: monitoring, approvals, strategies and Idea Lab",
 };
 

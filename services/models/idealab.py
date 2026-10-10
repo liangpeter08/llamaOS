@@ -104,17 +104,17 @@ def event_study(conn, holdout_days: int | None = None) -> dict:
             "_raw": groups}
 
 
-def _holdout_score(groups_raw, catalyst: str, direction: str, horizon: str) -> dict:
+def _holdout_score(groups_raw, catalyst: str, direction: str, horizon: str, kind: str = "continuation") -> dict:
     g = groups_raw.get((catalyst, direction), {"hold": []})["hold"]
     key = f"r{horizon}"
-    sign = 1 if direction == "positive" else -1
+    sign = (1 if direction == "positive" else -1) * (-1 if kind == "fade" else 1)
     st = _stats([e[key] * sign for e in g if e.get(key) is not None])
     return {"n": st.get("n", 0), "signed_mean": st.get("mean"), "signed_hit": st.get("hit"), "scored_at": time.time()}
 
 
 def _store(conn, run_id: str, idea: dict, raw, min_events: int, model: str) -> int:
     g = idea["group"]
-    ho = _holdout_score(raw, g["catalyst"], g["direction"], idea.get("horizon", "60"))
+    ho = _holdout_score(raw, g["catalyst"], g["direction"], idea.get("horizon", "60"), idea.get("kind", "continuation"))
     return conn.insert(
         "INSERT INTO ideas(created_at, run_id, title, hypothesis, mechanism, falsify, evidence, event_ids, sample_size,"
         " status, anecdotal, thesis_ids, model, holdout, spec) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -127,6 +127,13 @@ def _store(conn, run_id: str, idea: dict, raw, min_events: int, model: str) -> i
 
 def run(conn, focus: str = "", actor: str = "idealab") -> dict:
     cfg = load_yaml("idealab.yaml")
+    key="idealab.quota."+time.strftime("%Y-%m-%d",time.gmtime())
+    cap=int(load_yaml("models.yaml").get("budgets",{}).get("idealab_runs_per_day",4))
+    with db.tx(conn):
+        conn.execute("SELECT pg_advisory_xact_lock(?)",(0x494445414c,))
+        used=int(db.kv_get(conn,key) or 0)
+        if used>=cap:raise llm.LLMUnavailable("Daily Idea Lab run limit reached")
+        db.kv_set(conn,key,used+1)
     min_events = int(cfg.get("min_events", 8))
     study = event_study(conn)
     raw = study.pop("_raw")

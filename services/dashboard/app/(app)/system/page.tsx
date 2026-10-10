@@ -16,17 +16,21 @@ export default function System() {
           <dl className="kv">
             <dt>Broker</dt><dd><Pill kind={h.broker.ok ? "good" : "bad"}>{h.broker.ok ? "up" : "down"}</Pill> heartbeat {num(h.broker.age, 1)}s</dd>
             <dt>Models</dt><dd><Pill kind={h.models.ok ? "good" : "bad"}>{h.models.ok ? "up" : "down"}</Pill> heartbeat {num(h.models.age, 1)}s</dd>
-            <dt>Feed</dt><dd>simulator · last bar {et(h.last_bar)} ET</dd>
+            <dt>Feed</dt><dd>{data.source === "alpaca_paper" ? "Alpaca IEX" : "simulator"} · last bar {et(h.last_bar)} ET</dd>
             <dt>Reconcile</dt><dd>{h.reconcile?.sim_ts ? `${h.reconcile.ok ? "match" : "MISMATCH"} at ${et(h.reconcile.sim_ts)}` : "—"}</dd>
             <dt>Suspend flag</dt><dd>{data.suspend_trade ? <Pill kind="bad">set</Pill> : "clear"}</dd>
-            <dt>Backups</dt><dd className="muted">not configured in the prototype</dd>
+            <dt>Notifications</dt><dd>{h.operations?.notifications_configured ? "delivery configured" : "dashboard only"}</dd>
+            <dt>Triage</dt><dd>{h.triage?.age != null ? `${num(h.triage.age, 0)}s since last batch` : "warming up"}</dd>
+            <dt>Watchdog</dt><dd>{h.watchdog?.ok ? "up" : "not running"}</dd>
+            <dt>Backups</dt><dd>{h.backup ? `${wall(h.backup.ts)} · ${h.backup.off_host ? "off-host" : "local"}` : "no backup yet"}</dd>
+            {h.paper_error && <><dt>Broker error</dt><dd className="neg">{h.paper_error.type}</dd></>}
           </dl>
         </Card>
         <Card title="Database">
           <dl className="kv">
             <dt>Engine</dt><dd>{data.database.engine} {data.database.version}</dd>
             <dt>Size</dt><dd>{data.database.size}</dd>
-            <dt>History</dt><dd>{data.history.history_from} → {data.history.history_to} ({data.history.history_days} sessions, seed {data.history.seed})</dd>
+            <dt>History</dt><dd>{data.source === "alpaca_paper" ? "Recorded Alpaca data" : `${data.history.history_from} → ${data.history.history_to} (${data.history.history_days} sessions)`}</dd>
             <dt>Live session</dt><dd>{data.history.session}</dd>
             <dt>risk.yaml</dt><dd className="mono">{short(data.risk_sha256)}…</dd>
           </dl>

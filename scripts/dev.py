@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.env import ROOT, load  # noqa: E402
 
 load()
+os.environ.setdefault("BROKER_BACKEND", "simulator")
 PY = sys.executable
 PROCS = [
     ("models", [PY, "-m", "services.models"], ROOT),
@@ -22,6 +23,9 @@ PROCS = [
     ("broker", [PY, "-m", "services.broker"], ROOT),
     ("dashboard", ["npm", "run", "dev"], ROOT / "services" / "dashboard"),
 ]
+if os.environ.get("BROKER_BACKEND") == "alpaca":
+    PROCS.insert(3,("watchdog",[PY,"-m","services.broker.watchdog"],ROOT))
+    PROCS.insert(4,("operations",[PY,"-m","services.operations"],ROOT))
 
 
 def pump(name: str, stream):

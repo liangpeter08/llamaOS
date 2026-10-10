@@ -52,3 +52,15 @@ reset-db:        ## drop all tables (asks first)
 
 reset-kill-switch:   ## host-only
 	$(PY) scripts/reset_kill_switch.py
+
+paper-setup:     ## real Alpaca history + isolated paper DB + initial owner
+	$(PY) scripts/paper_setup.py
+
+paper: build     ## actual Alpaca paper stack (separate from make dev)
+	$(PY) scripts/paper.py
+
+backup:
+	$(PY) scripts/backup.py
+
+broker-guard:
+	$(PY) -m scripts.broker_guard

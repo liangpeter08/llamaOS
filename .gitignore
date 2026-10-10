@@ -12,3 +12,4 @@ secrets/dev-owner.txt
 services/dashboard/.next/
 services/dashboard/next-env.d.ts
 services/dashboard/node_modules/
+secrets/paper-owner.txt

@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.env import load  # noqa: E402
 
+load(__import__("pathlib").Path(__file__).resolve().parent.parent/"secrets/paper.env")
 load()
 from common import audit, db  # noqa: E402
 
@@ -24,7 +25,7 @@ def main():
     db.kv_set(conn, "kill_switch", {"active": False, "reset_by": getpass.getuser()})
     db.kv_set(conn, "broker.suspend_trade", False)
     audit.log(conn, "kill_switch.reset", f"host:{getpass.getuser()}", {"previous": ks})
-    print("cleared. Restart the broker to start a fresh session.")
+    print("cleared. The paper executor observes the reset on its next refresh.")
 
 
 if __name__ == "__main__":
