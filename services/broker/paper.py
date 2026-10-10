@@ -136,9 +136,9 @@ class PaperBroker:
 
     def signals_and_news(self, now):
         for n in self.api.news(self.syms, self.last_news-120, now):
-            self.conn.execute("INSERT INTO news(ext_id,ts,session,symbols,headline,summary,source) VALUES (?,?,?,?,?,?,?)"
-                              " ON CONFLICT(ext_id) DO NOTHING", ("alpaca:"+str(n["id"]), epoch(n["created_at"]), "alpaca",
-                              json.dumps(n["symbols"]), n["headline"], n.get("summary", ""), n.get("source", "alpaca")))
+            self.conn.execute("INSERT INTO news(ext_id,ts,session,symbols,headline,summary,source,url,content) VALUES (?,?,?,?,?,?,?,?,?)"
+                              " ON CONFLICT(ext_id) DO UPDATE SET url=COALESCE(EXCLUDED.url,news.url),content=COALESCE(NULLIF(EXCLUDED.content,''),news.content)", ("alpaca:"+str(n["id"]), epoch(n["created_at"]), "alpaca",
+                              json.dumps(n["symbols"]), n["headline"], n.get("summary", ""), n.get("source", "alpaca"), n.get("url"), n.get("content")))
         self.last_news = now
         db.kv_set(self.conn, "paper.news_cursor", now)
         self.book = MD.signal_book(self.conn, T.prior_close_ts(self.day), int(now))

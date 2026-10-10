@@ -17,6 +17,7 @@ from common.config import PROMPTS_DIR, load_yaml
 from dsl.builtins import CATALYSTS
 
 from . import heuristic, llm, laya_provider
+from .news_text import model_item
 
 T1_QUESTIONS = ("new_info", "catalyst", "direction", "materiality", "fundamental", "red_flag")
 
@@ -105,8 +106,7 @@ def _user_block(item: dict, context: dict | None) -> str:
     """News text is wrapped and labelled as untrusted data."""
     parts = [
         "<news_item>",
-        json.dumps({"symbols": item["symbols"], "headline": item["headline"],
-                    "summary": item.get("summary", ""), "source": item.get("source", "")}),
+        json.dumps(model_item(item), ensure_ascii=False),
         "</news_item>",
     ]
     if context:

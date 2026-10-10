@@ -127,7 +127,7 @@ class Alpaca:
     def news(self, symbols, start, end):
         result = []
         params = {"symbols": ",".join(symbols), "start": iso(start), "end": iso(end), "sort": "asc",
-                  "limit": 50, "include_content": "false", "exclude_contentless": "false"}
+                  "limit": 50, "include_content": "true", "exclude_contentless": "false"}
         while True:
             page = self.request("GET", "/v1beta1/news", data=True, params=params)
             result.extend(page.get("news", []))

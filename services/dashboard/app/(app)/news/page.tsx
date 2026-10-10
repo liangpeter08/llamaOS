@@ -16,7 +16,7 @@ export default function News() {
     <>
       <h1>News &amp; signals</h1>
       <div className="tabs">
-        <button className={cls(scope === "live" && "on")} onClick={() => setScope("live")}>Today (live feed)</button>
+        <button className={cls(scope === "live" && "on")} onClick={() => setScope("live")}>Latest (live feed)</button>
         <button className={cls(scope === "history" && "on")} onClick={() => setScope("history")}>History (recorded)</button>
       </div>
       {!data ? <Loading error={error} /> : (
@@ -32,7 +32,7 @@ export default function News() {
                   <tr key={n.id}>
                     <td className="mono">{et(n.ts, scope === "history")}</td>
                     <td>{n.symbols.join(" ")}</td>
-                    <td>{n.headline}<br /><span className="muted">{n.source}{n.triage_reason && ` · ${n.triage_reason}`}</span></td>
+                    <td>{n.url && /^https?:\/\//i.test(n.url) ? <a href={n.url} target="_blank" rel="noopener noreferrer" className="news-headline">{n.headline} <span aria-label="opens in a new tab">↗</span></a> : n.headline}<br /><span className="muted">{n.source}{n.triage_reason && ` · ${n.triage_reason}`}</span></td>
                     <td><Pill kind={tierKind(n.triage) as any}>{n.triage ?? "pending"}</Pill></td>
                     <td>
                       {n.signals.filter((s: any) => ["news.score", "news.catalyst", "news.red_flag"].includes(s.name)).map((s: any) => (
@@ -42,7 +42,7 @@ export default function News() {
                     </td>
                   </tr>
                 ))}
-                {!data.items.length && <tr><td colSpan={5} className="muted">No news yet{scope === "live" && ": the simulator releases items as its clock passes their timestamps"}.</td></tr>}
+                {!data.items.length && <tr><td colSpan={5} className="muted">{scope === "live" ? "No news received yet for the configured watchlist." : "No recorded history yet."}</td></tr>}
               </tbody>
             </table></div>
           </Card>

@@ -14,6 +14,7 @@ from common.config import load_yaml, universe
 
 from . import heuristic, llm
 from .quicklayer import QuickLayer, provider_available, recent_headlines
+from .news_text import article_text
 
 SOURCE = "news_agent@v1"
 DEDUPE_WINDOW_S = 6 * 3600
@@ -134,6 +135,8 @@ def triage(conn, item: dict, stamp_ts: int, allow_paid: bool = True) -> dict:
     why = _should_escalate(t1, ctx, cfg, disagreement)
     final, tier = t1, "t1"
     detail = {"t1": {k: t1[k] for k in ("catalyst", "direction", "materiality")} | {"model": t1.get("model")}}
+    content, truncated = article_text(item)
+    detail["article"] = {"available": bool(content), "characters_used": len(content), "truncated": truncated}
     if why:
         budget = int((cfg.get("budgets") or {}).get("t2_calls_per_day", 30))
         paid_t2 = allow_paid and llm.available()

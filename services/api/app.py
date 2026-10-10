@@ -670,8 +670,8 @@ def theses_expire(tid: int, u: dict = Depends(owner)):
 @app.get("/api/news")
 def news(scope: str = "live", u: dict = Depends(user)):
     c = conn()
-    session = "live" if scope == "live" else "history"
-    items = db.rows(c, "SELECT * FROM news WHERE session=? ORDER BY ts DESC LIMIT 150", (session,))
+    sessions = ["live", "alpaca"] if scope == "live" else ["history"]
+    items = db.rows(c, "SELECT * FROM news WHERE session = ANY(?) ORDER BY ts DESC LIMIT 150", (sessions,))
     ids = [n["id"] for n in items]
     sigs: dict[int, list] = {}
     if ids:
@@ -682,7 +682,7 @@ def news(scope: str = "live", u: dict = Depends(user)):
         n["tier_detail"] = j(n["tier_detail"])
         n["signals"] = sigs.get(n["id"], [])
     counts = {r["triage"] or "pending": r["n"] for r in c.execute(
-        "SELECT triage, COUNT(*) n FROM news WHERE session=? GROUP BY triage", (session,))}
+        "SELECT triage, COUNT(*) n FROM news WHERE session = ANY(?) GROUP BY triage", (sessions,))}
     return {"items": items, "counts": counts, "notes": db.rows(c, "SELECT * FROM notes WHERE active=1 ORDER BY id DESC")}
 
 

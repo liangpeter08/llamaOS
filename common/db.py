@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS news(
   symbols TEXT, headline TEXT, summary TEXT, source TEXT,
   triage TEXT, triage_reason TEXT, triaged_at BIGINT, tier_detail TEXT);
 CREATE INDEX IF NOT EXISTS news_ts ON news(ts);
+ALTER TABLE news ADD COLUMN IF NOT EXISTS url TEXT;
+ALTER TABLE news ADD COLUMN IF NOT EXISTS content TEXT;
 CREATE INDEX IF NOT EXISTS news_triage ON news(triage, ts);
 CREATE INDEX IF NOT EXISTS news_fts ON news USING GIN (to_tsvector('english', coalesce(headline,'') || ' ' || coalesce(summary,'')));
 
