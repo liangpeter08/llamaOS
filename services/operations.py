@@ -24,7 +24,7 @@ def main():
     signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
     while not stopped:
         try:
-            for event in db.rows(c,"SELECT a.* FROM audit a LEFT JOIN alerts n ON n.audit_id=a.id WHERE n.id IS NULL AND a.kind IN ('intent.pending','paper.fill','kill_switch.triggered','paper.order_rejected','paper.watchdog_flatten') ORDER BY a.id LIMIT 100"):
+            for event in db.rows(c,"SELECT a.* FROM audit a LEFT JOIN alerts n ON n.audit_id=a.id WHERE n.id IS NULL AND a.kind IN ('intent.pending','paper.fill','kill_switch.triggered','paper.order_rejected','paper.watchdog_flatten','funds.paused','risk.changed','portfolio.order_rejected','portfolio.halted') ORDER BY a.id LIMIT 100"):
                 message=f"llamaOS {event['kind']}: {event['payload']}"
                 c.execute("INSERT INTO alerts(audit_id,ts,kind,message) VALUES (?,?,?,?) ON CONFLICT(audit_id) DO NOTHING",(event['id'],event['ts'],event['kind'],message))
             telegram=bool(os.environ.get('TELEGRAM_TOKEN') and os.environ.get('TELEGRAM_CHAT_ID'))

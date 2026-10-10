@@ -24,7 +24,7 @@ export default function Strategies() {
           <tbody>
             {data.rows.map((r: any) => (
               <tr key={r.hash}>
-                <td><Link href={`/strategies/${r.hash}`}><b>{r.sid}</b></Link></td><td>v{r.version}</td>
+                <td><Link href={`/strategies/${r.hash}`}><b>{r.display_name || r.sid}</b></Link>{r.kind === "portfolio" && <span className="muted"> · portfolio</span>}</td><td>v{r.version}</td>
                 <td><StatusPill status={r.status} /></td><td>{r.mode}</td>
                 <td>{r.validation.ok ? <span className="pos">✓</span> : <span className="neg" title={(r.validation.errors || []).join("; ")}>✗ {(r.validation.errors || []).length}</span>}</td>
                 {r.bt ? (
@@ -47,6 +47,7 @@ export default function Strategies() {
 
 function Compile() {
   const [text, setText] = useState("");
+  const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [res, setRes] = useState<any>(null);
   async function go(e: React.FormEvent) {
@@ -54,7 +55,7 @@ function Compile() {
     setBusy(true);
     setRes(null);
     try {
-      setRes(await post("/api/strategies/compile", { text }));
+      setRes(await post("/api/strategies/compile", { text, name }));
     } catch (err) {
       setRes({ error: (err as Error).message });
     } finally {
@@ -63,10 +64,12 @@ function Compile() {
   }
   return (
     <Card title="New strategy from plain English" className="mt">
-      <p className="muted">Claude (Opus) drafts a DSL file and lists every assumption it had to make. The validator checks it, and a passing file is saved as a new draft. You approve; code trades.</p>
+      <p className="muted">Claude (Opus) drafts a DSL file, intraday or a multi-day portfolio, and lists every assumption it had to make. The validator checks it, and a passing file is saved as a new draft. You approve; code trades.</p>
       <form onSubmit={go}>
+        <label htmlFor="strategy-name">Strategy name (optional)</label>
+        <input id="strategy-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={80} placeholder="Leave blank to generate a name" style={{width:"100%",marginBottom:8}} />
         <textarea value={text} onChange={(e) => setText(e.target.value)} required
-          placeholder="On liquid stocks with fresh positive earnings news, buy a break of the 15-minute high on strong volume…" />
+          placeholder="Intraday: on liquid stocks with fresh positive earnings news, buy a break of the 15-minute high on strong volume… or multi-day: hold these 10 stocks for two months, trim 30% on +3% days…" />
         <div className="row" style={{ marginTop: 6 }}><button className="primary" disabled={busy}>{busy ? "Compiling…" : "Compile"}</button></div>
       </form>
       {res && (

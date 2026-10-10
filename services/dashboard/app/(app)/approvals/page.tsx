@@ -8,6 +8,7 @@ import type { Check, Cond } from "@/lib/types";
 import { LineChart } from "@/components/LineChart";
 import { Card, Checks, Conditions, Empty, Loading, Notice, Pill, StatusPill } from "@/components/ui";
 import { isOwner, useSession } from "@/components/session";
+import { SleeveApprovals } from "@/components/Portfolio";
 
 interface Intent {
   id: number; ts: number; strategy_hash: string; sid: string; symbol: string; side: string; qty: number;
@@ -36,6 +37,8 @@ export default function Approvals() {
           skew={data.server_time - Date.now() / 1000}
           onDone={(kind, text) => { setMsg({ kind, text }); reload(); }} />
       ))}
+      <SleeveApprovals pending={data.portfolio_pending ?? []} recent={data.portfolio_recent ?? []}
+        onDone={(kind, text) => { setMsg({ kind, text }); reload(); }} />
       <Card title="Recent decisions" className="mt">
         <div className="table-wrap">
           <table>

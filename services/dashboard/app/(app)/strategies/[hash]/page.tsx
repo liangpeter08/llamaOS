@@ -9,6 +9,7 @@ import { LineChart } from "@/components/LineChart";
 import { Chat } from "@/components/Chat";
 import { Card, Empty, Loading, Notice, Pill, Stat, StatusPill } from "@/components/ui";
 import { isOwner, useSession } from "@/components/session";
+import { PortfolioBacktest, SleeveCard } from "@/components/Portfolio";
 
 export default function StrategyPage() {
   const { hash } = useParams<{ hash: string }>();
@@ -18,8 +19,10 @@ export default function StrategyPage() {
   const [busy, setBusy] = useState<string | null>(null);
   if (!data) return <Loading error={error} />;
   const { s, validation: v, backtest: bt } = data;
+  const portfolio = data.kind === "portfolio";
 
   async function act(label: string, path: string, body: object = {}) {
+    if (label === "paper" && !window.confirm("Promoting this strategy will automatically enable monitoring for its required watchlist tickers. Continue?")) return;
     setBusy(label);
     try {
       const r = await post(path, body);
@@ -37,10 +40,12 @@ export default function StrategyPage() {
       {msg && <Notice kind={msg.kind}>{msg.text}</Notice>}
       <div className="row between">
         <div>
-          <h1>{s.sid} <span className="muted">v{s.version}</span></h1>
+          <h1>{s.display_name || s.sid} <span className="muted">v{s.version}</span></h1>
           <div className="row">
             <StatusPill status={s.status} />
+            <Pill kind={portfolio ? "accent" : ""}>{portfolio ? "portfolio · held overnight" : "intraday"}</Pill>
             <Pill>mode: {s.mode}</Pill>
+            {data.fund && <Link href="/funds"><Pill kind={data.fund.status === "active" ? "" : "bad"}>fund {pct(data.fund.allocation, 1)} of equity{data.fund.status !== "active" ? ` · ${data.fund.status}` : ""}</Pill></Link>}
             <Pill title={s.hash}><span className="mono">sha256 {short(s.hash)}…</span></Pill>
             {!data.integrity && <Pill kind="bad">file changed on disk: hash mismatch</Pill>}
             {s.approved_by && <Pill kind="good">approved by {s.approved_by} {wall(s.approved_at)}</Pill>}
@@ -57,6 +62,10 @@ export default function StrategyPage() {
       </div>
 
       {!v.ok && <Notice kind="bad"><b>Validator errors</b><ul>{v.errors.map((e: string) => <li key={e}>{e}</li>)}</ul></Notice>}
+      <Card title="Ticker monitoring" className="mt">
+        <p>{portfolio ? "Required by this portfolio strategy" : "Shared watchlist used by this intraday strategy"}: {data.monitoring?.required.join(", ") || "No tickers configured"}. <Link href="/watchlist">Manage monitoring</Link></p>
+        {!!data.monitoring?.unwatched.length && <Notice kind="warn">Monitoring is off for {data.monitoring.unwatched.join(", ")}. This strategy cannot open new positions in those tickers. Held positions retain risk monitoring.</Notice>}
+      </Card>
       {v.warnings.length > 0 && <Notice kind="warn">{v.warnings.map((w: string) => <div key={w}>{w}</div>)}</Notice>}
 
       {isOwner(me) && <Lifecycle s={s} ok={v.ok} busy={busy} act={act} minPaper={data.lifecycle?.min_paper_sessions ?? 0} />}
@@ -79,8 +88,10 @@ export default function StrategyPage() {
         </Card>
       </div>
 
+      {portfolio && <SleeveCard p={data.portfolio} decideAt={data.decide_at ?? "15:45"} />}
+
       <Card title="Backtest" className="mt">
-        {bt ? (
+        {bt && bt.kind === "portfolio" ? <PortfolioBacktest bt={bt} /> : bt ? (
           <>
             <div className="grid g4">
               <Stat label="Trades" value={bt.metrics.trades} sub={`${bt.days.length} sessions · ${bt.signal_note}`} />
@@ -107,8 +118,8 @@ export default function StrategyPage() {
         ) : <Empty>Not run yet.</Empty>}
       </Card>
 
-      <div className="grid g2 mt">
-        <Card title="Decision records (this session)">
+      <div className={portfolio ? "mt" : "grid g2 mt"}>
+        {!portfolio && <Card title="Decision records (this session)">
           <table>
             <thead><tr><th>#</th><th>Bar</th><th>Symbol</th><th className="num">Qty</th><th>Status</th></tr></thead>
             <tbody>
@@ -121,7 +132,7 @@ export default function StrategyPage() {
             {data.trades.map((t: any) => <tr key={t.id}><td><Link href={`/trades/${t.id}`}>#{t.id}</Link></td><td>{t.symbol}</td><td>{t.exit_kind}</td><td className={`num ${pnlClass(t.pnl)}`}>{money(t.pnl, true)}</td></tr>)}
             {!data.trades.length && <tr><td className="muted">None.</td></tr>}
           </tbody></table>
-        </Card>
+        </Card>}
         <Card title="Strategy file"><pre style={{ maxHeight: 480 }}>{data.text}</pre></Card>
       </div>
 

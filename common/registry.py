@@ -71,10 +71,13 @@ def load(conn, h: str, risk: RiskConfig) -> tuple[Strategy | None, str]:
     return v.strategy, "ok"
 
 
-def runnable(conn, risk: RiskConfig) -> list[tuple[dict, Strategy]]:
+def runnable(conn, risk: RiskConfig, kind: str = "intraday") -> list[tuple[dict, Strategy]]:
+    """Paper/live strategies of one kind: 'intraday' (bar-by-bar, flat by the close) or 'portfolio'."""
     out = []
     for r in db.rows(conn, "SELECT * FROM strategies WHERE status IN ('paper','live') ORDER BY sid, version"):
         s, why = load(conn, r["hash"], risk)
+        if s and getattr(s, "kind", "intraday") != kind:
+            continue
         if s:
             out.append((r, s))
         else:

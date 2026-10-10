@@ -1,0 +1,61 @@
+dsl: 0.1
+id: big_tech_dip_add_intraday
+version: 1
+source:
+  text: >-
+    I think the top tech companies are going get a boost during the next two month, build a strategy to buy top 10 big tech companies evenly with more allocation on software companies like 70%. Generate me a buy and hold strategy. On above +3% gains days, sell 30% of the stock, if above +5% one day gain do not sell. On -3% loss days, add more position but no more than 150% original allocation, if more than -5% lost, wait for a positive gain day, and re-enter the stock at 20% per day.
+  compiled_by: claude-opus-5-5
+  prompt: compiler@v1
+assumptions:
+  - "NOT SUPPORTED, buy and hold: account rules force every position flat by 15:55 ET each day, so nothing can be held overnight or for two months. This file is an intraday-only approximation; please confirm or reject."
+  - "NOT SUPPORTED, two-month horizon: DSL v0.1 has no start or end date; the file runs every session until you switch it off."
+  - "NOT SUPPORTED, specific top 10 tickers: there is no symbol filter. Big tech is approximated as prior close >= $50 and 20-day avg dollar volume >= $2B, which will also admit large non-tech stocks."
+  - "NOT SUPPORTED, holding 10 names at once: the account allows at most 3 open positions, so at most 3 names can be held at the same time."
+  - "NOT SUPPORTED, 70% software weighting: there are no portfolio weights, and each position is capped at 10% of equity, so a 70% software tilt over about 6 names (about 11.7% each) cannot be reached. All names are treated equally."
+  - "NOT SUPPORTED, partial sells (30% on +3% days) and scaling up to 150% of the original allocation: a position is entered once and exited in full. 150% of a 10% allocation would also break the 10% max position rule."
+  - "NOT SUPPORTED, the +5% do-not-sell rule and re-entering at 20% per day after a positive day: there are no multi-day state or staged entries."
+  - "Kept from your rules: buy when a 1-min bar CLOSES below 3% under prior close (your 'add on -3% days' rule), only on the crossing bar and only while still above 5% under prior close."
+  - "Kept from your rules: stop at 5% under prior close (your 'more than -5% lost' cutoff); target at 3% above prior close (your '+3% gain day' sell level), full exit, not 30%."
+  - "No sizing stated: risk 1.00% per trade (account max) with the 10% max position cap, so each entry is effectively about 10% of equity, at most about 30% of equity deployed at once across 3 positions."
+  - "No times stated: entries 09:35-15:30 ET and flat by 15:55 ET (account defaults)."
+  - "No trade count stated: max 10 trades a day (account max) and max 3 open positions (account max)."
+  - "News not required: universe does not need news today, and no news or notes signals are used."
+suggestions:
+  - "The strategy you describe is a multi-week portfolio allocation with rebalancing. It fits a swing or portfolio tool better than this intraday DSL; consider placing the core buy-and-hold manually."
+  - "Add `close > vwap` or a short reclaim condition so dip buys are not taken while price is still falling."
+  - "Add `news.red_flag` to exit.when_any so a dip caused by bad company news is exited."
+  - "Consider a target nearer the entry (for example prior_close) since a move from -3% to +3% in one session is uncommon."
+universe:
+  from: {news_today: false}
+  filters:
+    - prior_close >= min_price
+    - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_price: {value: 50, range: [10, 500]}
+  min_adv:   {value: 2_000_000_000, range: [500_000_000, 10_000_000_000]}
+  add_drop:  {value: 3%, range: [1%, 5%]}
+  max_drop:  {value: 5%, range: [3%, 10%]}
+  gain_take: {value: 3%, range: [1%, 6%]}
+vars:
+  add_level: prior_close * (1 - add_drop)
+  floor_level: prior_close * (1 - max_drop)
+  take_level: prior_close * (1 + gain_take)
+entry:
+  side: long
+  window: "09:35-15:30"
+  when_all:
+    - crosses_below(close, add_level)
+    - close > floor_level
+sizing:
+  risk_per_trade: 1.0%
+exit:
+  stop: floor_level
+  target: take_level
+  flatten_at: "15:55"
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 10
+  max_open_positions: 3
+  max_position: 10%

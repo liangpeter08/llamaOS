@@ -70,8 +70,9 @@ class StrategyRunner:
         self.cooldown[symbol] = index + REJECT_COOLDOWN_BARS
 
     # ---------------------------------------------------------------- entries
-    def check_entry(self, symbol: str, i: int, equity: float, busy: bool) -> Intent | None:
-        """busy = this symbol already has a position, working order or pending intent."""
+    def check_entry(self, symbol: str, i: int, equity: float, busy: bool, max_notional: float | None = None) -> Intent | None:
+        """busy = this symbol already has a position, working order or pending intent.
+        max_notional = money left in this strategy's fund allocation (sizes the entry down to fit; None = no fund limit)."""
         ev = self.evals.get(symbol)
         if ev is None or busy or i < self.cooldown.get(symbol, -1):
             return None
@@ -108,6 +109,8 @@ class StrategyRunner:
         qty = math.floor(equity * s.risk_per_trade / rps)
         max_pos = min(self.risk.max_position, s.limits.get("max_position", self.risk.max_position))
         qty = min(qty, math.floor(max_pos * equity / entry))
+        if max_notional is not None:
+            qty = min(qty, math.floor(max_notional / (entry * (1 + self.risk.max_slippage))))
         if qty < 1:
             return None
         limit = entry * (1 + self.risk.max_slippage) if side == "long" else entry * (1 - self.risk.max_slippage)

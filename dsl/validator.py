@@ -18,7 +18,7 @@ from .builtins import FUNCTIONS, MAX_AGES, POSITION, SERIES, SESSION, SIGNAL_SOU
 from .loader import DSLError, file_hash, load_text
 
 TOP_KEYS = {
-    "dsl", "id", "version", "source", "assumptions", "suggestions", "universe", "timeframe",
+    "dsl", "kind", "id", "version", "source", "assumptions", "suggestions", "universe", "timeframe",
     "params", "signals", "vars", "entry", "sizing", "exit", "execution", "limits",
 }
 REQUIRED = {"dsl", "id", "version", "universe", "timeframe", "params", "entry", "sizing", "exit", "execution"}
@@ -61,6 +61,7 @@ class Strategy:
     assumptions: list[str] = field(default_factory=list)
     suggestions: list[str] = field(default_factory=list)
     source: dict = field(default_factory=dict)
+    kind: str = "intraday"
 
     @property
     def uses_signals(self) -> bool:
@@ -104,6 +105,12 @@ class _V:
         except DSLError as e:
             return Validation(False, [str(e)], [], None, h)
         self._find_leverage(d, "")
+        kind = d.get("kind", "intraday")
+        if kind == "portfolio":
+            from .portfolio import validate_portfolio
+            return validate_portfolio(self, d)
+        if kind != "intraday":
+            return Validation(False, [f"kind must be 'intraday' (the default) or 'portfolio', got {kind!r}"], self.warnings, None, h)
         for k in d:
             if k not in TOP_KEYS and k != "leverage":
                 self.err(f"unknown top-level key {k!r}")

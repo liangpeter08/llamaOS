@@ -95,6 +95,26 @@ class Alpaca:
                 return found
             raise
 
+    def market(self, symbol, qty, side, cid):
+        """Day market order for a portfolio sleeve (no bracket: sleeves hold overnight)."""
+        if os.environ.get("MODE", "paper") != "paper":
+            raise ValueError("Orders are disabled in record_only")
+        body = {"symbol": symbol, "qty": str(int(qty)), "side": side, "type": "market", "time_in_force": "day",
+                "extended_hours": False, "client_order_id": cid}
+        try:
+            return self.request("POST", "/v2/orders", json=body)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code >= 500 or e.response.status_code in (409, 429):
+                found = self.by_client_id(cid)
+                if found:
+                    return found
+            raise
+        except (httpx.TimeoutException, httpx.NetworkError):
+            found = self.by_client_id(cid)
+            if found:
+                return found
+            raise
+
     def cancel(self, oid):
         return self.request("DELETE", f"/v2/orders/{oid}")
 

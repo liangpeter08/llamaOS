@@ -1,0 +1,892 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Algo Trading Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,500..800&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: sticky contents rail on the left, one reading column on the right; rail folds into a collapsible block on phones. */
+:root {
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --ink: #15202b;
+  --muted: #586473;
+  --rule: #d9dfe6;
+  --accent: #23529e;
+  --accent-soft: #e3ebf7;
+  --bid: #217a4b;
+  --bid-soft: #e1f2e8;
+  --ask: #b8412c;
+  --ask-soft: #f8e6e2;
+  --warn: #9a6a10;
+  --font-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  --step--1: 0.85rem;
+  --step-0: 1.05rem;
+  --step-1: 1.3rem;
+  --step-2: 1.7rem;
+  --step-3: clamp(2.1rem, 5vw, 3.2rem);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1319; --surface: #151c25; --ink: #e5eaf0; --muted: #97a2b0; --rule: #28323e;
+    --accent: #86aaf0; --accent-soft: #1b2a44; --bid: #63c48d; --bid-soft: #15301f;
+    --ask: #f08470; --ask-soft: #3a1c16; --warn: #e2b04f; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1319; --surface: #151c25; --ink: #e5eaf0; --muted: #97a2b0; --rule: #28323e;
+  --accent: #86aaf0; --accent-soft: #1b2a44; --bid: #63c48d; --bid-soft: #15301f;
+  --ask: #f08470; --ask-soft: #3a1c16; --warn: #e2b04f; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  background: var(--bg); color: var(--ink);
+  font-family: var(--font-body); font-size: var(--step-0); line-height: 1.62;
+  padding-inline: 16px;
+}
+a { color: var(--accent); text-underline-offset: 2px; text-decoration-thickness: 1px; }
+a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px;
+}
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 1.15; margin: 0; }
+p { margin: 0; }
+code, .mono { font-family: var(--font-mono); font-size: 0.88em; }
+
+.shell {
+  max-width: 1180px; margin-inline: auto; padding-block: 40px 80px;
+  display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 56px;
+}
+
+/* Contents rail */
+.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); align-self: start;
+  max-height: calc(100vh - 48px); overflow-y: auto; font-family: var(--font-display); }
+.toc summary { display: none; }
+.toc .label { font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin-bottom: 10px; }
+.toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.toc a { display: grid; grid-template-columns: 2.1em 1fr; padding: 5px 8px; border-radius: 6px;
+  color: var(--muted); text-decoration: none; font-size: 0.9rem; font-weight: 500; font-stretch: 92%; }
+.toc a span:first-child { font-family: var(--font-mono); font-size: 0.78rem; padding-top: 1px; }
+.toc a:hover { color: var(--ink); background: var(--surface); }
+.toc a.active { color: var(--accent); background: var(--accent-soft); }
+
+@media (max-width: 960px) {
+  .shell { grid-template-columns: minmax(0, 1fr); gap: 28px; padding-block: 24px 64px; }
+  .toc { position: static; max-height: none; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 12px 14px; }
+  .toc summary { display: block; cursor: pointer; font-weight: 600; }
+  .toc[open] summary { margin-bottom: 10px; }
+  .toc .label { display: none; }
+}
+
+/* Main column */
+main { min-width: 0; }
+.prose { max-width: 70ch; }
+.hero { padding-bottom: 36px; border-bottom: 1px solid var(--rule); margin-bottom: 8px; }
+.eyebrow { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.hero h1 { font-size: var(--step-3); font-weight: 800; font-stretch: 78%; letter-spacing: -0.01em; margin: 10px 0 16px; }
+.hero .lede { font-size: 1.18rem; color: var(--muted); max-width: 62ch; }
+.hero .meta { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 22px; font-family: var(--font-mono); font-size: 0.8rem; color: var(--muted); }
+.hero .meta b { color: var(--ink); font-weight: 500; }
+
+section { padding-block: 44px 8px; scroll-margin-top: 16px; }
+section > header { display: grid; gap: 6px; margin-bottom: 18px; }
+section > header .num { font-family: var(--font-mono); font-size: 0.8rem; color: var(--accent); letter-spacing: 0.06em; }
+section h2 { font-size: var(--step-2); font-weight: 750; font-stretch: 85%; }
+section h3 { font-size: var(--step-1); font-weight: 650; font-stretch: 90%; margin: 28px 0 10px; }
+.stack { display: grid; gap: 14px; }
+.intro { font-size: 1.1rem; }
+
+/* Concept list */
+dl.concepts { margin: 8px 0 0; display: grid; gap: 0; max-width: 74ch; }
+dl.concepts > div { padding: 12px 0; border-top: 1px solid var(--rule); display: grid; grid-template-columns: 13.5rem minmax(0, 1fr); gap: 4px 20px; }
+dl.concepts > div:last-child { border-bottom: 1px solid var(--rule); }
+dl.concepts dt { font-family: var(--font-display); font-weight: 650; font-stretch: 90%; font-size: 1rem; line-height: 1.4; padding-top: 2px; }
+dl.concepts dd { margin: 0; }
+dl.concepts dd ul { margin: 6px 0 0; padding-left: 1.1em; }
+@media (max-width: 640px) { dl.concepts > div { grid-template-columns: minmax(0, 1fr); } }
+
+/* Verdict pair */
+.verdict { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 22px 0; }
+.verdict > div { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 18px 20px; display: grid; gap: 8px; align-content: start; }
+.verdict .tag { font-family: var(--font-mono); font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 500; }
+.verdict .no .tag { color: var(--ask); }
+.verdict .yes .tag { color: var(--bid); }
+.verdict h3 { margin: 0; font-size: 1.15rem; }
+@media (max-width: 640px) { .verdict { grid-template-columns: minmax(0, 1fr); } }
+
+.callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 14px 18px; border-radius: 0 8px 8px 0; font-size: 1.08rem; max-width: 70ch; }
+
+/* Figures */
+figure { margin: 24px 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 18px 20px 16px; max-width: 760px; }
+figcaption { font-family: var(--font-display); font-size: 0.82rem; color: var(--muted); margin-top: 12px; font-stretch: 92%; }
+figure .fig-title { font-family: var(--font-display); font-weight: 650; font-size: 0.95rem; margin-bottom: 14px; }
+.scroll-x { overflow-x: auto; }
+
+.latency { position: relative; min-width: 560px; height: 150px; font-family: var(--font-mono); font-size: 0.72rem; color: var(--muted); }
+.latency .axis { position: absolute; left: 0; right: 0; top: 96px; height: 1px; background: var(--rule); }
+.latency .tick { position: absolute; top: 92px; width: 1px; height: 9px; background: var(--muted); }
+.latency .ticklabel { position: absolute; top: 108px; transform: translateX(-50%); white-space: nowrap; }
+.latency .ticklabel.first { transform: none; }
+.latency .ticklabel.last { transform: translateX(-100%); }
+.latency .band { position: absolute; height: 14px; border-radius: 3px; }
+.latency .band.fast { top: 60px; background: var(--bid); opacity: 0.85; }
+.latency .band.you { top: 60px; background: var(--ask); opacity: 0.85; }
+.latency .note { position: absolute; top: 4px; font-family: var(--font-display); font-size: 0.8rem; color: var(--ink); line-height: 1.3; max-width: 13rem; }
+.latency .note small { display: block; color: var(--muted); font-size: 0.74rem; }
+.latency .stem { position: absolute; top: 40px; width: 1px; height: 20px; background: var(--rule); }
+
+.waterfall { display: grid; gap: 8px; font-family: var(--font-mono); font-size: 0.8rem; }
+.waterfall .row { display: grid; grid-template-columns: 9.5rem minmax(0, 1fr) 4.2rem; align-items: center; gap: 10px; }
+.waterfall .lbl { font-family: var(--font-display); font-size: 0.86rem; }
+.waterfall .track { position: relative; height: 18px; }
+.waterfall .bar { position: absolute; top: 0; height: 100%; border-radius: 2px; }
+.waterfall .gross { background: var(--bid); }
+.waterfall .cost { background: var(--ask); opacity: 0.85; }
+.waterfall .net { background: var(--ask); }
+.waterfall .zero { position: absolute; top: -4px; bottom: -4px; width: 1px; background: var(--muted); }
+.waterfall .val { text-align: right; font-variant-numeric: tabular-nums; }
+.waterfall .row.total { border-top: 1px solid var(--rule); padding-top: 8px; font-weight: 500; }
+@media (max-width: 480px) { .waterfall .row { grid-template-columns: 6.5rem minmax(0, 1fr) 3.6rem; } }
+
+/* Tables */
+.table-wrap { overflow-x: auto; margin: 18px 0; border: 1px solid var(--rule); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+th, td { text-align: left; vertical-align: top; padding: 10px 14px; border-bottom: 1px solid var(--rule); }
+tr:last-child td { border-bottom: 0; }
+th { font-family: var(--font-display); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); font-weight: 600; background: var(--bg); }
+td:first-child { font-family: var(--font-display); font-weight: 600; font-stretch: 92%; white-space: nowrap; }
+.challenges td:first-child { font-family: var(--font-mono); font-weight: 500; color: var(--muted); }
+.challenges td:nth-child(2) { font-family: var(--font-display); font-weight: 650; white-space: nowrap; }
+.sev { display: inline-block; font-family: var(--font-mono); font-size: 0.7rem; padding: 1px 7px; border-radius: 999px; margin-top: 4px; font-weight: 500; }
+.sev.high { background: var(--ask-soft); color: var(--ask); }
+.sev.med { background: var(--accent-soft); color: var(--accent); }
+
+/* References */
+.deeper { margin-top: 22px; max-width: 74ch; }
+.deeper h4 { font-family: var(--font-mono); font-size: 0.75rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; font-weight: 500; }
+.refs { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.refs li { display: grid; grid-template-columns: 3.6rem minmax(0, 1fr); gap: 10px; font-size: 0.95rem; line-height: 1.5; }
+.kind { font-family: var(--font-mono); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; padding: 2px 0; text-align: center; border-radius: 4px; height: fit-content; margin-top: 2px; border: 1px solid var(--rule); color: var(--muted); }
+.kind.paper { color: var(--accent); border-color: currentColor; }
+.kind.book { color: var(--bid); border-color: currentColor; }
+.kind.doc { color: var(--warn); border-color: currentColor; }
+.refs .note { color: var(--muted); }
+
+/* Learning path */
+.path { list-style: none; margin: 18px 0 0; padding: 0; display: grid; gap: 0; counter-reset: stage; }
+.path > li { display: grid; grid-template-columns: 3rem minmax(0, 1fr); gap: 16px; position: relative; padding-bottom: 24px; }
+.path > li::before { counter-increment: stage; content: counter(stage); font-family: var(--font-display); font-weight: 800; font-size: 1.1rem; width: 2.4rem; height: 2.4rem; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--surface); position: relative; z-index: 1; }
+.path > li::after { content: ""; position: absolute; left: 1.2rem; top: 2.4rem; bottom: 0; width: 2px; background: var(--rule); }
+.path > li:last-child::after { display: none; }
+.path h3 { margin: 6px 0 6px; font-size: 1.1rem; }
+.path h3 .wk { font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted); font-weight: 400; margin-left: 8px; }
+.path .rows { display: grid; gap: 6px; font-size: 0.95rem; }
+.path .rows div { display: grid; grid-template-columns: 4.2rem minmax(0, 1fr); gap: 10px; }
+.path .rows span:first-child { font-family: var(--font-mono); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); padding-top: 3px; }
+
+/* Checklist */
+.check-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.progress { font-family: var(--font-mono); font-size: 0.82rem; color: var(--muted); display: flex; align-items: center; gap: 10px; }
+.meter { width: 140px; height: 6px; background: var(--rule); border-radius: 999px; overflow: hidden; }
+.meter i { display: block; height: 100%; width: 0; background: var(--bid); transition: width .25s; }
+button.reset { font: inherit; font-family: var(--font-display); font-size: 0.82rem; background: none; border: 1px solid var(--rule); color: var(--muted); padding: 4px 10px; border-radius: 6px; cursor: pointer; }
+button.reset:hover { color: var(--ink); border-color: var(--muted); }
+.checkgroup { margin-top: 18px; max-width: 74ch; }
+.checkgroup h3 { margin: 0 0 6px; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; }
+.checkgroup label { display: grid; grid-template-columns: 1.4rem minmax(0, 1fr); gap: 8px; padding: 8px 0; border-top: 1px solid var(--rule); cursor: pointer; }
+.checkgroup input { width: 1.05rem; height: 1.05rem; margin-top: 4px; accent-color: var(--bid); }
+.checkgroup input:checked + span { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--rule); }
+
+/* Glossary */
+.gloss-search { width: 100%; max-width: 420px; font: inherit; font-family: var(--font-display); font-size: 0.95rem; padding: 9px 12px; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); color: var(--ink); }
+.glossary { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0 28px; margin-top: 16px; }
+.glossary div { padding: 9px 0; border-top: 1px solid var(--rule); display: grid; gap: 2px; }
+.glossary dt { font-family: var(--font-display); font-weight: 650; font-size: 0.95rem; }
+.glossary dd { margin: 0; color: var(--muted); font-size: 0.93rem; line-height: 1.45; }
+.gloss-empty { color: var(--muted); margin-top: 12px; font-style: italic; }
+
+/* Reading list */
+.tiers { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-top: 12px; }
+.tier { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 16px 18px; display: grid; gap: 10px; align-content: start; }
+.tier h3 { margin: 0; font-size: 1rem; }
+.tier ol { margin: 0; padding-left: 1.3em; display: grid; gap: 6px; font-size: 0.94rem; line-height: 1.45; }
+
+footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule); color: var(--muted); font-size: 0.9rem; max-width: 70ch; }
+</style>
+
+<div class="shell">
+  <details class="toc" id="toc">
+    <summary>Contents</summary>
+    <div class="label">Contents</div>
+    <ol>
+      <li><a href="#s0"><span>00</span><span>The short answer</span></a></li>
+      <li><a href="#s1"><span>01</span><span>Critical challenges</span></a></li>
+      <li><a href="#s2"><span>02</span><span>What edge means</span></a></li>
+      <li><a href="#s3"><span>03</span><span>Market microstructure</span></a></li>
+      <li><a href="#s4"><span>04</span><span>Event &amp; news trading</span></a></li>
+      <li><a href="#s5"><span>05</span><span>LLMs in trading</span></a></li>
+      <li><a href="#s6"><span>06</span><span>Backtesting</span></a></li>
+      <li><a href="#s7"><span>07</span><span>Statistics</span></a></li>
+      <li><a href="#s8"><span>08</span><span>Costs &amp; execution</span></a></li>
+      <li><a href="#s9"><span>09</span><span>Risk &amp; sizing</span></a></li>
+      <li><a href="#s10"><span>10</span><span>Operations</span></a></li>
+      <li><a href="#s11"><span>11</span><span>Rules &amp; tax (US)</span></a></li>
+      <li><a href="#s12"><span>12</span><span>Glossary</span></a></li>
+      <li><a href="#s13"><span>13</span><span>Reading list</span></a></li>
+      <li><a href="#s14"><span>14</span><span>Learning path</span></a></li>
+      <li><a href="#s15"><span>15</span><span>llamaOS checklist</span></a></li>
+    </ol>
+  </details>
+
+  <main>
+    <div class="hero">
+      <div class="eyebrow">Learning guide · llamaOS</div>
+      <h1>Algo Trading Field Guide</h1>
+      <p class="lede">Every major idea in event-driven, LLM-assisted intraday trading: what it means, why it matters, what usually goes wrong, and where to read more. Enough to talk like an expert; links for when you need to become one.</p>
+      <div class="meta"><span><b>Market</b> US equities, intraday</span><span><b>Broker</b> Alpaca</span><span><b>Style</b> news &amp; event driven</span><span><b>Updated</b> Oct 2026</span></div>
+    </div>
+
+    <!-- 0 -->
+    <section id="s0">
+      <header><span class="num">00</span><h2>The short answer</h2></header>
+      <div class="stack prose">
+        <p class="intro">The premise is that Claude should find short-lived, event-driven edge. Half of that holds up.</p>
+      </div>
+      <div class="verdict">
+        <div class="no">
+          <span class="tag">Won't work</span>
+          <h3>Being fast on news</h3>
+          <p>Professional firms react to a headline in microseconds. Your path runs through a news vendor, Alpaca, your server and an LLM call that takes seconds. The obvious reading of a headline is priced in before you act, and an LLM makes you slower.</p>
+        </div>
+        <div class="yes">
+          <span class="tag">Can work</span>
+          <h3>Reading news better</h3>
+          <p>Prices often under-react to news that is complex, ambiguous, about small firms, or has second-order effects. The drift can last minutes to days. LLMs read that kind of text at scale, and papers find real predictive power, mostly in smaller stocks and shrinking over time.</p>
+        </div>
+      </div>
+
+      <figure>
+        <div class="fig-title">Reaction time after a headline (log scale, rough orders of magnitude)</div>
+        <div class="scroll-x">
+          <div class="latency" id="latency" aria-label="Log-scale timeline: co-located firms react in roughly 10 microseconds to 1 millisecond; an LLM-based pipeline reacts in roughly 1 to 30 seconds."></div>
+        </div>
+        <figcaption>Illustrative ranges, not measurements. The gap is about four to seven orders of magnitude, so the edge has to come from the drift that follows, not the first tick.</figcaption>
+      </figure>
+
+      <div class="stack prose">
+        <p><strong>What to expect.</strong> If you find an edge it will be small (a few basis points per trade after costs), noisy (many losing days) and decaying (others will find it too). The most likely outcome of a first system is a great backtest and a losing live record. Most of this guide is about telling the two apart before you pay for the lesson.</p>
+        <p>Retail day traders lose money on average; large studies in Taiwan and Brazil find that most persistent day traders lose. Automation removes emotional errors but not the economics. The realistic advantage for a small operator is <strong>capacity</strong>: strategies too small for a fund to bother with.</p>
+      </div>
+      <p class="callout" style="margin-top:18px">If you can't say who is on the other side of your trade and why they are willing to lose to you, you have a pattern, not an edge.</p>
+
+      <div class="deeper"><h4>Go deeper</h4><ul class="refs">
+        <li><span class="kind paper">Paper</span><span>Grossman &amp; Stiglitz (1980), <a href="https://www.jstor.org/stable/1805228">On the Impossibility of Informationally Efficient Markets</a>. <span class="note">Why some edge must exist for anyone to bother gathering information.</span></span></li>
+        <li><span class="kind paper">Paper</span><span>Chague, De-Losso &amp; Giovannetti (2019), <a href="https://papers.ssrn.com/sol3/papers.cfm?abstract_id=3423101">Day Trading for a Living?</a></span></li>
+        <li><span class="kind paper">Paper</span><span>Barber, Lee, Liu &amp; Odean (2014), <a href="https://scholar.google.com/scholar?q=The+cross-section+of+speculator+skill+evidence+from+day+trading">The Cross-Section of Speculator Skill: Evidence from Day Trading</a>.</span></li>
+        <li><span class="kind book">Book</span><span>Ernest Chan, <em>Quantitative Trading</em> (2nd ed., 2021), ch. 1–2. <span class="note">A candid view of what a small trader can do.</span></span></li>
+      </ul></div>
+    </section>
+
+    <!-- 1 -->
+    <section id="s1">
+      <header><span class="num">01</span><h2>The critical challenges</h2></header>
+      <p class="prose">Ranked roughly from most to least common. These are what actually kill strategies.</p>
+      <div class="table-wrap">
+        <table class="challenges">
+          <thead><tr><th>#</th><th>Challenge</th><th>What it looks like</th><th>Why it's hard</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>Overfitting / data snooping<br><span class="sev high">fatal</span></td><td>Backtest Sharpe 3, live Sharpe −0.5</td><td>You and Claude tried many ideas. The best one is best partly by luck, and the more you search, the more luck you find.</td></tr>
+            <tr><td>2</td><td>Look-ahead bias<br><span class="sev high">fatal</span></td><td>The backtest knows things it couldn't have known</td><td>Timestamps, revised data, survivorship, and an LLM that already read about what happened after the event.</td></tr>
+            <tr><td>3</td><td>Costs &amp; slippage<br><span class="sev high">fatal</span></td><td>Gross edge 8 bps, costs 10 bps</td><td>Spreads, impact, partial fills and adverse selection are larger than people assume, especially at news time.</td></tr>
+            <tr><td>4</td><td>Latency &amp; adverse selection<br><span class="sev high">fatal</span></td><td>Fills systematically at worse prices</td><td>At news time the people filling you know more or are faster. A fast fill often means you were wrong.</td></tr>
+            <tr><td>5</td><td>Regime change &amp; decay<br><span class="sev med">serious</span></td><td>Works six months, then stops</td><td>Edges get crowded. Published anomalies lose roughly a third to a half of their returns after publication.</td></tr>
+            <tr><td>6</td><td>Small samples<br><span class="sev med">serious</span></td><td>"It won 14 of 20 trades"</td><td>Event strategies produce few trades. Twenty trades say almost nothing statistically.</td></tr>
+            <tr><td>7</td><td>Data quality<br><span class="sev med">serious</span></td><td>Wrong prices, missing news, bad timestamps</td><td>IEX-only data sees a small slice of volume; news timestamps may be receive time, not publish time.</td></tr>
+            <tr><td>8</td><td>Operational risk<br><span class="sev high">fatal</span></td><td>A bug sends 1,000 orders</td><td>Knight Capital lost $440M in 45 minutes from a deployment error. Guards matter more than alpha.</td></tr>
+            <tr><td>9</td><td>Risk of ruin<br><span class="sev med">serious</span></td><td>One bad day erases months</td><td>Fat tails, gaps and halts. A stop-loss doesn't fill at the stop price in a gap.</td></tr>
+            <tr><td>10</td><td>You<br><span class="sev med">serious</span></td><td>Overriding the system, re-tuning after every loss</td><td>Constant re-tuning is overfitting in slow motion.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="deeper"><h4>Go deeper</h4><ul class="refs">
+        <li><span class="kind paper">Paper</span><span>Bailey, Borwein, López de Prado &amp; Zhu (2014), <a href="https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2308659">Pseudo-Mathematics and Financial Charlatanism</a>. <span class="note">The best short paper on why backtests lie.</span></span></li>
+        <li><span class="kind paper">Paper</span><span>McLean &amp; Pontiff (2016), <a href="https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2156623">Does Academic Research Destroy Stock Return Predictability?</a></span></li>
+        <li><span class="kind doc">Filing</span><span>SEC, <a href="https://www.sec.gov/litigation/admin/2013/34-70694.pdf">Order on Knight Capital Americas (2013)</a>. <span class="note">Read it as a post-mortem.</span></span></li>
+      </ul></div>
+    </section>
+
+    <!-- 2 -->
+    <section id="s2">
+      <header><span class="num">02</span><h2>Foundations: what edge means</h2></header>
+      <dl class="concepts">
+        <div><dt>Alpha and beta</dt><dd>Beta is the part of your return explained by the market moving. Alpha is what remains after removing market and known-factor exposure. A strategy that is always long good news in a bull market may be mostly beta.</dd></div>
+        <div><dt>Expected value per trade</dt><dd><code>EV = P(win) × avg_win − P(loss) × avg_loss − costs</code>. Win rate alone means nothing: 70% winners with small wins and large losses can still lose.</dd></div>
+        <div><dt>Sharpe ratio</dt><dd>Mean excess return divided by its standard deviation, annualised (×√252 for daily). Under 0.5 is weak, about 1 is good, above 2 is rare for a real, scalable strategy. A backtest above 3 is more often a bug or overfit than a discovery.</dd></div>
+        <div><dt>Sortino, Calmar, drawdown</dt><dd>Variants that penalise downside or the worst peak-to-trough loss. How long you stay underwater matters as much as how deep.</dd></div>
+        <div><dt>Fundamental Law</dt><dd><code>IR ≈ IC × √breadth</code>. IC is the correlation between forecast and outcome (0.02–0.05 is typical and good); breadth is the number of independent bets. Each news signal is weak, so you need many of them.</dd></div>
+        <div><dt>Efficient markets</dt><dd>Prices reflect public information quickly, especially in large stocks. Inefficiencies live at the edges: small caps, complex information, and places that are hard to arbitrage.</dd></div>
+        <div><dt>Limits to arbitrage</dt><dd>Mispricings persist because exploiting them is costly or risky (short constraints, capital limits, noise-trader risk). An edge that still exists is usually hard to exploit.</dd></div>
+        <div><dt>Factors</dt><dd>Systematic return drivers: market, size, value, momentum, quality, low volatility, short-term reversal. Buying small caps after news may just be size plus momentum exposure.</dd></div>
+        <div><dt>Alpha decay</dt><dd>How fast a signal's predictive power fades after the event. It sets your holding period.</dd></div>
+        <div><dt>Capacity</dt><dd>How much capital a strategy can trade before its own costs eat the edge. Small capacity works in your favour because funds won't compete for it.</dd></div>
+      </dl>
+      <div class="deeper"><h4>Go deeper</h4><ul class="refs">
+        <li><span class="kind book">Book</span><span>Rishi Narang, <em>Inside the Black Box</em> (3rd ed.). <span class="note">Best non-mathematical overview of how quant systems are built: alpha, risk, cost and execution models.</span></span></li>
+        <li><span class="kind book">Book</span><span>Grinold &amp; Kahn, <em>Active Portfolio Management</em> (2nd ed.). <span class="note">Source of the Fundamental Law; read the first chapters.</span></span></li>
+        <li><span class="kind book">Book</span><span>Antti Ilmanen, <em>Expected Returns</em> (2011). <span class="note">A broad map of where returns come from.</span></span></li>
+        <li><span class="kind paper">Paper</span><span>Fama (1970), <a href="https://www.jstor.org/stable/2325486">Efficient Capital Markets: A Review of Theory and Empirical Work</a>.</span></li>
+        <li><span class="kind paper">Paper</span><span>Shleifer &amp; Vishny (1997), <a href="https://scholar.google.com/scholar?q=Shleifer+Vishny+1997+The+Limits+of+Arbitrage">The Limits of Arbitrage</a>.</span></li>
+        <li><span class="kind paper">Paper</span><span>Lo (2002), <a href="https://doi.org/10.2469/faj.v58.n4.2453">The Statistics of Sharpe Ratios</a>.</span></li>
+      </ul></div>
+    </section>
+
+    <!-- 3 -->
+    <section id="s3">
+      <header><span class="num">03</span><h2>Market microstructure</h2></header>
+      <p class="prose">You can't model costs or news reactions without knowing how trades actually happen.</p>
+      <dl class="concepts">
+        <div><dt>Limit order book</dt><dd>Resting bids and asks at each price. The best bid and best ask form the top of book; the gap between them is the bid-ask spread.</dd></div>
+        <div><dt>Market vs limit orders</dt><dd>Market orders take liquidity and pay the spread. Limit orders provide liquidity, may not fill, and tend to fill exactly when you'd rather they didn't.</dd></div>
+        <div><dt>Market impact</dt><dd>Your own order moving the price. It grows roughly with the square root of your size relative to daily volume (the square-root law).</dd></div>
+        <div><dt>Adverse selection</dt><dd>Market makers widen spreads when they suspect informed flow. At news time spreads widen sharply, so trading costs peak exactly when you want to trade.</dd></div>
+        <div><dt>US market structure</dt><dd>About 16 lit exchanges plus dark pools and wholesalers. Reg NMS routes to the best displayed price (the NBBO). Retail orders are often filled by wholesalers paid through payment for order flow.</dd></div>
+        <div><dt>SIP vs direct feeds</dt><dd>The SIP is the consolidated public feed; HFTs use faster direct feeds. Alpaca's free data tier is IEX only, one exchange with a small share of volume, so prices and volumes can differ from the full market. Use SIP-quality data for research and cost modelling.</dd></div>
+        <div><dt>Sessions and auctions</dt><dd>Pre-market 4:00–9:30 ET, regular 9:30–16:00, after-hours 16:00–20:00. Earnings usually land outside regular hours, when liquidity is thin. Opening and closing auctions are their own liquidity events.</dd></div>
+        <div><dt>Halts and LULD</dt><dd>Limit Up-Limit Down bands pause a stock that moves too fast, and news-pending halts are common around big announcements. Your system must handle "can't trade right now".</dd></div>
+        <div><dt>Gaps</dt><dd>Price jumps across sessions or halts. A stop at $10 fills at the first available trade, which might be $8.</dd></div>
+        <div><dt>Short selling</dt><dd>Needs a borrow (locate); hard-to-borrow names carry fees. After a 10% drop, Rule 201 (SSR) restricts shorting to upticks.</dd></div>
+        <div><dt>HFT and market making</dt><dd>Speed-based strategies earning the spread and latency arbitrage. You won't compete with them, but they are the counterparty to many of your fills.</dd></div>
+      </dl>
+      <div class="deeper"><h4>Go deeper</h4><ul class="refs">
+        <li><span class="kind book">Book</span><span>Larry Harris, <em>Trading and Exchanges</em> (2003). <span class="note">The classic. If you read one microstructure book, read this.</span></span></li>
+        <li><span class="kind book">Book</span><span>Bouchaud, Bonart, Donier &amp; Gould, <em>Trades, Quotes and Prices</em> (2018). <span class="note">Modern and mathematical; covers the square-root law.</span></span></li>
+        <li><span class="kind paper">Paper</span><span>Kyle (1985), <a href="https://www.jstor.org/stable/1913210">Continuous Auctions and Insider Trading</a>.</span></li>
+        <li><span class="kind paper">Paper</span><span>Budish, Cramton &amp; Shim (2015), <a href="https://doi.org/10.1093/qje/qjv027">The High-Frequency Trading Arms Race</a>.</span></li>
+        <li><span class="kind book">Book</span><span>Michael Lewis, <em>Flash Boys</em> (2014). <span class="note">Readable, one-sided story of US market structure.</span></span></li>
+        <li><span class="kind doc">Docs</span><span>Alpaca, <a href="https://docs.alpaca.markets/docs/about-market-data-api">Market Data API (IEX vs SIP)</a>.</span></li>
+        <li><span class="kind doc">Docs</span><span>Investor.gov, <a href="https://www.investor.gov/introduction-investing/investing-basics/glossary/limit-uplimit-down">Limit Up-Limit Down</a>.</span></li>
+      </ul></div>
+    </section>
+
+    <!-- 4 -->
+    <section id="s4">
+      <header><span class="num">04</span><h2>Event-driven and news trading</h2></header>
+      <p class="prose">This is your core discipline.</p>
+      <dl class="concepts">
+        <div><dt>Event study</dt><dd>Align many events at t = 0, measure abnormal returns (return minus expected return, such as the market or sector), and average them into the cumulative abnormal return (CAR). Idea Lab already does this; learn the method properly, because everything else builds on it.</dd></div>
+        <div><dt>Event types</dt><dd>Different events behave differently.
+          <ul>
+            <li><strong>Scheduled</strong>: earnings, guidance, FDA dates, CPI, FOMC. The market knows when, so only the surprise matters.</li>
+            <li><strong>Unscheduled</strong>: M&amp;A, lawsuits, CEO exits, contracts, short reports, rating changes. Bigger surprise, noisier, often halted.</li>
+            <li><strong>Macro</strong>: moves everything at once, so diversified news bets become one bet.</li>
+          </ul></dd></div>
+        <div><dt>Surprise vs expectation</dt><dd>"Revenue up 20%" means nothing without consensus. A beat smaller than the whisper number can fall. Standardised unexpected earnings (SUE) is the classic measure.</dd></div>
+        <div><dt>Under-reaction and drift</dt><dd>The best-documented news anomaly. Post-earnings announcement drift (PEAD): prices keep moving in the surprise direction for days to weeks. Similar drift follows other news, especially in small, lightly covered stocks and for soft or complex information.</dd></div>
+        <div><dt>Over-reaction and reversal</dt><dd>Big moves on no identifiable news tend to reverse; moves on real news tend to continue (Chan 2003). Attention-grabbing, retail-heavy moves often overshoot.</dd></div>
+        <div><dt>Stale news</dt><dd>Reprinted or old news sometimes still moves prices, then reverses. Your pipeline must ask whether an item is actually new.</dd></div>
+        <div><dt>Sentiment vs information</dt><dd>Tone is not the same as fundamental information. Dictionary sentiment (Loughran-McDonald) was the pre-LLM standard; LLMs read meaning, not only tone.</dd></div>
+        <div><dt>Attention and coverage</dt><dd>Fewer analysts and smaller caps mean slower reactions: more edge, but higher costs and less capacity.</dd></div>
+        <div><dt>Which clock</dt><dd>Publish time, vendor receive time or your receive time? A few seconds of mis-timing can create fake edge in a backtest.</dd></div>
+        <div><dt>Relevance and entity linking</dt><dd>Is the story about this company, or does it only mention it? Professional feeds score relevance and novelty; you have to build that yourself.</dd></div>
+        <div><dt>Spillover effects</dt><dd>News about one firm moves suppliers, customers and competitors, and these links predict returns. This suits LLM reasoning and is less crowded than direct reactions.</dd></div>
+      </dl>
+      <div class="deeper"><h4>Go deeper</h4><ul class="refs">
+        <li><span class="kind paper">Paper</span><span>MacKinlay (1997), <a href="https://www.jstor.org/stable/2729691">Event Studies in Economics and Finance</a>. <span class="note">The standard method in 30 pages.</span></span></li>
+        <li><span class="kind paper">Paper</span><span>Bernard &amp; Thomas (1989), <a href="https://www.jstor.org/stable/2491062">Post-Earnings-Announcement Drift</a>.</span></li>
+        <li><span class="kind paper">Paper</span><span>Chan, W.S. (2003), <a href="https://scholar.google.com/scholar?q=Chan+2003+Stock+price+reaction+to+news+and+no-news+drift+and+reversal+after+headlines">Stock Price Reaction to News and No-News</a>.</span></li>
+        <li><span class="kind paper">Paper</span><span>Tetlock (2007), <a href="https://doi.org/10.1111/j.1540-6261.2007.01232.x">Giving Content to Investor Sentiment</a>.</span></li>
+        <li><span class="kind paper">Paper</span><span>Tetlock (2011), <a href="https://scholar.google.com/scholar?q=Tetlock+All+the+News+That%27s+Fit+to+Reprint">All the News That's Fit to Reprint</a>. <span class="note">Stale news.</span></span></li>
+        <li><span class="kind paper">Paper</span><span>Huberman &amp; Regev (2001), <a href="https://scholar.google.com/scholar?q=Huberman+Regev+Contagious+Speculation+and+a+Cure+for+Cancer">Contagious Speculation and a Cure for Cancer</a>. <span class="note">The EntreMed case.</span></span></li>
+        <li><span class="kind paper">Paper</span><span>Boudoukh, Feldman, Kogan &amp; Richardson (2019), <a href="https://scholar.google.com/scholar?q=Boudoukh+Feldman+Kogan+Richardson+Information+Trading+and+Volatility+Firm-Specific+News">Information, Trading, and Volatility</a>.</span></li>
+        <li><span class="kind paper">Paper</span><span>Loughran &amp; McDonald (2011), <a href="https://doi.org/10.1111/j.1540-6261.2010.01625.x">When Is a Liability Not a Liability?</a> and their <a href="https://sraf.nd.edu/loughranmcdonald-master-dictionary/">word lists</a>.</span></li>
+        <li><span class="kind paper">Paper</span><span>Cohen &amp; Frazzini (2008), <a href="https://scholar.google.com/scholar?q=Cohen+Frazzini+Economic+Links+and+Predictable+Returns">Economic Links and Predictable Returns</a>.</span></li>
+        <li><span class="kind paper">Paper</span><span>Hong, Lim &amp; Stein (2000), <a href="https://scholar.google.com/scholar?q=Hong+Lim+Stein+Bad+News+Travels+Slowly">Bad News Travels Slowly</a>.</span></li>
+      </ul></div>
+    </section>
+
+    <!-- 5 -->
+    <section id="s5">
+      <header><span class="num">05</span><h2>LLMs in trading</h2></header>
+      <h3 style="margin-top:0">What the evidence says</h3>
+      <div class="stack prose">
+        <p><strong>LLMs can extract signal from news.</strong> Lopez-Lira &amp; Tang (2023) found that ChatGPT's reading of headlines predicted next-day returns, more strongly in small caps and for bad news, and that the effect declined as LLM use spread.</p>
+        <p><strong>Text-based prediction worked before LLMs.</strong> Ke, Kelly &amp; Xiu (2019) did it with simpler models. LLMs are a better tool for a known idea.</p>
+        <p><strong>Most published LLM backtests are contaminated.</strong> The model was trained on text written after the events it "predicts", so it may simply remember what happened. Glasserman &amp; Lin (2023) show the effect is real. This is the main LLM-specific pitfall.</p>
+      </div>
+      <h3>Key concepts</h3>
+      <dl class="concepts">
+        <div><dt>Training contamination</dt><dd>Events before the model's training cutoff can leak their outcome. Trust LLM backtests only on events after the cutoff, or on anonymised text. Forward paper trading is the cleanest test.</dd></div>
+        <div><dt>Anonymisation test</dt><dd>Replace "Apple" with "Company X" and strip dates and identifying numbers. If performance collapses, the model was remembering rather than reasoning.</dd></div>
+        <div><dt>Point-in-time models</dt><dd>Researchers now train "chronologically consistent" LLMs on data up to a fixed date for exactly this reason. Record which model produced every historical signal.</dd></div>
+        <div><dt>Version drift</dt><dd>Same prompt, different answers; model updates change behaviour. Log model ID, prompt version and output for every decision. Treat a model upgrade as a new strategy that needs re-validation.</dd></div>
+        <div><dt>Latency budget</dt><dd>A large-model call takes seconds. Use tiered triage (cheap filter, then a deep read only when it matters), as llamaOS does, and accept that you trade the drift rather than the first tick.</dd></div>
+        <div><dt>Calibration</dt><dd>"Confidence 0.8" is not a probability. Check how often the model was right each time it said 0.8, using a reliability plot.</dd></div>
+        <div><dt>Features, not decisions</dt><dd>The safer pattern, and yours: the LLM produces structured features (event type, direction, magnitude, novelty, confidence) and deterministic, testable rules place the trade. This keeps the system auditable and backtestable.</dd></div>
+        <div><dt>Hypothesis generator</dt><dd>An LLM proposing ideas is a multiple-testing machine. Test 200 hypotheses and about 10 look significant at p &lt; 0.05 by chance. Count every one (Idea Lab's hypothesis counter) and correct for it (section 07).</dd></div>
+        <div><dt>Prompt injection</dt><dd>News text is untrusted input; a crafted press release could try to steer an LLM trader. Constrain outputs to a schema and keep the risk guard deterministic.</dd></div>
+        <div><dt>Cost</dt><dd>API cost per item times thousands of items a day is a transaction cost. It belongs in your P&amp;L.</dd></div>
+      </dl>
+      <div class="deeper"><h4>Go deeper</h4><ul class="refs">
+        <li><span class="kind paper">Paper</span><span>Lopez-Lira &amp; Tang (2023), <a href="https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4412788">Can ChatGPT Forecast Stock Price Movements?</a></span></li>
+        <li><span class="kind paper">Paper</span><span>Glasserman &amp; Lin (2023), <a href="https://arxiv.org/abs/2309.17322">Assessing Look-Ahead Bias in Stock Return Predictions Generated by GPT Sentiment Analysis</a>.</span></li>
+        <li><span class="kind paper">Paper</span><span>Ke, Kelly &amp; Xiu (2019), <a href="https://www.nber.org/papers/w26186">Predicting Returns with Text Data</a>.</span></li>
+        <li><span class="kind paper">Paper</span><span>Sarkar &amp; Vafa (2024), <a href="https://scholar.google.com/scholar?q=Sarkar+Vafa+Lookahead+Bias+in+Pretrained+Language+Models">Lookahead Bias in Pretrained Language Models</a>.</span></li>
+        <li><span class="kind paper">Search</span><span><a href="https://scholar.google.com/scholar?q=chronologically+consistent+large+language+models+finance">Chronologically consistent LLMs</a>. <span class="note">Point-in-time models.</span></span></li>
+        <li><span class="kind paper">Paper</span><span>Gu, Kelly &amp; Xiu (2020), <a href="https://doi.org/10.1093/rfs/hhaa009">Empirical Asset Pricing via Machine Learning</a>. <span class="note">Why signal-to-noise is so low.</span></span></li>
+        <li><span class="kind book">Book</span><span>Stefan Jansen, <em>Machine Learning for Algorithmic Trading</em> (2nd ed.), NLP chapters, with <a href="https://github.com/stefan-jansen/machine-learning-for-trading">free code</a>.</span></li>
+      </ul></div>
+    </section>
+
+    <!-- 6 -->
+    <section id="s6">
+      <header><span class="num">06</span><h2>Backtesting and research method</h2></header>
+      <p class="prose">A backtest simulates what would have happened. Every shortcut in it is optimistic.</p>
+      <h3>The biases to memorise</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Bias</th><th>What it is</th><th>Defence</th></tr></thead>
+          <tbody>
+            <tr><td>Look-ahead</td><td>Using information not available at decision time: the close for a 10:00 trade, revised earnings, future news timestamps</td><td>Point-in-time data; decide at t, fill at t+1. llamaOS fills at next-bar open, which is right.</td></tr>
+            <tr><td>Survivorship</td><td>Testing only on stocks that still exist</td><td>A point-in-time universe including delisted tickers</td></tr>
+            <tr><td>Data snooping</td><td>Reporting the best of many tries</td><td>Count trials; deflate the Sharpe; keep an untouched holdout</td></tr>
+            <tr><td>Overfitting</td><td>Too many parameters tuned to history</td><td>Fewer parameters; check that small parameter changes don't break it</td></tr>
+            <tr><td>Fill optimism</td><td>Fills at mid, at your limit, with no impact</td><td>Model spread, slippage and partial fills, worse at news time</td></tr>
+            <tr><td>Warm-up errors</td><td>Indicators using future data or not warmed up</td><td>Unit tests on feature timestamps</td></tr>
+            <tr><td>Corporate actions</td><td>Splits and dividends unadjusted, or adjusted with future info</td><td>Properly adjusted point-in-time data</td></tr>
+            <tr><td>Clock errors</td><td>UTC vs ET, DST, vendor vs publish time</td><td>One canonical clock; test DST boundaries</td></tr>
+            <tr><td>Narrative bias</td><td>Believing it because the story is good</td><td>Write down in advance what result would make you drop it</td></tr>
+            <tr><td>LLM contamination</td><td>The model knows the future (section 05)</td><td>Post-cutoff tests, anonymisation, forward paper trading</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Research process</h3>
+      <dl class="concepts">
+        <div><dt>In-sample, out-of-sample, holdout</dt><dd>Develop on one period, test on another, and keep a final holdout you look at once. Every peek turns it into in-sample data.</dd></div>
+        <div><dt>Walk-forward</dt><dd>Repeatedly fit on a rolling past window and test on the next one. Closer to how you will actually trade.</dd></div>
+        <div><dt>Purged CV</dt><dd>Ordinary k-fold leaks information in time series. Purged and embargoed cross-validation removes training samples whose labels overlap the test period.</dd></div>
+        <div><dt>Triple-barrier labels</dt><dd>Label each trade by which comes first: take-profit, stop-loss or time limit. It matches how bracket orders actually exit.</dd></div>
+        <div><dt>Meta-labelling</dt><dd>A primary model picks the side; a secondary model decides whether to take the trade and how big. A natural fit for "LLM proposes, filter decides".</dd></div>
+        <div><dt>Robustness checks</dt><dd>Shift entry by one bar, move thresholds by 10%, drop the best five trades, run a different year. Fragile results are usually fitted noise.</dd></div>
+        <div><dt>Paper trading</dt><dd>Forward test for a fixed, pre-agreed period. Immune to look-ahead and snooping, though paper fills are still optimistic.</dd></div>
+        <div><dt>Live reconciliation</dt><dd>Compare each live trade with what the backtester would have done on the same data. The gap is your real simulation error.</dd></div>
+      </dl>
+      <div class="deeper"><h4>Go deeper</h4><ul class="refs">
+        <li><span class="kind book">Book</span><span>Marcos López de Prado, <em>Advances in Financial Machine Learning</em> (2018). <span class="note">Purged CV, triple barrier, meta-labelling. Dense and opinionated, but essential.</span></span></li>
+        <li><span class="kind paper">Paper</span><span>Bailey et al. (2017), <a href="https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2326253">The Probability of Backtest Overfitting</a>.</span></li>
+        <li><span class="kind paper">Paper</span><span>Harvey &amp; Liu (2015), <a href="https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2345489">Backtesting</a>.</span></li>
+        <li><span class="kind book">Book</span><span>Robert Carver, <em>Systematic Trading</em> (2015). <span class="note">Avoiding overfitting by design.</span> <a href="https://qoppac.blogspot.com/">Blog</a>.</span></li>
+      </ul></div>
+    </section>
+
+    <!-- 7 -->
+    <section id="s7">
+      <header><span class="num">07</span><h2>Statistics for not fooling yourself</h2></header>
+      <p class="prose">You don't need a statistics degree. You need these ideas.</p>
+      <dl class="concepts">
+        <div><dt>Signal-to-noise</dt><dd>A real edge might shift the mean by 0.05% while the daily standard deviation is 2%. You need many observations to see it.</dd></div>
+        <div><dt>How many trades</dt><dd>Roughly <code>n ≈ (2 / SR_per_trade)²</code> independent trades to be confident the Sharpe is above zero. A per-trade Sharpe of 0.1 (good) needs about 400 trades. A few dozen prove nothing.</dd></div>
+        <div><dt>t-statistic</dt><dd><code>t ≈ mean / (std / √n)</code>. After multiple testing, <code>t &gt; 2</code> is too low a bar; Harvey, Liu &amp; Zhu argue for <code>t &gt; 3</code>.</dd></div>
+        <div><dt>Multiple testing</dt><dd>Bonferroni (strict), Holm, Benjamini-Hochberg (false discovery rate). Test 100 junk ideas and expect about 5 "significant" ones.</dd></div>
+        <div><dt>Deflated Sharpe</dt><dd>Adjusts a backtest Sharpe for the number of strategies tried, their variance and non-normal returns. Apply it to Idea Lab output.</dd></div>
+        <div><dt>Reality Check / SPA</dt><dd>White's and Hansen's formal tests of whether the best strategy beats chance, given everything you tried.</dd></div>
+        <div><dt>Permutation tests</dt><dd>Shuffle event dates or signs and re-run. If random events give similar results, the edge is fake. Very practical for event studies.</dd></div>
+        <div><dt>Fat tails and skew</dt><dd>Returns aren't normal. Strategies that win small and often but lose big occasionally (fading spikes, selling volatility) look great until they don't.</dd></div>
+        <div><dt>Independence</dt><dd>Overlapping holding periods and many news items on one day are not independent. Count independent bets, not trades.</dd></div>
+        <div><dt>Base rates</dt><dd>Before claiming 60% directional accuracy, check what always guessing "up" scores.</dd></div>
+        <div><dt>Regression to the mean</dt><dd>Your best month is usually followed by a more ordinary one. Don't scale up after a hot streak.</dd></div>
+      </dl>
+      <div class="deeper"><h4>Go deeper</h4><ul class="refs">
+        <li><span class="kind paper">Paper</span><span>Bailey &amp; López de Prado (2014), <a href="https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2460551">The Deflated Sharpe Ratio</a>.</span></li>
+        <li><span class="kind paper">Paper</span><span>Harvey, Liu &amp; Zhu (2016), <a href="https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2249314">…and the Cross-Section of Expected Returns</a>.</span></li>
+        <li><span class="kind paper">Paper</span><span>White (2000), <a href="https://doi.org/10.1111/1468-0262.00152">A Reality Check for Data Snooping</a>.</span></li>
+        <li><span class="kind paper">Paper</span><span>Hansen (2005), <a href="https://scholar.google.com/scholar?q=Hansen+2005+A+Test+for+Superior+Predictive+Ability">A Test for Superior Predictive Ability</a>.</span></li>
+        <li><span class="kind book">Book</span><span>Nassim Taleb, <em>Fooled by Randomness</em> (2001). <span class="note">Luck vs skill, non-technical.</span></span></li>
+        <li><span class="kind book">Book</span><span><a href="https://www.openintro.org/book/os/">OpenIntro Statistics</a>. <span class="note">Free refresher.</span></span></li>
+      </ul></div>
+    </section>
+
+    <!-- 8 -->
+    <section id="s8">
+      <header><span class="num">08</span><h2>Transaction costs and execution</h2></header>
+      <p class="prose">For short-horizon strategies, costs decide whether you make money. Gross edges of a few basis points are common, and so are costs of a few basis points.</p>
+
+      <figure>
+        <div class="fig-title">How a winning signal becomes a losing strategy (example, basis points per round trip)</div>
+        <div class="waterfall" id="waterfall"></div>
+        <figcaption>Illustrative numbers for a mid-cap trade at news time. Measure your own spread and slippage from paper fills.</figcaption>
+      </figure>
+
+      <dl class="concepts">
+        <div><dt>Basis point</dt><dd>0.01%. Think about everything per trade in bps.</dd></div>
+        <div><dt>Explicit costs</dt><dd>Commissions (zero for stocks at Alpaca), small SEC/FINRA fees on sells, borrow fees, data fees and LLM API fees.</dd></div>
+        <div><dt>Implicit costs</dt><dd>
+          <ul>
+            <li><strong>Spread</strong>: half the spread each way. Large caps 1–3 bps, small caps 20–100+ bps, much wider at news time.</li>
+            <li><strong>Slippage</strong>: decision price vs fill price.</li>
+            <li><strong>Impact</strong>: your order moving the price; matters in small caps.</li>
+            <li><strong>Opportunity cost</strong>: limit orders that missed the winners, leaving you filled mostly on losers.</li>
+          </ul></dd></div>
+        <div><dt>Implementation shortfall</dt><dd>Decision price vs actual average fill, including the unfilled part. The right cost metric to track live.</dd></div>
+        <div><dt>Order types</dt><dd>Market, limit, marketable limit, stop, stop-limit, bracket (entry plus take-profit and stop), OCO, and time-in-force (DAY, IOC, GTC). Know how each behaves in a gap or halt.</dd></div>
+        <div><dt>Execution algorithms</dt><dd>TWAP, VWAP, POV and Almgren-Chriss. Mostly for larger sizes, but the trade-off between impact and waiting applies to everyone.</dd></div>
+        <div><dt>Cost model</dt><dd>At minimum <code>half_spread + slippage(vol, size/ADV) + fees</code>, made worse at news time and outside regular hours. If it only works with zero costs, it doesn't work.</dd></div>
+        <div><dt>Breakeven cost</dt><dd>The per-trade cost at which the strategy breaks even. If that is below a realistic cost, stop.</dd></div>
+      </dl>
+      <div class="deeper"><h4>Go deeper</h4><ul class="refs">
+        <li><span class="kind paper">Paper</span><span>Frazzini, Israel &amp; Moskowitz (2018), <a href="https://papers.ssrn.com/sol3/papers.cfm?abstract_id=3229719">Trading Costs</a>. <span class="note">Real institutional cost data.</span></span></li>
+        <li><span class="kind paper">Paper</span><span>Almgren &amp; Chriss (2000), <a href="https://scholar.google.com/scholar?q=Almgren+Chriss+Optimal+execution+of+portfolio+transactions">Optimal Execution of Portfolio Transactions</a>.</span></li>
+        <li><span class="kind paper">Paper</span><span>Perold (1988), <a href="https://scholar.google.com/scholar?q=Perold+1988+The+Implementation+Shortfall+Paper+versus+Reality">The Implementation Shortfall: Paper versus Reality</a>.</span></li>
+        <li><span class="kind book">Book</span><span>Robert Kissell, <em>The Science of Algorithmic Trading and Portfolio Management</em> (2013).</span></li>
+        <li><span class="kind book">Book</span><span>Cartea, Jaimungal &amp; Penalva, <em>Algorithmic and High-Frequency Trading</em> (2015). <span class="note">Mathematical depth.</span></span></li>
+        <li><span class="kind doc">Docs</span><span>Alpaca, <a href="https://docs.alpaca.markets/docs/orders-at-alpaca">Orders at Alpaca</a>.</span></li>
+      </ul></div>
+    </section>
+
+    <!-- 9 -->
+    <section id="s9">
+      <header><span class="num">09</span><h2>Risk management and sizing</h2></header>
+      <p class="prose">Edge decides whether you make money. Sizing decides whether you survive long enough to find out.</p>
+      <dl class="concepts">
+        <div><dt>Risk per trade</dt><dd>Size so a stop-out loses a fixed small fraction of capital, often 0.25–1%. Gaps can make the real loss larger.</dd></div>
+        <div><dt>Volatility targeting</dt><dd>Size inversely to volatility (for example ATR-based) so each trade carries similar risk.</dd></div>
+        <div><dt>Kelly criterion</dt><dd>The growth-optimal bet size given your edge and odds. Edge estimates are always overstated, so use a fraction: a quarter to a half, often less.</dd></div>
+        <div><dt>Risk of ruin</dt><dd>The chance of losing enough that you can't continue. Driven by sizing and losing streaks more than average return.</dd></div>
+        <div><dt>Correlation</dt><dd>Five news trades in one sector, or on a macro day, are one bet. Cap sector, theme, gross and net exposure.</dd></div>
+        <div><dt>Drawdown controls</dt><dd>Daily loss limit, max-drawdown kill switch, cool-down periods. <code>risk.yaml</code> and the kill switch are the right shape.</dd></div>
+        <div><dt>Stop-losses</dt><dd>They cap normal losses, fill badly in gaps, and tight intraday stops get hit by noise. Time-based exits often work as well for event strategies.</dd></div>
+        <div><dt>Tail risk</dt><dd>Ask: what's my loss if the stock opens down 50% and I can't exit for an hour?</dd></div>
+        <div><dt>VaR and expected shortfall</dt><dd>The loss you exceed X% of the time, and the average loss when you do. Useful for reporting, unreliable under fat tails.</dd></div>
+        <div><dt>Retirement rule</dt><dd>Decide in advance when to retire a strategy whose live results fall outside its backtest range.</dd></div>
+      </dl>
+      <div class="deeper"><h4>Go deeper</h4><ul class="refs">
+        <li><span class="kind paper">Paper</span><span>Thorp, <a href="https://scholar.google.com/scholar?q=Thorp+The+Kelly+Criterion+in+Blackjack+Sports+Betting+and+the+Stock+Market">The Kelly Criterion in Blackjack, Sports Betting, and the Stock Market</a>.</span></li>
+        <li><span class="kind book">Book</span><span>Robert Carver, <em>Systematic Trading</em>. <span class="note">Volatility targeting done sensibly.</span></span></li>
+        <li><span class="kind book">Book</span><span>Ralph Vince, <em>The Mathematics of Money Management</em> (1992).</span></li>
+        <li><span class="kind book">Book</span><span>Van Tharp, <em>Trade Your Way to Financial Freedom</em>. <span class="note">Popular-level; useful on thinking in units of risk (R-multiples).</span></span></li>
+        <li><span class="kind book">Book</span><span>Michael Isichenko, <em>Quantitative Portfolio Management</em> (2021).</span></li>
+      </ul></div>
+    </section>
+
+    <!-- 10 -->
+    <section id="s10">
+      <header><span class="num">10</span><h2>Operations and failure modes</h2></header>
+      <p class="prose">A correct strategy can still lose everything through engineering failures. Professionals spend more effort here than on alpha.</p>
+      <dl class="concepts">
+        <div><dt>Separation of concerns</dt><dd>Signals, then portfolio and risk, then execution, then reconciliation. llamaOS mirrors this: models propose, deterministic code trades.</dd></div>
+        <div><dt>Pre-trade checks</dt><dd>Max order size, max position, price collar, orders per minute, symbol lists, buying power. Run them in the order path, not as a report afterwards.</dd></div>
+        <div><dt>Kill switch</dt><dd>One action that cancels all orders and flattens or freezes. Test it regularly.</dd></div>
+        <div><dt>Reconciliation</dt><dd>Internal positions must match the broker's. Missed fills, partial fills and restarts cause many real losses.</dd></div>
+        <div><dt>Idempotency</dt><dd>Retrying a failed request must not duplicate an order. Use client order IDs.</dd></div>
+        <div><dt>Restarts</dt><dd>After a crash with open orders, rebuild state from the broker, not from memory.</dd></div>
+        <div><dt>Calendar and clock</dt><dd>Holidays, half-days, DST, early closes, NTP-synced clocks.</dd></div>
+        <div><dt>Stale data</dt><dd>Missing or stale data should stop trading, not trigger it. Detect staleness actively.</dd></div>
+        <div><dt>Deployment</dt><dd>Knight Capital reactivated old code on one server. Deploy outside market hours, use flags carefully, keep a rollback.</dd></div>
+        <div><dt>Audit trail</dt><dd>Every signal, model input and output, decision, order and fill, timestamped. You need it to prove whether an edge was real.</dd></div>
+        <div><dt>Monitoring</dt><dd>P&amp;L vs expected, fill rates, slippage, error rates, latency, model failures.</dd></div>
+        <div><dt>Security</dt><dd>Keys stored safely, 2FA, least-privilege keys, no live keys on dev machines.</dd></div>
+      </dl>
+      <div class="deeper"><h4>Go deeper</h4><ul class="refs">
+        <li><span class="kind doc">Filing</span><span>SEC, <a href="https://www.sec.gov/litigation/admin/2013/34-70694.pdf">Knight Capital order (2013)</a>.</span></li>
+        <li><span class="kind doc">Report</span><span>CFTC-SEC (2010), <a href="https://www.sec.gov/news/studies/2010/marketevents-report.pdf">Findings Regarding the Market Events of May 6, 2010</a>. <span class="note">The Flash Crash.</span></span></li>
+        <li><span class="kind doc">Guide</span><span>FIA, <a href="https://www.google.com/search?q=FIA+best+practices+automated+trading+risk+controls">Best Practices for Automated Trading Risk Controls</a>.</span></li>
+        <li><span class="kind doc">Rule</span><span>SEC Rule 15c3-5, <a href="https://www.sec.gov/rules-regulations/2011/06/risk-management-controls-brokers-or-dealers-market-access">Market Access Rule</a>. <span class="note">A good checklist for your own guard.</span></span></li>
+        <li><span class="kind book">Book</span><span>Ernest Chan, <em>Algorithmic Trading</em> (2013), execution systems chapter.</span></li>
+      </ul></div>
+    </section>
+
+    <!-- 11 -->
+    <section id="s11">
+      <header><span class="num">11</span><h2>Rules, accounts and tax (US retail)</h2></header>
+      <p class="prose" style="color:var(--muted)">Not legal or tax advice. Some of these rules are changing, so check current versions.</p>
+      <dl class="concepts">
+        <div><dt>Pattern Day Trader</dt><dd>FINRA 4210: four or more day trades in five business days in a margin account has required <strong>$25,000</strong> minimum equity. FINRA has proposed replacing this with a different intraday margin framework; check the current status before planning around it.</dd></div>
+        <div><dt>Settlement (T+1)</dt><dd>US equities settle one business day later. In a cash account, trading with unsettled proceeds can cause good-faith violations.</dd></div>
+        <div><dt>Margin</dt><dd>Reg T allows 2× overnight; PDT accounts get 4× intraday. Leverage multiplies edge and ruin alike.</dd></div>
+        <div><dt>Short rules</dt><dd>Reg SHO locate requirement and Rule 201 (SSR).</dd></div>
+        <div><dt>Manipulation</dt><dd>Spoofing, layering, wash trading and pump-and-dump are illegal whether or not a bot did it. Trading on social-media hype can drift toward this. Never trade on material non-public information.</dd></div>
+        <div><dt>Taxes</dt><dd>Short-term gains are ordinary income. The <strong>wash sale rule</strong> disallows losses if you rebuy within 30 days, which day trading does constantly. Trader Tax Status and the Section 475(f) mark-to-market election can change this; ask a tax professional.</dd></div>
+        <div><dt>Broker terms</dt><dd>API rate limits, data redistribution limits, and what Alpaca's paper environment doesn't simulate. Paper fills are more optimistic than real ones.</dd></div>
+      </dl>
+      <div class="deeper"><h4>Go deeper</h4><ul class="refs">
+        <li><span class="kind doc">Docs</span><span>FINRA, <a href="https://www.finra.org/investors/investing/investment-products/stocks/day-trading">Day Trading</a>.</span></li>
+        <li><span class="kind doc">Docs</span><span>IRS, <a href="https://www.irs.gov/taxtopics/tc429">Topic 429: Traders in Securities</a>.</span></li>
+        <li><span class="kind doc">Docs</span><span>IRS, <a href="https://www.irs.gov/publications/p550">Publication 550</a> (wash sales).</span></li>
+        <li><span class="kind doc">Docs</span><span>SEC, <a href="https://www.sec.gov/investor/pubs/regsho.htm">Regulation SHO</a>.</span></li>
+      </ul></div>
+    </section>
+
+    <!-- 12 -->
+    <section id="s12">
+      <header><span class="num">12</span><h2>Glossary</h2></header>
+      <label for="gloss-q" class="eyebrow" style="display:block;margin-bottom:6px">Filter terms</label>
+      <input id="gloss-q" class="gloss-search" type="search" placeholder="Type a term, e.g. slippage" autocomplete="off">
+      <dl class="glossary" id="glossary"></dl>
+      <p class="gloss-empty" id="gloss-empty" hidden>No terms match.</p>
+    </section>
+
+    <!-- 13 -->
+    <section id="s13">
+      <header><span class="num">13</span><h2>Core reading list</h2></header>
+      <p class="prose">If you read only a few things, read these in this order.</p>
+      <div class="tiers">
+        <div class="tier"><h3>Start here</h3><ol>
+          <li>Chan, <em>Quantitative Trading</em> (2nd ed.)</li>
+          <li>Narang, <em>Inside the Black Box</em> (3rd ed.)</li>
+          <li>Bailey et al., <a href="https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2308659">Pseudo-Mathematics and Financial Charlatanism</a></li>
+          <li>Lopez-Lira &amp; Tang, <a href="https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4412788">Can ChatGPT Forecast Stock Price Movements?</a></li>
+        </ol></div>
+        <div class="tier"><h3>Core</h3><ol start="5">
+          <li>Harris, <em>Trading and Exchanges</em></li>
+          <li>Carver, <em>Systematic Trading</em></li>
+          <li>López de Prado, <em>Advances in Financial Machine Learning</em></li>
+          <li>MacKinlay, <a href="https://www.jstor.org/stable/2729691">Event Studies</a></li>
+        </ol></div>
+        <div class="tier"><h3>Deeper</h3><ol start="9">
+          <li>Jansen, <em>ML for Algorithmic Trading</em> + <a href="https://github.com/stefan-jansen/machine-learning-for-trading">code</a></li>
+          <li>Grinold &amp; Kahn, <em>Active Portfolio Management</em></li>
+          <li>Bouchaud et al., <em>Trades, Quotes and Prices</em></li>
+          <li>Cartea, Jaimungal &amp; Penalva, <em>Algorithmic and HFT</em></li>
+        </ol></div>
+        <div class="tier"><h3>Ongoing</h3><ol style="list-style:none;padding-left:0">
+          <li><a href="https://quantocracy.com/">Quantocracy</a>: quant blog aggregator</li>
+          <li><a href="https://epchan.blogspot.com/">Ernest Chan's blog</a></li>
+          <li><a href="https://qoppac.blogspot.com/">Robert Carver's blog</a></li>
+          <li><a href="https://www.openassetpricing.com/">Open Source Asset Pricing</a>: how many anomalies survive</li>
+        </ol></div>
+      </div>
+    </section>
+
+    <!-- 14 -->
+    <section id="s14">
+      <header><span class="num">14</span><h2>Learning path</h2></header>
+      <p class="prose">About 10–12 weeks part-time. Each stage pairs reading with a task in llamaOS and a check you should be able to pass.</p>
+      <ol class="path">
+        <li><div><h3>Mental model<span class="wk">weeks 1–2</span></h3><div class="rows">
+          <div><span>Read</span><span>Sections 00–02; Chan ch. 1–3; Narang ch. 1–5</span></div>
+          <div><span>Do</span><span>For each strategy, write down who is on the other side and why they'd lose</span></div>
+          <div><span>Check</span><span>Can you explain alpha vs beta and the Fundamental Law in two sentences?</span></div></div></div></li>
+        <li><div><h3>How markets work<span class="wk">weeks 3–4</span></h3><div class="rows">
+          <div><span>Read</span><span>Sections 03 and 08; selected chapters of Harris</span></div>
+          <div><span>Do</span><span>Measure spreads and slippage on paper fills at news times vs normal times; compare IEX and SIP where possible</span></div>
+          <div><span>Check</span><span>Can you estimate the round-trip cost of your typical trade in bps?</span></div></div></div></li>
+        <li><div><h3>Event studies<span class="wk">weeks 4–6</span></h3><div class="rows">
+          <div><span>Read</span><span>Section 04; MacKinlay; Bernard &amp; Thomas; Chan 2003</span></div>
+          <div><span>Do</span><span>Run Idea Lab event studies by event type × market cap × time of day; plot CAR with confidence bands</span></div>
+          <div><span>Check</span><span>Do you know how long the drift lasts for your best event type?</span></div></div></div></li>
+        <li><div><h3>Not fooling yourself<span class="wk">weeks 6–8</span></h3><div class="rows">
+          <div><span>Read</span><span>Sections 06–07; Bailey et al.; Harvey-Liu-Zhu; AFML ch. 7 and 11–14</span></div>
+          <div><span>Do</span><span>Add deflated Sharpe and permutation tests to Idea Lab; run the anonymisation test; test only post-cutoff events</span></div>
+          <div><span>Check</span><span>Can you state how many hypotheses you've tested and your deflated Sharpe?</span></div></div></div></li>
+        <li><div><h3>Survive<span class="wk">weeks 8–10</span></h3><div class="rows">
+          <div><span>Read</span><span>Sections 09–10; Carver; the Knight Capital order</span></div>
+          <div><span>Do</span><span>Review <code>risk.yaml</code> limits; test the kill switch and restart reconciliation</span></div>
+          <div><span>Check</span><span>Do you know your worst-case loss in a halted gap?</span></div></div></div></li>
+        <li><div><h3>Forward test<span class="wk">week 10+</span></h3><div class="rows">
+          <div><span>Do</span><span>Paper trade one or two strategies for a pre-set period (200+ trades) with pass/fail criteria written down first</span></div>
+          <div><span>Check</span><span>Does live paper performance land inside the range the backtest predicted?</span></div></div></div></li>
+      </ol>
+    </section>
+
+    <!-- 15 -->
+    <section id="s15">
+      <header><span class="num">15</span><h2>llamaOS checklist</h2></header>
+      <div class="check-head">
+        <p class="prose" style="margin:0">Each unchecked item is the next thing to learn or build. Ticks are saved in this browser only.</p>
+        <div class="progress"><span id="check-count">0 of 0</span><span class="meter"><i id="check-bar"></i></span><button class="reset" id="check-reset" type="button">Clear ticks</button></div>
+      </div>
+      <div id="checklist"></div>
+    </section>
+
+    <footer>Prepared October 2026 for the llamaOS project. Regulatory items (especially the PDT rule) and data-vendor details change; confirm against the linked primary sources. Links marked with a search page point to Google Scholar where a stable direct link wasn't certain.</footer>
+  </main>
+</div>
+
+<script>
+(function () {
+  // Contents: open on wide screens, highlight the current section.
+  var toc = document.getElementById('toc');
+  var wide = window.matchMedia('(min-width: 961px)');
+  function syncToc() { if (wide.matches) toc.open = true; }
+  syncToc(); wide.addEventListener('change', syncToc);
+  var links = Array.prototype.slice.call(toc.querySelectorAll('a'));
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (!e.isIntersecting) return;
+        links.forEach(function (a) { a.classList.toggle('active', a.getAttribute('href') === '#' + e.target.id); });
+      });
+    }, { rootMargin: '-20% 0px -70% 0px' });
+    document.querySelectorAll('main section').forEach(function (s) { io.observe(s); });
+  }
+  links.forEach(function (a) { a.addEventListener('click', function () { if (!wide.matches) toc.open = false; }); });
+
+  // Latency strip: log10 scale from 1 µs (1e-6 s) to 100 s (1e2 s).
+  var lat = document.getElementById('latency');
+  var lo = -6, hi = 2;
+  function pos(sec) { return ((Math.log10(sec) - lo) / (hi - lo)) * 100; }
+  var ticks = [[1e-6, '1 µs'], [1e-5, '10 µs'], [1e-4, '100 µs'], [1e-3, '1 ms'], [1e-2, '10 ms'], [1e-1, '100 ms'], [1, '1 s'], [10, '10 s'], [100, '100 s']];
+  var html = '<div class="axis"></div>';
+  ticks.forEach(function (t, i) {
+    var p = pos(t[0]);
+    var cls = i === 0 ? ' first' : (i === ticks.length - 1 ? ' last' : '');
+    html += '<div class="tick" style="left:' + p + '%"></div><div class="ticklabel' + cls + '" style="left:' + p + '%">' + t[1] + '</div>';
+  });
+  function band(cls, a, b, title, sub, align) {
+    var l = pos(a), r = pos(b);
+    var mid = (l + r) / 2;
+    var noteStyle = align === 'right' ? 'right:' + (100 - r) + '%;text-align:right' : 'left:' + l + '%';
+    return '<div class="band ' + cls + '" style="left:' + l + '%;width:' + (r - l) + '%"></div>' +
+      '<div class="stem" style="left:' + mid + '%"></div>' +
+      '<div class="note" style="' + noteStyle + '">' + title + '<small>' + sub + '</small></div>';
+  }
+  html += band('fast', 1e-5, 1e-3, 'Co-located firms', '≈10 µs – 1 ms', 'left');
+  html += band('you', 1, 30, 'Your news → LLM → order', '≈1 – 30 s', 'right');
+  lat.innerHTML = html;
+
+  // Cost waterfall, in bps. Scale: 0 to max(gross) maps to 0–100% of a track that also leaves room for negatives.
+  var rows = [
+    { lbl: 'Gross edge', v: 8, kind: 'gross' },
+    { lbl: 'Spread (round trip)', v: -4, kind: 'cost' },
+    { lbl: 'Slippage at news time', v: -3, kind: 'cost' },
+    { lbl: 'Fees + LLM API', v: -2, kind: 'cost' }
+  ];
+  var min = -2, max = 9; // axis range in bps
+  function x(v) { return ((v - min) / (max - min)) * 100; }
+  var wf = document.getElementById('waterfall');
+  var run = 0, out = '';
+  rows.forEach(function (r) {
+    var start = run, end = run + r.v; run = end;
+    var a = Math.min(start, end), b = Math.max(start, end);
+    out += '<div class="row"><span class="lbl">' + r.lbl + '</span><span class="track"><span class="zero" style="left:' + x(0) + '%"></span>' +
+      '<span class="bar ' + r.kind + '" style="left:' + x(a) + '%;width:' + (x(b) - x(a)) + '%"></span></span>' +
+      '<span class="val">' + (r.v > 0 ? '+' : '−') + Math.abs(r.v) + ' bps</span></div>';
+  });
+  var a2 = Math.min(0, run), b2 = Math.max(0, run);
+  out += '<div class="row total"><span class="lbl">Net per trade</span><span class="track"><span class="zero" style="left:' + x(0) + '%"></span>' +
+    '<span class="bar net" style="left:' + x(a2) + '%;width:' + (x(b2) - x(a2)) + '%"></span></span>' +
+    '<span class="val">' + (run >= 0 ? '+' : '−') + Math.abs(run) + ' bps</span></div>';
+  wf.innerHTML = out;
+
+  // Glossary
+  var terms = [
+    ['Abnormal return (AR)', 'Return minus expected return, for example minus the market or sector return'],
+    ['ADV', 'Average daily volume; used to size orders against liquidity'],
+    ['Adverse selection', 'Getting filled mostly when the other side knows more than you'],
+    ['Alpha', 'Return not explained by market or factor exposure'],
+    ['ATR', 'Average True Range; a volatility measure for stops and sizing'],
+    ['Basis point (bp)', '0.01%; the unit for per-trade edge and cost'],
+    ['Beta', 'Sensitivity of a stock or strategy to market moves'],
+    ['Bracket order', 'An entry with attached take-profit and stop-loss orders'],
+    ['CAR', 'Cumulative abnormal return over an event window'],
+    ['Capacity', 'Maximum capital before costs destroy the edge'],
+    ['Deflated Sharpe', 'Sharpe adjusted for the number of trials and non-normal returns'],
+    ['Drawdown', 'Peak-to-trough decline in equity'],
+    ['Embargo', 'A gap between training and test data to stop information leaking'],
+    ['Event window', 'The time range around t = 0 over which reaction is measured'],
+    ['Factor', 'A systematic return driver: market, size, value, momentum and so on'],
+    ['Fill', 'An executed order, or the executed part of one'],
+    ['Gap', 'A price jump with no trading in between'],
+    ['Holdout', 'Data you never touch until the final test'],
+    ['IC', 'Information coefficient: correlation of forecast with outcome'],
+    ['Implementation shortfall', 'Decision price vs realised execution, including missed fills'],
+    ['IR', 'Information ratio: active return divided by tracking error'],
+    ['Kelly', 'Growth-optimal bet size; use a fraction of it'],
+    ['Latency', 'Delay between an event and your action'],
+    ['LULD', 'Limit Up-Limit Down volatility bands and trading pauses'],
+    ['Market impact', 'Price movement caused by your own trade'],
+    ['Meta-labelling', 'A second model deciding whether and how much to act on a first model\'s signal'],
+    ['NBBO', 'National Best Bid and Offer across US exchanges'],
+    ['Novelty', 'Whether a news item is genuinely new information'],
+    ['Overfitting', 'Fitting noise in history instead of a real pattern'],
+    ['PDT', 'Pattern Day Trader rule (FINRA 4210)'],
+    ['PEAD', 'Post-earnings announcement drift'],
+    ['PFOF', 'Payment for order flow'],
+    ['Point-in-time data', 'Data exactly as it was known at each moment'],
+    ['Purged CV', 'Cross-validation that removes samples with overlapping labels'],
+    ['Regime', 'A period with stable behaviour in volatility, trend and correlation'],
+    ['Sharpe ratio', 'Mean excess return divided by volatility'],
+    ['SIP', 'The consolidated US market data feed'],
+    ['Slippage', 'Expected price vs actual fill price'],
+    ['SSR', 'Short-sale restriction (Rule 201) after a 10% drop'],
+    ['SUE', 'Standardised unexpected earnings'],
+    ['Survivorship bias', 'Ignoring assets that were delisted or went bust'],
+    ['Triple barrier', 'Label by which of take-profit, stop-loss or time limit is hit first'],
+    ['VWAP / TWAP', 'Volume- or time-weighted average price; benchmarks and execution algorithms'],
+    ['Walk-forward', 'Rolling fit-then-test evaluation']
+  ];
+  var gl = document.getElementById('glossary');
+  function esc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+  gl.innerHTML = terms.map(function (t) { return '<div data-k="' + esc((t[0] + ' ' + t[1]).toLowerCase()) + '"><dt>' + esc(t[0]) + '</dt><dd>' + esc(t[1]) + '</dd></div>'; }).join('');
+  var q = document.getElementById('gloss-q'), empty = document.getElementById('gloss-empty');
+  q.addEventListener('input', function () {
+    var s = q.value.trim().toLowerCase(), shown = 0;
+    gl.querySelectorAll('div').forEach(function (d) { var m = !s || d.getAttribute('data-k').indexOf(s) !== -1; d.hidden = !m; if (m) shown++; });
+    empty.hidden = shown !== 0;
+  });
+
+  // Checklist with per-browser ticks.
+  var groups = [
+    ['Edge', [
+      'For each strategy: what event, what mispricing, why it persists, who is on the other side',
+      'Strategy exits match the drift duration the event study shows',
+      'If the edge sits in small or illiquid names, it survives realistic costs there',
+      'Returns checked against SPY and sector so you know it isn\'t mostly beta or a known factor'
+    ]],
+    ['LLM signals', [
+      'Backtests restricted to events after each model\'s training cutoff',
+      'Performance survives anonymising company names and dates',
+      'Model confidence is calibrated (reliability plot)',
+      'Every historical signal tagged with model ID and prompt version; upgrades re-validated',
+      'LLM cost per trade included in P&L'
+    ]],
+    ['Research hygiene', [
+      'Total hypotheses tested by Idea Lab is known and used in a deflated Sharpe or FDR correction',
+      'A holdout period exists that nobody has looked at',
+      'Permutation test: random event dates don\'t produce similar results',
+      'Robust to ±1 bar entry shift, ±10% thresholds, and dropping the top five trades',
+      'News timestamps reflect when you would have received the item'
+    ]],
+    ['Costs and execution', [
+      'Backtest cost model widens spreads at news time and outside regular hours',
+      'Breakeven cost per trade known and compared to measured paper slippage',
+      'Nothing that needs the consolidated market relies on IEX-only data'
+    ]],
+    ['Risk and operations', [
+      'Per-trade risk, sector cap, gross exposure cap and daily loss limit enforced before each order',
+      'Defined behaviour for halts, LULD pauses, gaps through stops, broker outages and stale data',
+      'Restart with open orders rebuilds state from the broker; order IDs are idempotent',
+      'A written rule for retiring a strategy whose live results fall outside its backtest range'
+    ]]
+  ];
+  var KEY = 'algo-guide-checklist-v1', saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) { saved = {}; }
+  var cl = document.getElementById('checklist'), h = '', n = 0;
+  groups.forEach(function (g, gi) {
+    h += '<div class="checkgroup"><h3>' + esc(g[0]) + '</h3>';
+    g[1].forEach(function (item, ii) {
+      var id = 'chk-' + gi + '-' + ii; n++;
+      h += '<label for="' + id + '"><input type="checkbox" id="' + id + '"' + (saved[id] ? ' checked' : '') + '><span>' + esc(item) + '</span></label>';
+    });
+    h += '</div>';
+  });
+  cl.innerHTML = h;
+  var boxes = cl.querySelectorAll('input');
+  function update() {
+    var done = 0; boxes.forEach(function (b) { if (b.checked) done++; });
+    document.getElementById('check-count').textContent = done + ' of ' + n;
+    document.getElementById('check-bar').style.width = (done / n * 100) + '%';
+  }
+  function persist() {
+    var s = {}; boxes.forEach(function (b) { if (b.checked) s[b.id] = 1; });
+    try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) {}
+  }
+  cl.addEventListener('change', function () { update(); persist(); });
+  document.getElementById('check-reset').addEventListener('click', function () { boxes.forEach(function (b) { b.checked = false; }); update(); persist(); });
+  update();
+})();
+</script>
+
+</body></html>

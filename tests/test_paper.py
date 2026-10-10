@@ -191,3 +191,119 @@ def test_article_content_reaches_model_prompts_without_html():
     assert model_item(item)['content_truncated']
     item['content']=None
     assert not model_item(item)['content_available']
+
+
+def test_idea_lab_rejects_incomplete_result(monkeypatch):
+    from fastapi import HTTPException
+    from services.api import app
+    monkeypatch.setattr(app,'models_api',lambda *a,**k:{'ok':False})
+    with pytest.raises(HTTPException) as e:
+        app.ideas_run(app.FocusIn(),u={'username':'owner'})
+    assert e.value.status_code==502
+    monkeypatch.setattr(app,'models_api',lambda *a,**k:{'error':'Daily Idea Lab run limit reached'})
+    with pytest.raises(HTTPException) as e:
+        app.ideas_run(app.FocusIn(),u={'username':'owner'})
+    assert e.value.status_code==503
+    monkeypatch.setattr(app,'models_api',lambda *a,**k:{'run_id':'abc','model':'test','ideas':[]})
+    assert app.ideas_run(app.FocusIn(),u={'username':'owner'})['ok']
+
+
+def test_models_api_bypasses_proxy_and_handles_bad_response(monkeypatch):
+    from services.api import app
+    actual_client=httpx.Client
+    results=iter([{'detail':'upstream unavailable'},['invalid'],'not json'])
+    def factory(**kwargs):
+        assert kwargs['trust_env'] is False
+        def respond(request):
+            result=next(results)
+            return httpx.Response(200,text=result) if isinstance(result,str) else httpx.Response(200,json=result)
+        return actual_client(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(app.httpx,'Client',factory)
+    for _ in range(3):
+        assert app.models_api('/ideas/run',{})['error']
+
+
+def test_monitoring_persists_and_migrates_once(conn):
+    from common import monitoring
+    monitoring.ensure(conn)
+    assert 'AAPL' in monitoring.enabled(conn)
+    monitoring.set_enabled(conn,'AAPL',False,'test')
+    monitoring.ensure(conn)
+    assert 'AAPL' not in monitoring.enabled(conn)
+    monitoring.set_enabled(conn,'IBM',True,'test')
+    assert 'IBM' in monitoring.enabled(conn)
+
+
+def test_monitoring_activation_and_coverage(conn):
+    from common import monitoring
+    from types import SimpleNamespace
+    monitoring.ensure(conn)
+    s=SimpleNamespace(kind='portfolio',symbols=['IBM','AAPL'])
+    monitoring.set_enabled(conn,'AAPL',False,'test')
+    assert monitoring.coverage(conn,s)['unwatched']==['AAPL','IBM']
+    monitoring.activate(conn,s,'test')
+    assert not monitoring.coverage(conn,s)['unwatched']
+    monitoring.set_enabled(conn,'IBM',False,'test')
+    assert monitoring.coverage(conn,s)['unwatched']==['IBM']
+
+
+def test_watchlist_disable_confirmation(conn,monkeypatch):
+    from common import monitoring
+    from services.api import app
+    from fastapi import HTTPException
+    monkeypatch.setattr(app,'conn',lambda:conn)
+    monkeypatch.setattr(monitoring,'dependencies',lambda c,s:[{'sid':'active','hash':'a'}])
+    with pytest.raises(HTTPException) as e:
+        app.watchlist_update('AAPL',app.WatchIn(enabled=False),u={'username':'owner'})
+    assert e.value.status_code==409
+    app.watchlist_update('AAPL',app.WatchIn(enabled=False,confirmed=True),u={'username':'owner'})
+    assert 'AAPL' not in monitoring.enabled(conn)
+    with pytest.raises(HTTPException):
+        app.watchlist_update('UNKNOWN',app.WatchIn(enabled=True),u={'username':'owner'})
+
+
+def test_held_symbol_retains_monitoring(conn,monkeypatch):
+    from common import monitoring
+    from common.config import universe
+    conn.execute('INSERT INTO positions(symbol,qty) VALUES (?,?)',('AAPL',1))
+    monitoring.set_enabled(conn,'AAPL',False,'test')
+    monkeypatch.setenv('BROKER_BACKEND','alpaca')
+    assert 'AAPL' in universe()
+    assert 'AAPL' not in monitoring.enabled(conn)
+
+
+def test_optional_compile_name_preserves_blank_and_sets_safe_id(orb_text,risk):
+    from services.models.authoring import named_draft
+    from dsl.validator import validate
+    assert named_draft(orb_text,'   ')==orb_text
+    for name in ['My Earnings Strategy','2026 Breakout','../Alpha','中文','9'*80]:
+        result=validate(named_draft(orb_text,name),risk)
+        assert result.ok,result.errors
+        assert '/' not in result.strategy.id
+    assert validate(named_draft(orb_text,'My Earnings Strategy'),risk).strategy.id=='my_earnings_strategy'
+
+
+def test_compile_api_passes_optional_name(monkeypatch):
+    from services.api import app
+    seen=[]
+    monkeypatch.setattr(app,'models_api',lambda path,payload,**kw:seen.append(payload) or {'ok':True})
+    app.strategy_compile(app.TextIn(text='rules',name=' My Strategy '),u={'username':'owner'})
+    assert seen[-1]['name']=='My Strategy'
+    app.strategy_compile(app.TextIn(text='rules'),u={'username':'owner'})
+    assert seen[-1]['name']==''
+
+
+def test_compile_saves_custom_display_name_and_new_versions(conn,orb_text,tmp_path,monkeypatch):
+    from common import registry
+    from services.models import authoring
+    monkeypatch.setattr(registry,'STRATEGIES_DIR',tmp_path)
+    monkeypatch.setattr(authoring,'STRATEGIES_DIR',tmp_path)
+    monkeypatch.setattr(authoring,'_need_llm',lambda:None)
+    monkeypatch.setattr(authoring,'_model_id',lambda k:'test-model')
+    monkeypatch.setattr(authoring.llm,'call',lambda *a,**k:('',{'yaml':orb_text,'id':'orb_news_long','notes':''},{}))
+    first=authoring.compile_text(conn,'test rules','test','My Earnings Strategy')
+    second=authoring.compile_text(conn,'test rules','test','My Earnings Strategy')
+    assert first['ok'] and second['ok']
+    assert first['hash']!=second['hash']
+    row=db.row(conn,'SELECT display_name,sid,version FROM strategies WHERE hash=?',(second['hash'],))
+    assert row=={'display_name':'My Earnings Strategy','sid':'my_earnings_strategy','version':2}

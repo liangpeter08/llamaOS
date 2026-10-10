@@ -15,12 +15,15 @@ from datetime import date, datetime, timedelta
 
 import httpx
 
-from common import audit, db, marketdata as MD, registry, timeutil as T
+from common import audit, db, marketdata as MD, registry, timeutil as T, monitoring
 from common.config import load_risk, mode, universe
 from core.engine import Intent, StrategyRunner
 from core import risk_guard as G
 from dsl.evaluator import DayData, SignalBook
 from .alpaca import Alpaca, epoch, iso, price
+from .portfolio_desk import PortfolioDesk
+from common import funds
+from core import funds as F
 
 log = logging.getLogger("paper")
 LOCK = 0x5041504552
@@ -65,6 +68,9 @@ class PaperBroker:
         self.unmanaged = False
         self.last_bar = {}
         self.last_error = ""
+        self.desk = PortfolioDesk(self.conn, self.api, self.risk)
+        self.sleeve_syms = {}  # symbol -> portfolio strategy hash holding it (held overnight, never flattened)
+        self.sleeve_day_pnl = 0.0
         db.kv_set(self.conn, "risk.sha256", self.risk.sha256)
 
     def setup_day(self, day):
@@ -75,12 +81,13 @@ class PaperBroker:
         self.last_bar = {}
         self.runners = {}
         self.rows = {}
+        self.desk.history_at = 0  # new session: refresh portfolio daily bars on the next reload
         if calendar:
             close = datetime.fromisoformat(f"{day}T{calendar[0]['close']}").replace(tzinfo=T.ET)
             self.close_ts = int(close.timestamp())
             hard = T.ts_at(day, self.risk.flatten_by)
             self.flatten_ts = min(hard, self.close_ts - 5 * 60)
-            daily = self.api.bars(self.syms, "1Day", time.time() - 110 * 86400, T.open_ts(day))
+            daily = self.api.bars(self.syms, "1Day", time.time() - 110 * 86400, T.open_ts(day)) if self.syms else {}
             with db.tx(self.conn):
                 for sym, bars in daily.items():
                     for b in bars:
@@ -90,7 +97,7 @@ class PaperBroker:
                                               " ON CONFLICT(symbol,day) DO UPDATE SET o=excluded.o,h=excluded.h,l=excluded.l,c=excluded.c,v=excluded.v",
                                               (sym, str(d), b["o"], b["h"], b["l"], b["c"], b["v"]))
             self.days = {s: DayData(s, day, MD.history(self.conn, s, day)) for s in self.syms}
-            bars = self.api.bars(self.syms, "1Min", T.open_ts(day), max(T.open_ts(day)+1, min(time.time()-2, self.close_ts))) if time.time() > T.open_ts(day) else {}
+            bars = self.api.bars(self.syms, "1Min", T.open_ts(day), max(T.open_ts(day)+1, min(time.time()-2, self.close_ts))) if self.syms and time.time() > T.open_ts(day) else {}
             self.store_bars(bars)
         else:
             self.close_ts = self.flatten_ts = 0
@@ -100,6 +107,11 @@ class PaperBroker:
     def reload(self):
         registry.sync(self.conn, self.risk)
         current = {s.hash: (r, s) for r, s in registry.runnable(self.conn, self.risk) if r["status"] == "paper"}
+        for h, (r, s) in current.items():
+            if not db.kv_get(self.conn, 'monitoring.strategy.' + h):
+                with db.tx(self.conn):
+                    monitoring.activate(self.conn, s, 'strategy activation')
+                    db.kv_set(self.conn, 'monitoring.strategy.' + h, True)
         # Retired strategies still manage positions until their broker brackets/exit close them.
         owned = {r["strategy_hash"] for r in db.rows(self.conn, "SELECT DISTINCT strategy_hash FROM positions")}
         for h in list(self.runners):
@@ -117,7 +129,48 @@ class PaperBroker:
         for r in counts:
             if r["strategy_hash"] in self.runners:
                 self.runners[r["strategy_hash"]].trades_today = r["n"]
-        return "paper strategies: " + ", ".join(r.s.id for r in self.runners.values())
+        sleeves = self.desk.reload()
+        if self.day is not None:
+            try:
+                self.desk.ensure_history(self.day)  # also on closed days, so drafts can be backtested
+            except httpx.HTTPError:
+                self.last_error = "portfolio history download failed"
+        return "paper strategies: " + ", ".join(r.s.id for r in self.runners.values()) + "; " + sleeves
+
+    def refresh_monitoring(self):
+        desired = sorted(set(monitoring.enabled(self.conn)) | {p['symbol'] for p in self.positions}
+                         | set(monitoring.held(self.conn)) | {o['symbol'] for o in self.open_orders})
+        if desired == self.syms:
+            db.kv_set(self.conn, 'monitoring.applied', desired)
+            return
+        added = set(desired) - set(self.syms)
+        for sym in added:
+            asset = self.api.asset(sym)
+            if not asset.get('tradable') or asset.get('status') != 'active':
+                raise ValueError('Untradable monitoring ticker: ' + sym)
+        if added:
+            for sym, bars in self.api.bars(sorted(added),'1Day',time.time()-110*86400,T.open_ts(self.day)).items():
+                for b in bars:
+                    day=T.et(epoch(b['t'])).date()
+                    if day < self.day:
+                        self.conn.execute('INSERT INTO daily VALUES (?,?,?,?,?,?,?) ON CONFLICT(symbol,day) DO UPDATE SET o=excluded.o,h=excluded.h,l=excluded.l,c=excluded.c,v=excluded.v',
+                                          (sym,str(day),b['o'],b['h'],b['l'],b['c'],b['v']))
+        self.syms=desired
+        self.days={s:self.days.get(s) or DayData(s,self.day,MD.history(self.conn,s,self.day)) for s in desired}
+        self.last_bar={s:v for s,v in self.last_bar.items() if s in desired}
+        if added and self.close_ts and time.time()>T.open_ts(self.day):
+            self.store_bars(self.api.bars(sorted(added),'1Min',T.open_ts(self.day),min(time.time()-2,self.close_ts)))
+        for runner in self.runners.values():
+            cooldown = dict(runner.cooldown)
+            trades_today = runner.trades_today
+            runner.start_day(self.days,self.book)
+            runner.cooldown = {s:v for s,v in cooldown.items() if s in self.days}
+            runner.trades_today = trades_today
+        self.reload()
+        self.sync()
+        self.last_news=min(self.last_news,time.time()-86400) if added else self.last_news
+        self.last_poll=0
+        db.kv_set(self.conn,'monitoring.applied',desired)
 
     def store_bars(self, grouped):
         for sym, bars in grouped.items():
@@ -135,6 +188,8 @@ class PaperBroker:
                     self.last_bar[sym] = ts + 60
 
     def signals_and_news(self, now):
+        if not self.syms:
+            return
         for n in self.api.news(self.syms, self.last_news-120, now):
             self.conn.execute("INSERT INTO news(ext_id,ts,session,symbols,headline,summary,source,url,content) VALUES (?,?,?,?,?,?,?,?,?)"
                               " ON CONFLICT(ext_id) DO UPDATE SET url=COALESCE(EXCLUDED.url,news.url),content=COALESCE(NULLIF(EXCLUDED.content,''),news.content)", ("alpaca:"+str(n["id"]), epoch(n["created_at"]), "alpaca",
@@ -191,13 +246,19 @@ class PaperBroker:
 
     def sync(self):
         self.account_data = self.api.account()
+        sleeve=self.desk.owned()
         for external in db.rows(self.conn,"SELECT * FROM paper_external_exits"):
             order=json.loads(external["body"])
             ref=self.owner_intent(order["symbol"])
-            self.track_order(order,ref["id"] if ref else None,external["reason"])
+            if order["symbol"] in sleeve and not ref:
+                self.desk.record_external(order,external["reason"])
+            else:
+                self.track_order(order,ref["id"] if ref else None,external["reason"])
             self.conn.execute("DELETE FROM paper_external_exits WHERE broker_id=?",(external["broker_id"],))
         self.positions = self.api.positions()
         self.open_orders = self.api.orders()
+        self.sleeve_syms = self.desk.owned()
+        self.sleeve_day_pnl = self.desk.day_pnl(self.positions, self.day) if self.sleeve_syms else 0.0
         for row in db.rows(self.conn, "SELECT p.* FROM paper_intents p JOIN intents i ON i.id=p.intent_id WHERE i.status IN ('submitting','submitted') OR (p.broker_id IS NOT NULL AND (i.ts>=? OR EXISTS (SELECT 1 FROM paper_orders o WHERE o.intent_id=i.id AND o.kind='entry' AND o.filled_qty>COALESCE((SELECT SUM(x.filled_qty) FROM paper_orders x WHERE x.intent_id=i.id AND x.kind!='entry'),0))))", (T.open_ts(self.day),)):
             order = self.api.order(row["broker_id"]) if row["broker_id"] else self.api.by_client_id(row["client_id"])
             if order:
@@ -215,7 +276,7 @@ class PaperBroker:
                              not db.row(self.conn, "SELECT broker_id FROM paper_orders WHERE broker_id=?", (o["id"],)) for o in self.open_orders)
         for pos in self.positions:
             ref = self.owner_intent(pos["symbol"])
-            if not ref:
+            if not ref and pos["symbol"] not in self.sleeve_syms:
                 self.unmanaged = True
         self.persist_account()
         self.restore_runner_positions()
@@ -238,15 +299,17 @@ class PaperBroker:
                 self.runners[ref["strategy_hash"]].set_position(p["symbol"], ref["side"], float(p["avg_entry_price"]), ref["stop"], idx)
 
     def state(self, sym=None):
+        """Intraday account view: sleeve positions count toward exposure, not toward open positions
+        or the daily-loss limit (their day P&L is taken out of the starting equity)."""
         now = time.time()
-        opened = {p["symbol"] for p in self.positions}
+        opened = {p["symbol"] for p in self.positions if p["symbol"] not in self.sleeve_syms}
         entry_orders = [o for o in self.open_orders if o.get("order_class") == "bracket"]
         opened |= {o["symbol"] for o in entry_orders}
         exposure = sum(abs(float(p["market_value"])) for p in self.positions)
         exposure += sum(max(0,float(o["qty"])-float(o.get("filled_qty") or 0))*float(o.get("limit_price") or 0) for o in entry_orders)
         counts = db.rows(self.conn, "SELECT i.sid,COUNT(*) n FROM paper_intents p JOIN intents i ON i.id=p.intent_id"
                         " WHERE p.broker_id IS NOT NULL AND i.ts>=? GROUP BY i.sid", (T.open_ts(self.day),))
-        return G.AccountState(float(self.account_data["equity"]), float(self.account_data["last_equity"]), exposure,
+        return G.AccountState(float(self.account_data["equity"]), float(self.account_data["last_equity"]) + self.sleeve_day_pnl, exposure,
                               opened, sum(r["n"] for r in counts), {r["sid"]:r["n"] for r in counts},
                               bool((db.kv_get(self.conn,"kill_switch") or {}).get("active")),
                               max(0,now-self.last_bar.get(sym,0)) if sym else 0)
@@ -260,7 +323,7 @@ class PaperBroker:
         with db.tx(self.conn):
             self.conn.execute("DELETE FROM positions")
             for p in self.positions:
-                ref = self.owner_intent(p["symbol"]) or {}
+                ref = self.owner_intent(p["symbol"]) or self.sleeve_ref(p["symbol"])
                 pnl[ref.get("sid","unmanaged")] = pnl.get(ref.get("sid","unmanaged"),0)+float(p.get("unrealized_pl") or 0)
                 self.conn.execute("INSERT INTO positions(symbol,qty,side,avg_price,stop,target,strategy_hash,sid,intent_id,opened_ts,last_price) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                                   (p["symbol"],float(p["qty"]),p["side"],float(p["avg_entry_price"]),ref.get("stop"),ref.get("target"),ref.get("strategy_hash"),ref.get("sid"),ref.get("id"),ref.get("ts"),float(p["current_price"])))
@@ -270,7 +333,15 @@ class PaperBroker:
         db.kv_set(self.conn,"account",{"equity":eq,"cash":cash,"start_equity":start,"day_pnl":eq-start,
                    "gross_exposure":sum(abs(float(p["market_value"])) for p in self.positions),"open_positions":len(self.positions),
                    "trades_today":self.state().trades_today,"sim_ts":time.time(),"source":"alpaca_paper"})
-        db.kv_set(self.conn,"reconcile",{"ok":not self.unmanaged,"sim_ts":time.time(),"broker":"alpaca_paper","unmanaged":self.unmanaged})
+        db.kv_set(self.conn,"reconcile",{"ok":not self.unmanaged and not self.desk.mismatch,"sim_ts":time.time(),"broker":"alpaca_paper",
+                   "unmanaged":self.unmanaged,"portfolio_mismatch":self.desk.mismatch or None})
+
+    def sleeve_ref(self, sym):
+        h = self.sleeve_syms.get(sym)
+        if not h:
+            return {}
+        row = db.row(self.conn, "SELECT sid FROM strategies WHERE hash=?", (h,)) or {}
+        return {"strategy_hash": h, "sid": row.get("sid", "portfolio")}
 
     def checks(self, it):
         state = self.state(it.symbol)
@@ -284,6 +355,7 @@ class PaperBroker:
         runner = self.runners.get(it.strategy_hash)
         checks=G.check_intent(current,state,self.risk,runner.s.limits if runner else {},adv)
         checks += [G.Check("paper_enabled",mode()=="paper","paper only"),
+                   G.Check("monitoring_enabled",it.symbol in monitoring.enabled(self.conn),"watchlist monitoring required for entries"),
                    G.Check("strategy_eligible",bool(runner and self.rows.get(it.strategy_hash,{}).get("status")=="paper"),"registered paper strategy"),
                    G.Check("market_open",bool(self.clock["is_open"]),"regular session"),
                    G.Check("before_flatten",time.time()<self.flatten_ts,"calendar-aware flatten deadline"),
@@ -291,7 +363,14 @@ class PaperBroker:
                    G.Check("not_paused",not self.paused,"entry pause"),
                    G.Check("account_available",not any(self.account_data.get(k) for k in ("trading_blocked","account_blocked","trade_suspended_by_user")),"account status"),
                    G.Check("managed_account",not self.unmanaged,"no unowned orders/positions"),
+                   G.Check("not_portfolio_symbol",it.symbol not in self.sleeve_syms,"held by a portfolio sleeve" if it.symbol in self.sleeve_syms else "free"),
                    G.Check("buying_power",it.qty*it.limit<=float(self.account_data.get("buying_power") or 0),"broker buying power")]
+        if self.risk.funds:
+            acct=funds.account(self.conn,self.risk)
+            row=db.row(self.conn,"SELECT status FROM intents WHERE id=?",(it.id,)) if it.id else None
+            if row and row["status"] in funds.WORKING_INTENTS:  # re-check on approval: don't count this intent twice
+                acct=F.without(acct,it.sid,"intraday",it.qty*it.limit)
+            checks += F.check_buy(it.sid,"intraday",it.qty*it.limit,acct,self.risk.funds)
         if d.c:
             snapshot=self.api.snapshots([it.symbol]).get(it.symbol,{})
             latest=snapshot.get("latestTrade") or {}
@@ -367,9 +446,14 @@ class PaperBroker:
     def kill(self,reason,actor="broker"):
         db.kv_set(self.conn,"kill_switch",{"active":True,"reason":reason,"ts":time.time(),"by":actor})
         self.conn.execute("UPDATE intents SET status='void',reason='kill switch' WHERE status IN ('pending','approved')")
+        self.desk.halt("kill switch")
         self.api.cancel_all()
+        self.desk.track()  # book any sleeve fills before the cancels landed
+        sleeve=self.desk.owned()
         for p in self.api.positions():
-            self.exit_position(p["symbol"],"kill")
+            if p["symbol"] not in sleeve:
+                self.exit_position(p["symbol"],"kill")
+        self.desk.liquidate("kill")
         audit.log(self.conn,"kill_switch.triggered",actor,{"reason":reason,"source":"alpaca_paper"})
 
     def commands(self):
@@ -388,18 +472,35 @@ class PaperBroker:
             self.conn.execute("UPDATE commands SET status='done',processed_at=?,result=? WHERE id=?",(time.time(),result,c["id"]))
             audit.log(self.conn,"command."+c["kind"],c["issued_by"],{"result":result})
 
+    def reload_risk(self):
+        """Pick up risk controls the owner changed on the dashboard (Postgres), within one loop."""
+        rev = db.kv_get(self.conn, "risk.rev") or 0
+        if rev == getattr(self, "risk_rev", None):
+            return
+        self.risk = load_risk()
+        self.risk_rev = rev
+        self.desk.risk = self.risk
+        for runner in self.runners.values():
+            runner.risk = self.risk
+        if self.close_ts and self.day:
+            self.flatten_ts = min(T.ts_at(self.day, self.risk.flatten_by), self.close_ts - 5 * 60)
+        db.kv_set(self.conn, "risk.sha256", self.risk.sha256)
+        audit.log(self.conn, "risk.loaded", "broker", {"rev": rev, "sha256": self.risk.sha256})
+
     def tick(self):
+        self.reload_risk()
         self.clock=self.api.clock()
         now=epoch(self.clock["timestamp"])
         day=T.et(now).date()
         if day!=self.day:
             self.setup_day(day)
         self.sync()
+        self.refresh_monitoring()
         self.commands()
         db.kv_set(self.conn,"sim.now",now)  # existing models/dashboard consume this clock
         if time.time()-self.last_poll>=15:
             start=min((d.ts[-1] for d in self.days.values() if d.ts),default=T.open_ts(day))
-            if self.close_ts and time.time()>T.open_ts(day):
+            if self.syms and self.close_ts and time.time()>T.open_ts(day):
                 self.store_bars(self.api.bars(self.syms,"1Min",start,min(time.time()-2,self.close_ts)))
             try:
                 self.signals_and_news(now)
@@ -407,13 +508,18 @@ class PaperBroker:
                 self.last_error="news feed unavailable"
             self.last_poll=time.time()
         ks=(db.kv_get(self.conn,"kill_switch") or {}).get("active")
+        why=funds.monitor(self.conn,self.risk)
+        if why and not ks and self.clock["is_open"]:
+            self.kill(why)
+            ks=True
         if self.clock["is_open"]:
             if not ks and G.daily_loss_breached(self.state(),self.risk):
                 self.kill("daily loss limit")
                 ks=True
             if ks or time.time()>=self.flatten_ts:
                 for p in self.positions:
-                    self.exit_position(p["symbol"],"kill" if ks else "flatten")
+                    if p["symbol"] not in self.sleeve_syms:  # sleeves hold overnight; the desk sells them on a kill
+                        self.exit_position(p["symbol"],"kill" if ks else "flatten")
                 for o in self.open_orders:
                     if o.get("order_class")=="bracket":
                         self.api.cancel(o["id"])
@@ -433,10 +539,12 @@ class PaperBroker:
                         cursor=f"paper.evaluated.{day}.{sym}"
                         if (db.kv_get(self.conn,cursor) or 0)>=d.ts[-1]:continue
                         db.kv_set(self.conn,cursor,d.ts[-1])
-                        busy=sym in self.state(sym).open_symbols or bool(db.row(self.conn,"SELECT id FROM intents WHERE symbol=? AND status IN ('pending','approved','submitting','submitted')",(sym,)))
+                        busy=sym in self.state(sym).open_symbols or sym in self.sleeve_syms or bool(db.row(self.conn,"SELECT id FROM intents WHERE symbol=? AND status IN ('pending','approved','submitting','submitted')",(sym,)))
+                        acct=funds.account(self.conn,self.risk) if self.risk.funds else None
                         for h,runner in self.runners.items():
                             if self.rows.get(h,{}).get("status")!="paper":continue
-                            it=runner.check_entry(sym,len(d)-1,float(self.account_data["equity"]),busy)
+                            room=F.room_usd(runner.s.id,"intraday",acct,self.risk.funds) if acct else None
+                            it=runner.check_entry(sym,len(d)-1,float(self.account_data["equity"]),busy,room)
                             if it:
                                 checks=self.checks(it)
                                 if G.passed(checks):
@@ -446,15 +554,23 @@ class PaperBroker:
                 self.approvals()
         else:
             self.conn.execute("UPDATE intents SET status='expired' WHERE status IN ('pending','approved') AND expires_wall<?",(time.time(),))
+        intraday={p["symbol"] for p in self.positions if p["symbol"] not in self.sleeve_syms}|{o["symbol"] for o in self.open_orders if o.get("order_class")=="bracket"}
+        self.desk.tick(self.clock,self.account_data,self.positions,self.close_ts,bool(ks),self.paused,intraday)
         db.kv_set(self.conn,"feed.last_bar",max(self.last_bar.values(),default=None))
         db.kv_set(self.conn,"feed.symbols",self.last_bar)
         db.kv_set(self.conn,"paper.error",None)
         db.kv_set(self.conn,"health.broker",{"ts":time.time()})
         db.kv_set(self.conn,"sim.state",{"session":str(day),"phase":"open" if self.clock["is_open"] else "closed",
                       "source":"alpaca_paper","paused":self.paused,"kill":bool(ks),"next_open":self.clock["next_open"],
-                      "feed":self.api.feed,"error":self.last_error,"strategies":[r.s.id for r in self.runners.values()]})
+                      "feed":self.api.feed,"error":self.last_error or self.desk.mismatch,"strategies":[r.s.id for r in self.runners.values()],
+                      "portfolio":[s.id for _,s,_ in self.desk.strats.values()]})
 
     def run(self):
+        try:
+            assets=self.api.request('GET','/v2/assets',params={'status':'active','asset_class':'us_equity'})
+            db.kv_set(self.conn,'monitoring.assets',[{'symbol':a['symbol'],'name':a.get('name',''),'exchange':a.get('exchange','')} for a in assets if a.get('tradable')])
+        except httpx.HTTPError:
+            log.warning('Ticker search catalog unavailable; will retry on restart')
         for sym in self.syms:
             asset=self.api.asset(sym)
             if not asset.get("tradable") or asset.get("status")!="active":raise ValueError("Untradable watchlist symbol: "+sym)

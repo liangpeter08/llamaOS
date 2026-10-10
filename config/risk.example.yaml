@@ -1,5 +1,7 @@
-# Hard limits. Owned by you, mounted read-only into every container.
-# A strategy can only tighten these; violations are rejected, never clamped.
+# Factory defaults for the risk controls. The live values are Postgres settings the owner edits on the
+# dashboard (Risk page); a control with no setting there uses the value below. Portfolio and fund
+# controls have their defaults in common/risk_settings.py. A strategy can only tighten the effective
+# limits; violations are rejected, never clamped.
 account:
   max_gross_exposure: 1.0      # x equity, i.e. no leverage. Mirror at Alpaca (margin multiplier 1)
   allow_short: false           # mirror at Alpaca (no-shorting flag)

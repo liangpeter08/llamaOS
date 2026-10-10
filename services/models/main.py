@@ -11,9 +11,10 @@ import os
 import threading
 import time
 
+import anthropic
 import uvicorn
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from common import audit, db, timeutil as T
 from common.config import load_yaml
@@ -38,6 +39,7 @@ class ChatIn(BaseModel):
 class CompileIn(BaseModel):
     text: str
     actor: str
+    name: str = Field(default="", max_length=80)
 
 
 class IdeasIn(BaseModel):
@@ -59,6 +61,15 @@ def _offline(e: Exception):
     raise HTTPException(503, str(e))
 
 
+def _api_error(e: anthropic.APIError):
+    if isinstance(e, anthropic.APITimeoutError):
+        raise HTTPException(504, "Claude took too long to answer. Try again.") from None
+    if isinstance(e, anthropic.APIConnectionError):
+        raise HTTPException(503, "Couldn't reach the Claude API (network error). Check the connection and try again.") from None
+    status = getattr(e, "status_code", 502)
+    raise HTTPException(503 if status in (429, 529) or status >= 500 else 502, f"Claude API error {status}: {e.message}") from None
+
+
 @app.get("/health")
 def health():
     return {"ok": True, "providers": provider_status(), "llm": llm.available()}
@@ -74,14 +85,18 @@ def chat(body: ChatIn):
         raise HTTPException(404, f"not found: {e}") from None
     except llm.LLMUnavailable as e:
         _offline(e)
+    except anthropic.APIError as e:
+        _api_error(e)
 
 
 @app.post("/compile")
 def compile_(body: CompileIn):
     try:
-        return authoring.compile_text(conn(), body.text, body.actor)
+        return authoring.compile_text(conn(), body.text, body.actor, body.name)
     except (authoring.Offline, llm.LLMUnavailable) as e:
         _offline(e)
+    except anthropic.APIError as e:
+        _api_error(e)
 
 
 @app.post("/diff")
@@ -96,8 +111,12 @@ def diff(body: DiffIn):
 def ideas_run(body: IdeasIn):
     try:
         return idealab.run(conn(), body.focus, body.actor)
+    except idealab.NoEvents as e:
+        raise HTTPException(409, str(e)) from None
     except llm.LLMUnavailable as e:
         _offline(e)
+    except anthropic.APIError as e:
+        _api_error(e)
 
 
 @app.post("/notes/parse")
@@ -127,7 +146,10 @@ def worker(stop: threading.Event):
                         key=f"models.schedule.{local.date()}.{name}"
                         if due and not db.kv_get(c,key):
                             db.kv_set(c,key,{"started":time.time()})
-                            idealab.run(c,name.replace("_"," "),"scheduler")
+                            try:
+                                idealab.run(c,name.replace("_"," "),"scheduler")
+                            except idealab.NoEvents as e:
+                                audit.log(c,"idealab.skipped","scheduler",{"run":name,"why":str(e)})
             db.kv_set(c, "health.models", {"ts": time.time()})
         except Exception:  # noqa: BLE001 - keep the worker alive; errors land in the log
             log.exception("triage loop error")

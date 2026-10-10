@@ -67,13 +67,14 @@ make test        # pytest against the llamaos_test database
 
 1. **Models are advisory.** Model outputs are typed, bounded, timestamped values: signals, idea drafts, and strategy drafts. A signal can block an entry or trigger an exit. It can never size a position, move a stop, or place an order.
 2. **The live loop has no LLM.** Bars → rule engine → risk guard → (optional) your approval → executor. If every model is down, signals go stale, gated entries stop, and exits and broker-side stops keep working.
-3. **Hard rules sit outside every model's reach.** `risk.yaml` is mounted read-only into every container. The dashboard can display it but can't edit it, and key limits are mirrored in Alpaca's account settings.
+3. **Hard rules sit outside every model's reach.** Risk controls are Postgres values only the owner can change, on the dashboard Risk page, with a reason; every change is validated, kept in a history table and audited. No model, chat or strategy file can change them, and key limits are mirrored in Alpaca's account settings.
 4. **Credentials follow trust.**
    - Only `broker` holds Alpaca keys.
    - Only `models` holds model API keys.
    - `api` and `dashboard` hold neither.
 5. **Everything is replayable and logged.** Model outputs are recorded once and never recomputed. Every news item, signal, idea, strategy version, chat, approval, order and fill is written to a hash-chained audit log.
-6. **The edge isn't speed.** Interpretation of real events plus your context, confirmed by price. Holding periods run from minutes to hours, and positions are flat by the close.
+6. **The edge isn't speed.** Interpretation of real events plus your context, confirmed by price. Intraday strategies hold for minutes to hours and are flat by the close; portfolio strategies hold a basket for days or weeks with one decision a day.
+7. **Money is ring-fenced.** A cash reserve is never deployed, and every running strategy owns a reserved slice of equity with its own drawdown stop. One strategy can't spend another's money.
 
 ---
 
@@ -284,15 +285,27 @@ Notifications for new approvals, fills, halts, and drift go to your phone (confi
 - **Accounts:** an `owner` role (full control) and a `viewer` role (read-only), both set up in the dashboard. No public sign-up.
 - **Authentication:** password (argon2) plus **TOTP 2FA**, which is mandatory for `owner`. Sessions are short-lived with secure HttpOnly cookies, and login attempts are rate-limited.
 - **2FA at login only.** Once logged in, an owner approves trades, approves strategy hashes, switches execution modes and triggers the kill switch without entering another code. Every such action still needs a valid session and CSRF token, and is written to the audit log with the user's name. The 8-hour session limit applies.
-- **Tightening is easy, loosening is hard.** The dashboard can pause strategies and trigger the kill switch. It cannot raise limits or reset the kill switch: those require editing `risk.yaml` on the host and running `make reset-kill-switch` over SSH.
+- **Risk changes are deliberate.** The owner edits risk controls and fund allocations on the dashboard; each change needs a reason, is validated as a whole config and lands in the change history and audit log. Resetting the kill switch stays host-only (`make reset-kill-switch` over SSH).
 - **Network:** only Caddy (HTTPS) is exposed. The `models` API is internal to the Docker network. Consider restricting the dashboard to a VPN or Tailscale.
 - **Secrets:** one env file per service, outside the repo and never baked into images.
 
 ---
 
-## Hard risk rules (`risk.yaml`)
+## Risk controls (dashboard, Postgres)
 
-`risk.yaml` is owned by you and mounted read-only into every container. Its checksum is logged at startup and shown on the dashboard. A strategy can only tighten these limits; violations are rejected, never clamped.
+The live risk controls are rows in `risk_settings`, edited by the owner on the **Risk** page. A control without a row uses its factory default: `config/risk.yaml` below for the account, per-trade, execution and market sections, and `common/risk_settings.py` for the portfolio and fund sections. Saving validates the whole config (for example, cash reserve + max deployed must fit in 100%), writes `risk_settings_history` and the audit log, and bumps a revision that the broker and watchdog pick up within one loop. A strategy can only tighten the effective limits; violations are rejected, never clamped.
+
+| Section | Controls |
+|---|---|
+| Account, per trade, execution, market | the intraday limits below |
+| Portfolio sleeves | enabled, max in all sleeves (90%), max per symbol (15%), symbols per sleeve, orders per day, sleeve drawdown stop (15%), max holding period, decision time (15:45 ET), min price / $ volume |
+| Funds | cash reserve (10%), max deployed (90%), intraday budget (40%), max allocation per strategy, default allocation, strategy drawdown stop cap (25% of its allocation), strategy daily loss cap (10%, intraday), account drawdown stop (20% from peak -> kill switch) |
+
+### Fund allocations (Funds page)
+
+Each running strategy line (its `id`, across versions) has an allocation: a reserved share of equity. Allocations add up to at most max deployed, so strategies are isolated. Every buy is checked against the strategy's allocation, the cash reserve, max deployed and (intraday) the intraday budget; intraday entries are sized down to fit what is left in the allocation. Each strategy has its own drawdown stop (measured from its best P&L since the allocation was set, as a share of the allocation) that pauses it, and intraday strategies have a daily loss stop that blocks entries until the next session. A paused portfolio sleeve is sold at its next decision time. Promoting to paper assigns the default allocation if there is unallocated room, and refuses otherwise. The Funds page shows equity, cash, reserve, deployed and available capital, budget meters and each strategy's slice, and lets the owner edit allocations, pause and resume.
+
+Factory defaults in `config/risk.yaml`:
 
 ```yaml
 account:
@@ -334,6 +347,15 @@ A backup flatten job on a separate host at 15:57 ET is recommended.
 ---
 
 ## Strategy DSL (v0.1)
+
+There are two kinds of strategy file. **Intraday** (the default, described below) trades 1-minute bars within a session and is flat by the close. **Portfolio** (`kind: portfolio`) holds a basket overnight for days or weeks:
+
+- `holdings`: `capital` (share of equity at the first buy), `max_holding` (cap for adds, share of each original allocation) and `groups` of symbols with weights (equal split inside a group).
+- `schedule`: `hold_sessions`, optional `start_date` / `end_date`, optional `decide_at`.
+- `rules`: once a day per symbol, at `decide_at` (15:45 ET), the first matching `{when, do}` applies: `hold`, `exit`, `exit_and_wait`, `{trim: p}` or `{add: p}`. Conditions use params and `day_change`, `holding`, `sessions_held`, `gain`.
+- `reentry`: after `exit_and_wait`, rebuild `step` of the allocation per session once `when` is true.
+
+The first session buys the whole basket with market orders. The engine (`core/portfolio.py`) is shared by the daily backtester (`backtest/portfolio.py`) and the paper broker's portfolio desk (`services/broker/portfolio_desk.py`). Sleeve positions are not flattened at the close or by the watchdog's deadline, don't count toward intraday open positions, and their P&L is excluded from the intraday daily-loss limit; while a sleeve holds a symbol, intraday strategies can't trade it. The kill switch still closes everything. See `strategies/big_tech_software_tilt_hold.v1.yaml` and `prompts/examples/portfolio.yaml`. The compiler (`compiler@v2`) chooses the kind from the request.
 
 Strategies are YAML files with a small expression language. Hard limits are not part of the language, and there is no leverage field: a leverage request becomes a compiler warning.
 

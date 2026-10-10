@@ -75,6 +75,8 @@ def say(node: E.Node, s: Strategy) -> str:
 
 
 def back_translate(s: Strategy) -> str:
+    if getattr(s, "kind", "intraday") == "portfolio":
+        return back_translate_portfolio(s)
     lines = [f"{s.id} v{s.version}: a {s.side}-only intraday strategy on 1-minute bars."]
     uni = "symbols in the watchlist"
     if s.universe_news_today:
@@ -98,4 +100,70 @@ def back_translate(s: Strategy) -> str:
         lines.append("Model signals used (advisory, gate entries/exits only): " + "; ".join(decl) + ". Missing signals fail closed.")
     else:
         lines.append("Uses no model signals (price-only).")
+    return "\n".join(lines)
+
+
+_DAILY_NAMES = {
+    "day_change": "today's move (price at the decision time vs the prior close)",
+    "holding": "the value held as a share of the original allocation",
+    "sessions_held": "sessions since the first buy",
+    "gain": "the gain on the shares held (vs average cost)",
+}
+_ACTION = {
+    "hold": "hold: sell nothing and buy nothing",
+    "exit": "sell the whole position and never buy it back",
+    "exit_and_wait": "sell the whole position and wait for the re-entry condition",
+}
+
+
+def _say_p(node: E.Node, s) -> str:
+    """say() for portfolio conditions: params with their values, daily builtins in words."""
+    if isinstance(node, E.Name):
+        if node.id in s.params:
+            return f"{node.id} ({_fmt_num(s.params[node.id], node.id, s)})"
+        return _DAILY_NAMES.get(node.id, node.id)
+    if isinstance(node, E.Cmp):
+        return f"{_say_p(node.l, s)} {_OPS[node.op]} {_say_p(node.r, s)}"
+    if isinstance(node, E.BoolOp):
+        return f" {node.op.upper()} ".join(f"({_say_p(x, s)})" for x in node.items)
+    if isinstance(node, E.Not):
+        return f"NOT ({_say_p(node.x, s)})"
+    if isinstance(node, E.Neg):
+        return f"minus {_say_p(node.x, s)}"
+    if isinstance(node, E.BinOp):
+        word = {"+": "plus", "-": "minus", "*": "times", "/": "divided by"}[node.op]
+        return f"{_say_p(node.l, s)} {word} {_say_p(node.r, s)}"
+    return node.src
+
+
+def back_translate_portfolio(s) -> str:
+    lines = [f"{s.id} v{s.version}: a long-only portfolio held overnight, decided once a day."]
+    lines.append(f"Capital: {s.capital:.0%} of account equity at the first buy, split as:")
+    for name, (w, syms) in s.groups.items():
+        lines.append(f"  - {name}: {w:.0%} -> {', '.join(syms)} ({w / len(syms):.1%} each)")
+    lines.append("First session: buy every symbol's full allocation with market orders.")
+    lines.append(f"Every session at {s.decide_at:%H:%M} ET, for each symbol, the FIRST matching rule applies:")
+    for k, r in enumerate(s.rules):
+        if r.action == "trim":
+            act = f"sell {_fmt_num(s.params[r.size], r.size, s)} of the shares held"
+        elif r.action == "add":
+            act = (f"buy {_fmt_num(s.params[r.size], r.size, s)} of the original allocation, "
+                   f"never above {s.max_holding:.0%} of it at market value")
+        else:
+            act = _ACTION[r.action]
+        lines.append(f"  {k + 1}. if {_say_p(r.when, s)}: {act}")
+    lines.append("  No rule matches: do nothing.")
+    if s.reentry_when is not None:
+        lines.append(f"After an exit_and_wait: on the first session where {_say_p(s.reentry_when, s)}, buy back "
+                     f"{_fmt_num(s.params[s.reentry_step], s.reentry_step, s)} of the original allocation, then the same "
+                     "every session until fully rebuilt. While rebuilding only exit rules apply.")
+    end = f"after {s.hold_sessions} sessions"
+    if s.end_date:
+        end += f" or on {s.end_date.isoformat()}, whichever comes first"
+    start = f" Starts on the first session on or after {s.start_date.isoformat()}." if s.start_date else ""
+    lines.append(f"Sell everything {end}.{start}")
+    dd = s.limits.get("max_drawdown")
+    lines.append("Sleeve stop: sell everything if the sleeve falls "
+                 + (f"{dd:.0%}" if dd else "by risk.yaml portfolio.max_drawdown") + " from its peak value.")
+    lines.append("Not flattened at the close; checked against risk.yaml portfolio limits before every order. Uses no model signals (price-only).")
     return "\n".join(lines)

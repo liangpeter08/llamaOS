@@ -44,3 +44,9 @@ Allow about 4–6 GB RAM for local Laya and the stack. Docker builds/deployment 
 ## Validation completed
 
 Python simulator/auth/storage tests and paper adapter/recovery tests pass; dashboard production build and TypeScript pass; npm production audit reports no known vulnerabilities. Actual Alpaca account, clock, calendar, assets, bar/news reads and Claude/Laya inference were verified. Market-hours order execution was not observed during implementation because the market was closed; the first actual entry still depends on a qualifying strategy signal.
+
+### Dashboard monitoring watchlist
+
+Use **Monitoring watchlist** to search active, tradable Alpaca US equity tickers and toggle price/news monitoring. The initial YAML list is migrated once into PostgreSQL; subsequent edits to `config/universe.yaml` do not control the paper watchlist. Changes apply during the broker loop without a restart, after any needed history is loaded.
+
+Intraday strategies use the shared candidate list. Portfolio strategies require the tickers declared in their holdings. Promoting a strategy to paper automatically adds/enables its required tickers. Turning monitoring off later requires confirmation if an active strategy depends on the ticker; the strategy detail page shows missing coverage. New intraday entries and portfolio buys are blocked for disabled tickers. Held positions and outstanding broker orders retain feed monitoring and risk exits. The dashboard shows whether the broker has applied each enabled ticker. Up to 50 tickers may be enabled for new entries.

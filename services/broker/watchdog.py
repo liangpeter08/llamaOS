@@ -4,7 +4,7 @@ import signal
 import time
 from datetime import datetime
 
-from common import audit,db,timeutil as T
+from common import audit,db,sleeves,timeutil as T
 from common.config import load_risk
 from .alpaca import Alpaca,epoch
 
@@ -23,6 +23,7 @@ def main():
     signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
     while not stopping:
         try:
+            risk=load_risk()  # the owner may change controls on the dashboard at any time
             clock=api.clock();now=epoch(clock['timestamp'])
             day=T.et(now).date()
             if clock['is_open']:
@@ -33,20 +34,37 @@ def main():
                 bar=db.kv_get(c,'feed.last_bar') or 0
                 symbol_bars=db.kv_get(c,"feed.symbols") or {}
                 positions=api.positions()
+                # Portfolio sleeves hold overnight and aren't on the 1-minute feed: the deadline and
+                # stale-feed checks cover intraday positions only. A kill still closes everything.
+                sleeve=set(sleeves.owned_symbols(c))
+                intraday=[p for p in positions if p['symbol'] not in sleeve]
                 reason=None
                 if now>=deadline:reason='calendar flatten deadline'
                 elif now>T.open_ts(day)+risk.stale_feed_halt and (age is None or age>60):reason='broker heartbeat stale'
-                elif now>T.open_ts(day)+risk.stale_feed_halt and (now-bar>risk.stale_feed_halt or any(now-symbol_bars.get(p['symbol'],0)>risk.stale_feed_halt for p in positions)):reason='market feed stale'
+                elif now>T.open_ts(day)+risk.stale_feed_halt and (now-bar>risk.stale_feed_halt or any(now-symbol_bars.get(p['symbol'],0)>risk.stale_feed_halt for p in intraday)):reason='market feed stale'
                 ks=db.kv_get(c,'kill_switch') or {}
                 if reason or ks.get('active'):
                     if reason and reason!='calendar flatten deadline' and not ks.get('active'):
                         db.kv_set(c,'kill_switch',{'active':True,'reason':reason,'ts':time.time(),'by':'watchdog'})
                         audit.log(c,'kill_switch.triggered','watchdog',{'reason':reason})
                     orders=api.orders()
+                    import json
+                    if not ks.get('active') and reason=='calendar flatten deadline':
+                        orders=[o for o in orders if o['symbol'] not in sleeve]
+                        closing=any(o.get('type')=='market' and now-epoch(o['created_at'])<60 for o in orders)
+                        if (intraday or orders) and not closing:
+                            for o in orders:api.cancel(o['id'])
+                            for p in intraday:
+                                try:order=api.close_position(p['symbol'])
+                                except Exception:continue  # shares still reserved by a cancelling bracket: retry next pass
+                                if order and order.get("id"):
+                                    c.execute("INSERT INTO paper_external_exits(broker_id,body,reason) VALUES (?,?,?) ON CONFLICT(broker_id) DO NOTHING",
+                                              (order["id"],json.dumps(order),"watchdog"))
+                            audit.log(c,'paper.watchdog_flatten','watchdog',{'reason':reason,'kept_sleeves':sorted(sleeve)})
+                        orders=positions=[]
                     closing=any(o.get('type')=='market' and now-epoch(o['created_at'])<60 for o in orders)
                     if (positions or orders) and not closing:
                         # Alpaca bulk endpoint cancels bracket reservations before closing.
-                        import json
                         results=api.flatten() or []
                         for result in results:
                             order=result.get("body") or {}

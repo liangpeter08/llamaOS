@@ -55,7 +55,7 @@ def _log(conn, model, task, t0, ok, err=None, usage=None):
 
 
 def _request(model: str, system: str, messages: list, max_tokens: int, effort: str, schema: dict | None,
-             cache: bool = False):
+             cache: bool = False, timeout: float | None = None):
     kwargs = dict(
         model=model,
         max_tokens=max_tokens,
@@ -63,6 +63,8 @@ def _request(model: str, system: str, messages: list, max_tokens: int, effort: s
         messages=messages,
         output_config={"effort": effort},
     )
+    if timeout is not None:
+        kwargs["timeout"] = timeout  # high-effort authoring calls outlast the client's 60s default
     if cache:
         kwargs["cache_control"] = {"type": "ephemeral"}  # multi-turn chats resend the same context
     if schema is not None:
@@ -76,7 +78,7 @@ def _request(model: str, system: str, messages: list, max_tokens: int, effort: s
 
 
 def call(conn, *, model: str, task: str, system: str, messages: list, max_tokens: int = 16000,
-         effort: str = "medium", schema: dict | None = None, cache: bool = False):
+         effort: str = "medium", schema: dict | None = None, cache: bool = False, timeout: float | None = None):
     """Returns (text, parsed_json_or_None, response). Raises LLMUnavailable or anthropic errors."""
     import anthropic
 
@@ -94,7 +96,7 @@ def call(conn, *, model: str, task: str, system: str, messages: list, max_tokens
     max_tokens=min(max_tokens,8000)
     t0 = time.time()
     try:
-        resp = _request(model, system, messages, max_tokens, effort, schema, cache)
+        resp = _request(model, system, messages, max_tokens, effort, schema, cache, timeout)
     except anthropic.APIStatusError as e:
         _log(conn, model, task, t0, False, f"{e.status_code}: {e.message}"[:500])
         raise
@@ -104,6 +106,9 @@ def call(conn, *, model: str, task: str, system: str, messages: list, max_tokens
     if resp.stop_reason == "refusal":
         _log(conn, model, task, t0, False, "refusal", resp.usage)
         raise LLMUnavailable("the model declined this request")
+    if schema is not None and resp.stop_reason == "max_tokens":
+        _log(conn, model, task, t0, False, "max_tokens", resp.usage)
+        raise LLMUnavailable("the model's answer was cut off before it finished; try a shorter request")
     text = "".join(b.text for b in resp.content if b.type == "text")
     _log(conn, model, task, t0, True, None, resp.usage)
     parsed = None

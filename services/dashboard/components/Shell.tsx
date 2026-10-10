@@ -12,10 +12,12 @@ const NAV: [string, string][] = [
   ["/", "Overview"],
   ["/approvals", "Trade approvals"],
   ["/portfolio", "Portfolio"],
+  ["/funds", "Funds"],
   ["/strategies", "Strategies"],
   ["/ideas", "Idea Lab"],
   ["/theses", "Theses"],
   ["/news", "News & signals"],
+  ["/watchlist", "Monitoring watchlist"],
 ];
 const NAV2: [string, string][] = [
   ["/system", "System"],

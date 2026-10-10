@@ -78,8 +78,8 @@ export function Checks({ items }: { items?: Check[] | null }) {
 }
 
 export function StatusPill({ status }: { status: string }) {
-  const good = ["filled", "submitted", "live", "accepted", "compiled", "t1"];
-  const bad = ["rejected", "auto_rejected", "rejected_guard", "void", "retired", "expired", "escalated", "unfilled"];
+  const good = ["filled", "submitted", "live", "accepted", "compiled", "t1", "active"];
+  const bad = ["rejected", "auto_rejected", "rejected_guard", "void", "retired", "expired", "escalated", "unfilled", "paused", "paused_today", "halted", "stopped", "broker_rejected"];
   const accent = ["paper", "pending", "backtested"];
   return <Pill kind={good.includes(status) ? "good" : bad.includes(status) ? "bad" : accent.includes(status) ? "accent" : ""}>{status}</Pill>;
 }

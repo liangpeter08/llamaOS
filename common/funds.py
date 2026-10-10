@@ -1,0 +1,177 @@
+"""Fund allocations and money monitoring in PostgreSQL (shared by broker and api).
+
+The account view is built from what the broker persists every sync (kv 'account', the
+positions table, working intents and sleeve orders), so the dashboard and the checks the
+broker runs see the same numbers.
+"""
+from __future__ import annotations
+
+import time
+from datetime import date, time as dtime
+
+from core import funds as F
+
+from . import audit, db, registry
+from . import timeutil as T
+from .config import RiskConfig
+
+WORKING_INTENTS = ("approved", "submitting", "submitted")
+WORKING_SLEEVE = ("approved", "submitting", "submitted")  # a "rechecking" order is the one being checked
+
+
+def default_allocation(s, risk: RiskConfig) -> float:
+    cfg = risk.funds
+    if getattr(s, "kind", "intraday") == "portfolio":
+        return min(s.capital * s.max_holding, cfg.max_strategy_allocation)
+    return cfg.default_allocation
+
+
+def running(conn, risk: RiskConfig) -> dict[str, object]:
+    """sid -> newest running (paper/live) strategy object, plus lines that still hold positions."""
+    out: dict[str, object] = {}
+    for kind in ("intraday", "portfolio"):
+        for _, s in registry.runnable(conn, risk, kind=kind):
+            out[s.id] = s
+    held = {r["sid"] for r in db.rows(conn, "SELECT DISTINCT sid FROM positions WHERE sid IS NOT NULL")}
+    for sid in held - set(out):
+        r = db.row(conn, "SELECT hash FROM strategies WHERE sid=? ORDER BY version DESC LIMIT 1", (sid,))
+        if r:
+            s, _ = registry.load(conn, r["hash"], risk)
+            if s is not None:
+                out[sid] = s
+    return out
+
+
+def equity_now(conn) -> tuple[float, float]:
+    a = db.kv_get(conn, "account") or {}
+    eq = float(a.get("equity") or 0.0)
+    return eq, float(a.get("cash", eq) or 0.0)
+
+
+def ensure(conn, risk: RiskConfig, s, actor: str = "default", allocation: float | None = None) -> dict:
+    """The allocation row of a strategy line, created with defaults the first time it runs."""
+    r = db.row(conn, "SELECT * FROM strategy_funds WHERE sid=?", (s.id,))
+    if r:
+        return r
+    cfg = risk.funds
+    eq, _ = equity_now(conn)
+    alloc = allocation if allocation is not None else default_allocation(s, risk)
+    now = time.time()
+    conn.execute("INSERT INTO strategy_funds(sid, allocation, max_drawdown, daily_loss, status, base_usd, base_ts, peak_pnl,"
+                 " source, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(sid) DO NOTHING",
+                 (s.id, alloc, cfg.strategy_max_drawdown, cfg.strategy_daily_loss if s.kind == "intraday" else None,
+                  "active", alloc * eq, now, 0.0, "set" if actor != "default" else "default", actor, now))
+    audit.log(conn, "funds.allocated", actor, {"sid": s.id, "allocation": alloc, "source": actor})
+    return db.row(conn, "SELECT * FROM strategy_funds WHERE sid=?", (s.id,))
+
+
+def account(conn, risk: RiskConfig, strategies: dict | None = None) -> F.Account:
+    """Money view of the account and every running strategy line."""
+    strategies = strategies if strategies is not None else running(conn, risk)
+    eq, cash = equity_now(conn)
+    pos = db.rows(conn, "SELECT symbol, qty, avg_price, last_price, sid FROM positions")
+    working_i = db.rows(conn, f"SELECT sid, qty, limit_price FROM intents WHERE status IN {WORKING_INTENTS} AND side='long'")
+    working_p = db.rows(conn, f"SELECT sid, qty, filled_qty, ref_price FROM portfolio_orders WHERE status IN {WORKING_SLEEVE} AND side='buy'")
+    deployed_by: dict[str, float] = {}
+    for p in pos:
+        deployed_by[p["sid"] or "unmanaged"] = deployed_by.get(p["sid"] or "unmanaged", 0.0) + abs(p["qty"] * (p["last_price"] or p["avg_price"] or 0))
+    working = 0.0
+    for w in working_i:
+        v = (w["qty"] or 0) * (w["limit_price"] or 0)
+        deployed_by[w["sid"]] = deployed_by.get(w["sid"], 0.0) + v
+        working += v
+    for w in working_p:
+        v = (w["qty"] - w["filled_qty"]) * (w["ref_price"] or 0)
+        deployed_by[w["sid"]] = deployed_by.get(w["sid"], 0.0) + v
+        working += v
+    today = T.ts_at(T.et(time.time()).date(), dtime(0, 0))  # since midnight ET
+    rows = {r["sid"]: r for r in db.rows(conn, "SELECT * FROM strategy_funds")}
+    out: dict[str, F.StrategyFund] = {}
+    for sid, s in strategies.items():
+        r = rows.get(sid) or ensure(conn, risk, s)
+        realized = db.row(conn, "SELECT COALESCE(SUM(pnl),0) v FROM trades WHERE sid=? AND exit_ts>=?", (sid, int(r["base_ts"])))["v"]
+        realized_today = db.row(conn, "SELECT COALESCE(SUM(pnl),0) v FROM trades WHERE sid=? AND exit_ts>=?", (sid, int(max(today, r["base_ts"]))))["v"]
+        unreal = sum((p["last_price"] - p["avg_price"]) * p["qty"] for p in pos if p["sid"] == sid and p["last_price"] and p["avg_price"])
+        out[sid] = F.StrategyFund(
+            sid=sid, kind=s.kind, allocation=r["allocation"], source=r["source"], max_drawdown=r["max_drawdown"],
+            daily_loss=r["daily_loss"], status=r["status"], reason=r["reason"] or "", base_usd=r["base_usd"],
+            base_ts=r["base_ts"], peak_pnl=max(r["peak_pnl"], realized + unreal), deployed=deployed_by.get(sid, 0.0),
+            pnl=realized + unreal, pnl_today=realized_today + unreal)
+    intraday = sum(f.deployed for f in out.values() if f.kind == "intraday")
+    peak = max(float(db.kv_get(conn, "funds.peak_equity") or 0.0), eq)
+    return F.Account(equity=eq, cash=cash, deployed=sum(deployed_by.values()), intraday_deployed=intraday,
+                     working_buys=working, peak_equity=peak, strategies=out)
+
+
+def monitor(conn, risk: RiskConfig, actor: str = "broker") -> str:
+    """Track peaks, pause strategies that breach their limits; returns a kill reason on an account drawdown breach."""
+    if risk.funds is None:
+        return ""
+    acct = account(conn, risk)
+    if acct.equity > 0:
+        db.kv_set(conn, "funds.peak_equity", acct.peak_equity)
+    today = str(T.et(time.time()).date())
+    for f in acct.strategies.values():
+        r = db.row(conn, "SELECT status, paused_day, peak_pnl FROM strategy_funds WHERE sid=?", (f.sid,))
+        if r["status"] == "paused_today" and r["paused_day"] != today:
+            conn.execute("UPDATE strategy_funds SET status='active', reason=NULL, paused_day=NULL WHERE sid=?", (f.sid,))
+            audit.log(conn, "funds.resumed", actor, {"sid": f.sid, "why": "new session"})
+            f.status = "active"
+        if f.peak_pnl > r["peak_pnl"]:
+            conn.execute("UPDATE strategy_funds SET peak_pnl=? WHERE sid=?", (f.peak_pnl, f.sid))
+        why = F.breach(f)
+        if why and f.status == "active":
+            status = "paused" if "drawdown" in why else "paused_today"
+            conn.execute("UPDATE strategy_funds SET status=?, reason=?, paused_day=?, updated_at=? WHERE sid=?",
+                         (status, why, today, time.time(), f.sid))
+            audit.log(conn, "funds.paused", actor, {"sid": f.sid, "status": status, "reason": why})
+    cfg = risk.funds
+    if acct.peak_equity and acct.drawdown >= cfg.account_max_drawdown:
+        return f"account drawdown {acct.drawdown:.1%} from peak ${acct.peak_equity:,.0f} reached funds.account_max_drawdown {cfg.account_max_drawdown:.0%}"
+    return ""
+
+
+def status(conn, sid: str) -> tuple[str, str]:
+    r = db.row(conn, "SELECT status, reason FROM strategy_funds WHERE sid=?", (sid,))
+    return (r["status"], r["reason"] or "") if r else ("active", "")
+
+
+def set_allocation(conn, risk: RiskConfig, s, allocation: float, max_drawdown: float, daily_loss: float | None, actor: str) -> list[str]:
+    """Owner sets a strategy line's slice; the drawdown base restarts from now."""
+    cfg = risk.funds
+    others = {sid: r["allocation"] for sid, r in ((r["sid"], r) for r in db.rows(conn, "SELECT sid, allocation FROM strategy_funds"))
+              if sid != s.id and sid in running(conn, risk)}
+    errs = F.validate_allocation(s.id, allocation, max_drawdown, daily_loss if s.kind == "intraday" else None, others, cfg)
+    if errs:
+        return errs
+    eq, _ = equity_now(conn)
+    ensure(conn, risk, s, actor, allocation)
+    acct = account(conn, risk, {s.id: s})
+    pnl = acct.strategies[s.id].pnl
+    conn.execute("UPDATE strategy_funds SET allocation=?, max_drawdown=?, daily_loss=?, base_usd=?, base_ts=?, peak_pnl=0,"
+                 " source='set', updated_by=?, updated_at=? WHERE sid=?",
+                 (allocation, max_drawdown, daily_loss if s.kind == "intraday" else None, allocation * eq, time.time(), actor, time.time(), s.id))
+    audit.log(conn, "funds.allocated", actor, {"sid": s.id, "allocation": allocation, "max_drawdown": max_drawdown,
+                                                "daily_loss": daily_loss, "pnl_before_rebase": pnl})
+    return []
+
+
+def unallocated(conn, risk: RiskConfig, exclude: str | None = None) -> float:
+    run = running(conn, risk)
+    used = sum(r["allocation"] for r in db.rows(conn, "SELECT sid, allocation FROM strategy_funds") if r["sid"] in run and r["sid"] != exclude)
+    return risk.funds.max_deployed - used
+
+
+def pause(conn, sid: str, reason: str, actor: str):
+    conn.execute("UPDATE strategy_funds SET status='paused', reason=?, paused_day=?, updated_by=?, updated_at=? WHERE sid=?",
+                 (reason, str(T.et(time.time()).date()), actor, time.time(), sid))
+    audit.log(conn, "funds.paused", actor, {"sid": sid, "status": "paused", "reason": reason})
+
+
+def resume(conn, sid: str, actor: str):
+    """Owner resumes after reviewing; drawdown is measured from a fresh base so the old peak doesn't re-trigger it."""
+    eq, _ = equity_now(conn)
+    r = db.row(conn, "SELECT allocation FROM strategy_funds WHERE sid=?", (sid,))
+    conn.execute("UPDATE strategy_funds SET status='active', reason=NULL, paused_day=NULL, base_usd=?, base_ts=?, peak_pnl=0,"
+                 " updated_by=?, updated_at=? WHERE sid=?", (r["allocation"] * eq, time.time(), actor, time.time(), sid))
+    audit.log(conn, "funds.resumed", actor, {"sid": sid, "why": "owner"})

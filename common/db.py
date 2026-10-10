@@ -22,6 +22,9 @@ DEFAULT_URL = "postgresql://llamaos:llamaos@127.0.0.1:5432/llamaos"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS auth_sessions(
  token_hash TEXT PRIMARY KEY, user_id BIGINT NOT NULL, expires DOUBLE PRECISION NOT NULL);
+CREATE TABLE IF NOT EXISTS monitoring_watchlist(
+ symbol TEXT PRIMARY KEY, enabled BOOLEAN NOT NULL DEFAULT TRUE,
+ updated_at DOUBLE PRECISION NOT NULL, updated_by TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS login_failures(
  id BIGSERIAL PRIMARY KEY, key TEXT NOT NULL, ts DOUBLE PRECISION NOT NULL);
 CREATE INDEX IF NOT EXISTS login_failures_lookup ON login_failures(key,ts);
@@ -63,6 +66,7 @@ CREATE TABLE IF NOT EXISTS strategies(
   status TEXT NOT NULL, mode TEXT NOT NULL, created_at DOUBLE PRECISION, updated_at DOUBLE PRECISION,
   validation TEXT, backtest TEXT, back_translation TEXT,
   approved_by TEXT, approved_at DOUBLE PRECISION, paper_started_at DOUBLE PRECISION);
+ALTER TABLE strategies ADD COLUMN IF NOT EXISTS display_name TEXT;
 
 CREATE TABLE IF NOT EXISTS intents(
   id BIGSERIAL PRIMARY KEY, ts BIGINT, strategy_hash TEXT, sid TEXT, symbol TEXT, side TEXT,
@@ -131,6 +135,34 @@ CREATE TABLE IF NOT EXISTS ideas(
 CREATE TABLE IF NOT EXISTS chats(
   id BIGSERIAL PRIMARY KEY, ts DOUBLE PRECISION, thread TEXT, role TEXT, content TEXT, model TEXT);
 CREATE INDEX IF NOT EXISTS chats_thread ON chats(thread, id);
+
+-- Portfolio sleeves (kind: portfolio strategies). Held across sessions; never wiped by the broker.
+CREATE TABLE IF NOT EXISTS portfolio_state(
+  strategy_hash TEXT PRIMARY KEY, sid TEXT NOT NULL, state TEXT NOT NULL, updated_at DOUBLE PRECISION);
+CREATE TABLE IF NOT EXISTS portfolio_orders(
+  id BIGSERIAL PRIMARY KEY, strategy_hash TEXT NOT NULL, sid TEXT NOT NULL, day TEXT NOT NULL, ts DOUBLE PRECISION,
+  symbol TEXT NOT NULL, side TEXT NOT NULL, qty INTEGER NOT NULL, ref_price DOUBLE PRECISION, reason TEXT,
+  decision TEXT, guard TEXT, recheck TEXT, status TEXT NOT NULL, mode TEXT, client_id TEXT UNIQUE, broker_id TEXT,
+  filled_qty DOUBLE PRECISION NOT NULL DEFAULT 0, avg_price DOUBLE PRECISION, created_wall DOUBLE PRECISION,
+  expires_wall DOUBLE PRECISION, decided_by TEXT, decided_wall DOUBLE PRECISION, note TEXT);
+CREATE INDEX IF NOT EXISTS portfolio_orders_status ON portfolio_orders(status);
+CREATE INDEX IF NOT EXISTS portfolio_orders_strategy ON portfolio_orders(strategy_hash, id);
+CREATE TABLE IF NOT EXISTS portfolio_days(
+  strategy_hash TEXT NOT NULL, day TEXT NOT NULL, records TEXT NOT NULL, event TEXT, PRIMARY KEY(strategy_hash, day));
+
+-- Fund allocation per strategy line (sid, across versions). Set on the dashboard within risk.yaml funds.
+CREATE TABLE IF NOT EXISTS strategy_funds(
+  sid TEXT PRIMARY KEY, allocation DOUBLE PRECISION NOT NULL, max_drawdown DOUBLE PRECISION NOT NULL,
+  daily_loss DOUBLE PRECISION, status TEXT NOT NULL DEFAULT 'active', reason TEXT, paused_day TEXT,
+  base_usd DOUBLE PRECISION NOT NULL, base_ts DOUBLE PRECISION NOT NULL, peak_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+  source TEXT, updated_by TEXT, updated_at DOUBLE PRECISION);
+
+-- Owner-set risk controls (dashboard Risk page) over the factory defaults in config/risk.yaml.
+CREATE TABLE IF NOT EXISTS risk_settings(
+  key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_by TEXT, updated_at DOUBLE PRECISION);
+CREATE TABLE IF NOT EXISTS risk_settings_history(
+  id BIGSERIAL PRIMARY KEY, ts DOUBLE PRECISION NOT NULL, key TEXT NOT NULL, old_value TEXT, new_value TEXT,
+  actor TEXT, reason TEXT);
 
 CREATE TABLE IF NOT EXISTS audit(
   id BIGSERIAL PRIMARY KEY, ts DOUBLE PRECISION NOT NULL, kind TEXT NOT NULL, actor TEXT,

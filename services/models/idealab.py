@@ -7,6 +7,7 @@ time-based holdout on which an idea is scored exactly once, at creation.
 """
 from __future__ import annotations
 
+import bisect
 import json
 import math
 import statistics
@@ -23,19 +24,30 @@ from . import llm
 from .quicklayer import _model_id, prompt
 
 HORIZONS = (5, 15, 60)
+MAX_GAP_S = 4 * 86400  # news with no session bars within this window has no measurable reaction
+
+
+class NoEvents(Exception):
+    """Nothing to study yet: raised before any quota or model call is spent."""
 
 
 def _events(conn) -> list[dict]:
-    """Recorded (non-dropped) history news with the signals that were written for it."""
+    """Recorded (non-dropped) news from any feed (simulator history or Alpaca) with its signals."""
     out = []
-    for r in db.rows(conn, "SELECT id, ts, symbols, headline FROM news WHERE session='history' AND triage IN ('t1','escalated') ORDER BY ts"):
-        sigs = {s["name"]: json.loads(s["value"]) for s in db.rows(
-            conn, "SELECT name, value FROM signals WHERE news_id=?", (r["id"],))}
+    sigs_by_news: dict[int, dict] = defaultdict(dict)
+    for s in db.rows(conn, "SELECT news_id, symbol, name, value FROM signals WHERE news_id IS NOT NULL ORDER BY id"):
+        sigs_by_news[s["news_id"]].setdefault(s["symbol"], {})[s["name"]] = json.loads(s["value"])
+    for r in db.rows(conn, "SELECT id, ts, symbols FROM news WHERE triage IN ('t1','escalated') ORDER BY ts"):
+        by_sym = sigs_by_news.get(r["id"]) or {}
+        syms = [x for x in json.loads(r["symbols"] or "[]") if x in by_sym]
+        if not syms:
+            continue
+        sigs = by_sym[syms[0]]
         if "news.catalyst" not in sigs:
             continue
         score = sigs.get("news.score", 0) or 0
         out.append({
-            "id": r["id"], "ts": r["ts"], "symbol": json.loads(r["symbols"])[0], "headline": r["headline"],
+            "id": r["id"], "ts": r["ts"], "symbol": syms[0],
             "catalyst": sigs["news.catalyst"], "score": score,
             "direction": "positive" if score > 0.05 else "negative" if score < -0.05 else "neutral",
         })
@@ -43,22 +55,32 @@ def _events(conn) -> list[dict]:
 
 
 def _reaction(conn, ev: dict) -> dict | None:
-    d = T.et(ev["ts"]).date()
+    """Forward returns after an event, measured in clock time (feeds like IEX skip quiet minutes).
+
+    Intraday news reacts from the close of the bar it landed in. News before the open, after the
+    close or on a non-trading day reacts from the open of the next session that has bars.
+    """
+    first = db.row(conn, "SELECT ts FROM bars WHERE symbol=? AND ts + 60 >= ? AND ts < ? ORDER BY ts LIMIT 1",
+                   (ev["symbol"], ev["ts"] + 30, ev["ts"] + MAX_GAP_S))
+    if not first:
+        return None
+    d = T.et(first["ts"]).date()
     rows = db.rows(conn, "SELECT ts, o, c FROM bars WHERE symbol=? AND ts>=? AND ts<? ORDER BY ts",
                    (ev["symbol"], T.open_ts(d), T.close_ts(d)))
     if len(rows) < 2:
         return None
     if ev["ts"] < T.open_ts(d):
-        k, ref = 0, rows[0]["o"]  # premarket news: react from the open
+        ref_ts, ref, when = rows[0]["ts"], rows[0]["o"], "premarket"
     else:
-        k = next((j for j, b in enumerate(rows) if b["ts"] + 60 >= ev["ts"] + 30), None)
-        if k is None:
-            return None
-        ref = rows[k]["c"]
-    out = {"day": d.isoformat(), "when": "premarket" if ev["ts"] < T.open_ts(d) else "intraday"}
+        k = next(j for j, b in enumerate(rows) if b["ts"] == first["ts"])
+        ref_ts, ref, when = rows[k]["ts"] + 60, rows[k]["c"], "intraday"
+    closes_at = [b["ts"] + 60 for b in rows]  # bar close times
+    out = {"day": d.isoformat(), "when": when}
     for h in HORIZONS:
-        j = k + h - (1 if out["when"] == "premarket" else 0)
-        out[f"r{h}"] = rows[j]["c"] / ref - 1 if j < len(rows) else None
+        # last completed bar at or before ref + h minutes; None if the session ends first
+        target = ref_ts + h * 60
+        j = bisect.bisect_right(closes_at, target) - 1
+        out[f"r{h}"] = rows[j]["c"] / ref - 1 if target <= closes_at[-1] and j >= 0 and closes_at[j] > ref_ts else None
     out["rclose"] = rows[-1]["c"] / ref - 1
     return out
 
@@ -127,6 +149,18 @@ def _store(conn, run_id: str, idea: dict, raw, min_events: int, model: str) -> i
 
 def run(conn, focus: str = "", actor: str = "idealab") -> dict:
     cfg = load_yaml("idealab.yaml")
+    min_events = int(cfg.get("min_events", 8))
+    # measure first: an empty study must not spend the daily run quota or a model call
+    study = event_study(conn)
+    raw = study.pop("_raw")
+    measured = sum(g["n"] + g["n_holdout"] for g in study["groups"])
+    if not any(g["n"] for g in study["groups"] if g["direction"] != "neutral"):
+        triaged = db.row(conn, "SELECT COUNT(*) n FROM news WHERE triage IN ('t1','escalated')")["n"]
+        raise NoEvents(
+            f"Nothing to study yet: {triaged} triaged news items, {measured} with a measurable price reaction"
+            f" ({sum(g['n'] for g in study['groups'])} outside the {len(study['holdout_days'])}-session holdout,"
+            " none with a positive or negative direction). Load news history with `make news-backfill`"
+            " or let the live feed record more events.")
     key="idealab.quota."+time.strftime("%Y-%m-%d",time.gmtime())
     cap=int(load_yaml("models.yaml").get("budgets",{}).get("idealab_runs_per_day",4))
     with db.tx(conn):
@@ -134,21 +168,26 @@ def run(conn, focus: str = "", actor: str = "idealab") -> dict:
         used=int(db.kv_get(conn,key) or 0)
         if used>=cap:raise llm.LLMUnavailable("Daily Idea Lab run limit reached")
         db.kv_set(conn,key,used+1)
-    min_events = int(cfg.get("min_events", 8))
-    study = event_study(conn)
-    raw = study.pop("_raw")
     run_id = uuid.uuid4().hex[:10]
     theses = db.rows(conn, "SELECT id, text, tags, confidence, expires FROM theses WHERE active=1")
+    dropped = 0
     if llm.available():
-        ideas, model = _claude_ideas(conn, study, theses, focus, min_events), _model_id("claude_opus")
+        ideas, dropped = _claude_ideas(conn, study, theses, focus, min_events)
+        model = _model_id("claude_opus")
     else:
         ideas, model = _rules_ideas(study, theses), "rules@v1"
     ids = []
     with db.tx(conn):
         for idea in ideas:
             ids.append(_store(conn, run_id, idea, raw, min_events, model))
-    audit.log(conn, "idealab.run", actor, {"run_id": run_id, "model": model, "ideas": ids, "focus": focus})
-    return {"run_id": run_id, "model": model, "ideas": ids, "groups": len(study["groups"])}
+    note = ""
+    if not ids:
+        note = ("no direction group reached |t| >= 2 at 60 minutes with n >= 3; nothing is significant yet"
+                if model == "rules@v1" else "the model proposed no hypotheses that cite measured groups")
+    audit.log(conn, "idealab.run", actor, {"run_id": run_id, "model": model, "ideas": ids, "focus": focus,
+                                           "events": measured, "dropped": dropped, "note": note})
+    return {"run_id": run_id, "model": model, "ideas": ids, "groups": len(study["groups"]),
+            "events": measured, "dropped": dropped, "note": note}
 
 
 def _rules_ideas(study: dict, theses: list[dict]) -> list[dict]:
@@ -210,7 +249,7 @@ IDEAS_SCHEMA = {
 }
 
 
-def _claude_ideas(conn, study: dict, theses: list[dict], focus: str, min_events: int) -> list[dict]:
+def _claude_ideas(conn, study: dict, theses: list[dict], focus: str, min_events: int) -> tuple[list[dict], int]:
     table = [{k: v for k, v in g.items() if k != "event_ids"} for g in study["groups"]]
     msg = (
         f"Event-study table (discovery days only; {len(study['discovery_days'])} sessions, holdout reserved):\n"
@@ -224,11 +263,12 @@ def _claude_ideas(conn, study: dict, theses: list[dict], focus: str, min_events:
                             messages=[{"role": "user", "content": msg}], max_tokens=16000, effort="high",
                             schema=IDEAS_SCHEMA)
     by_key = {(g["catalyst"], g["direction"]): g for g in study["groups"]}
-    out = []
+    out, dropped = [], 0
     for it in parsed["ideas"]:
         g = by_key.get((it["catalyst"], it["direction"]))
-        if not g:
-            continue  # cites a group that doesn't exist: dropped, still counted in the audit log
+        if not g or not g["n"]:
+            dropped += 1  # cites a group that doesn't exist (or has no discovery events)
+            continue
         out.append({
             "title": it["title"], "hypothesis": it["hypothesis"], "mechanism": it["mechanism"], "falsify": it["falsify"],
             "group": {"catalyst": it["catalyst"], "direction": it["direction"]}, "horizon": it["horizon"],
@@ -236,7 +276,7 @@ def _claude_ideas(conn, study: dict, theses: list[dict], focus: str, min_events:
             "evidence": {"h5": g["h5"], "h15": g["h15"], "h60": g["h60"], "hclose": g["hclose"]},
             "theses": {"supports": it["supports_theses"], "contradicts": it["contradicts_theses"]},
         })
-    return out
+    return out, dropped
 
 
 def template_strategy(idea: dict) -> tuple[str | None, str]:

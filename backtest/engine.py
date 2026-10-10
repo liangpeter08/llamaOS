@@ -20,7 +20,10 @@ from dsl.validator import Strategy
 def simulate(conn, strategies: list[Strategy], risk: RiskConfig, days: list[date] | None = None,
              starting_equity: float = 100_000.0, slippage: float = 0.0002, keep_records: int = 25,
              on_bar=None) -> dict:
-    """Replay strategies together over stored sessions. on_bar(session, day, i) runs after each bar."""
+    """Replay strategies together over stored sessions. on_bar(session, day, i) runs after each bar.
+
+    Intraday strategies only: portfolio strategies hold overnight and replay through backtest.portfolio."""
+    strategies = [s for s in strategies if getattr(s, "kind", "intraday") == "intraday"]
     days = days if days is not None else MD.bar_days(conn)
     syms = [s for s in universe() if s in set(MD.symbols(conn))]
     equity = starting_equity
@@ -77,6 +80,9 @@ def simulate(conn, strategies: list[Strategy], risk: RiskConfig, days: list[date
 
 def run(conn, strat: Strategy, risk: RiskConfig, days: list[date] | None = None,
         starting_equity: float = 100_000.0, slippage: float = 0.0002, keep_records: int = 25) -> dict:
+    if getattr(strat, "kind", "intraday") == "portfolio":
+        from .portfolio import run as run_portfolio
+        return run_portfolio(conn, strat, risk, starting_equity=starting_equity, slippage=slippage)
     rep = simulate(conn, [strat], risk, days, starting_equity, slippage, keep_records)
     return {
         "strategy": strat.id, "version": strat.version, "hash": strat.hash,

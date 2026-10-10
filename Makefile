@@ -1,7 +1,7 @@
 PY ?= .venv/bin/python
 DASH = services/dashboard
 
-.PHONY: init seed demo replay dev dev-owner dev-code test typecheck build reset-db reset-kill-switch broker models api dashboard
+.PHONY: news-backfill init seed demo replay dev dev-owner dev-code test typecheck build reset-db reset-kill-switch broker models api dashboard
 
 init:            ## create venv, install Python + Node deps, copy example config
 	test -d .venv || python3 -m venv .venv
@@ -55,6 +55,9 @@ reset-kill-switch:   ## host-only
 
 paper-setup:     ## real Alpaca history + isolated paper DB + initial owner
 	$(PY) scripts/paper_setup.py
+
+news-backfill:   ## historical Alpaca news for the stored bar period, triaged offline (feeds the Idea Lab)
+	$(PY) scripts/news_backfill.py
 
 paper: build     ## actual Alpaca paper stack (separate from make dev)
 	$(PY) scripts/paper.py

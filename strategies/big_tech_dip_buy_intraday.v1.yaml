@@ -1,0 +1,66 @@
+dsl: 0.1
+id: big_tech_dip_buy_intraday
+version: 1
+source:
+  text: >-
+    I think the top tech companies are going get a boost during the next two month, build a
+    strategy to buy top 10 big tech companies evenly with more allocation on software
+    companies like 70%. Generate me a buy and hold strategy. On above +3% gains days, sell 30%
+    of the stock, if above +5% one day gain do not sell. On -3% loss days, add more position
+    but no more than 150% original allocation, if more than -5% lost, wait for a positive gain
+    day, and re-enter the stock at 20% per day.
+  compiled_by: claude-opus-5-5
+  prompt: compiler@v1
+assumptions:
+  - NOT SUPPORTED - buy and hold for two months. Every position must be flat by 15:55 ET, so this file is intraday only and holds nothing overnight.
+  - NOT SUPPORTED - a fixed list of the top 10 big tech names. The universe cannot name tickers or sectors, so big tech is approximated as prior close >= $50 and 20-day avg dollar volume >= $1B. This will also admit non-tech mega caps.
+  - NOT SUPPORTED - 70% allocation to software and equal weighting. Sizing is risk-based per trade, and each position is capped at 10% of equity by the account rules.
+  - NOT SUPPORTED - holding all 10 names at once. The account allows at most 3 open positions, so max open positions = 3.
+  - NOT SUPPORTED - selling 30% of a position. Exits close the whole position, so the +3% day becomes a full exit at prior close +3%.
+  - NOT SUPPORTED - the do-not-sell-above-+5% exception. The +3% target is a bracket and fills first, so this rule is dropped.
+  - NOT SUPPORTED - adding up to 150% of the original allocation. There is no scaling in, so the -3% day becomes a single new entry.
+  - NOT SUPPORTED - waiting for a positive day after a -5% drop and then re-entering at 20% per day. Multi-day state and staged entries cannot be expressed. Instead, no entry is taken once price is 5% or more below prior close.
+  - -3% loss day = a 1-min bar closes below prior close -3%, on that bar only
+  - stop (none stated) = prior close -5%, reusing your -5% level (flagged)
+  - risk per trade (none stated) = 0.5% of equity (flagged)
+  - entry window (none stated) = account maximum 09:35-15:30 ET, flatten at 15:55 ET
+  - max trades per day = 10, the account maximum
+  - news is not required (news_today = false)
+suggestions:
+  - for a true two-month buy and hold with weights, use a portfolio or rebalancing tool, since DSL v0.1 is intraday only
+  - if you keep this intraday dip-buy, consider adding `close > vwap` or a bounce confirmation so you do not buy a falling knife
+  - consider requiring `news.red_flag` to be false so you do not buy a -3% drop caused by bad news
+universe:
+  from: {news_today: false}
+  filters:
+    - prior_close >= min_price
+    - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_price: {value: 50,            range: [10, 500]}
+  min_adv:   {value: 1_000_000_000, range: [100_000_000, 10_000_000_000]}
+  dip_add:   {value: 3%,            range: [1%, 5%]}
+  dip_floor: {value: 5%,            range: [3%, 10%]}
+  gain_trim: {value: 3%,            range: [1%, 5%]}
+vars:
+  dip_level: prior_close * (1 - dip_add)
+  floor_level: prior_close * (1 - dip_floor)
+  trim_level: prior_close * (1 + gain_trim)
+entry:
+  side: long
+  window: "09:35-15:30"
+  when_all:
+    - crosses_below(close, dip_level)
+    - close > floor_level
+sizing:
+  risk_per_trade: 0.5%
+exit:
+  stop: floor_level
+  target: trim_level
+  flatten_at: "15:55"
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 10
+  max_open_positions: 3
+  max_position: 10%

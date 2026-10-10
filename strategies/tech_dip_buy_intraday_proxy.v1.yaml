@@ -1,0 +1,64 @@
+dsl: 0.1
+id: tech_dip_buy_intraday_proxy
+version: 1
+source:
+  text: >-
+    I think the top tech companies are going get a boost during the next two month, build a strategy to buy top 10 big tech companies evenly with more allocation on software companies like 70%. Generate me a buy and hold strategy. On above +3% gains days, sell 30% of the stock, if above +5% one day gain do not sell. On -3% loss days, add more position but no more than 150% original allocation, if more than -5% lost, wait for a positive gain day, and re-enter the stock at 20% per day.
+  compiled_by: claude-opus-5-5
+  prompt: compiler@v1
+assumptions:
+  - NOT EXPRESSIBLE - two-month buy and hold. DSL v0.1 is intraday only and every position is flat by 15:55 ET, so this file holds nothing overnight
+  - NOT EXPRESSIBLE - a named list of top 10 big tech tickers or a sector filter. Universe is approximated as prior close >= $20 and 20-day avg dollar volume >= $2B, which will include non-tech stocks
+  - NOT EXPRESSIBLE - 70% software weighting. Each position is capped at 10% of equity, so allocation is at most equal-weight
+  - NOT EXPRESSIBLE - holding 10 names at once. The account allows at most 3 open positions, so at most 3 names (about 30% of equity) are held at the same time
+  - NOT EXPRESSIBLE - selling 30% of a position. Exits close the whole position
+  - NOT EXPRESSIBLE - adding up to 150% of the original allocation. One entry per signal, max 10% of equity per position
+  - NOT EXPRESSIBLE - do not sell above +5%. The bracket target fills at +3% before price can reach +5%
+  - NOT EXPRESSIBLE - wait for a positive day, then re-enter at 20% per day. There is no multi-day state and no partial sizing
+  - what this file does instead - buy a stock on the 1-min bar where it first closes 3% or more below prior close, if it is not down 5% or more, and exit the same day
+  - -3% loss day = a 1-min bar closes at or below prior_close * 0.97, entry on that crossing bar only
+  - more than -5% lost = price at or below prior_close * 0.95. No entry there, and that level is also the stop
+  - +3% gain day = target at prior_close * 1.03, full exit
+  - no risk per trade stated -> 0.5% of equity (flagged). Most positions will hit the 10% equity cap instead
+  - no entry window stated -> full account window 09:35-15:30 ET
+  - flat by 15:55 ET (account rule)
+  - top 10 -> max 10 trades a day, max open positions 3 (account limit)
+suggestions:
+  - the request needs a multi-day portfolio and rebalancing tool, not DSL v0.1. Do not approve this file as a substitute for buy and hold without reading the NOT EXPRESSIBLE items
+  - add a reversal check such as `close > close[1]` to entry so it does not buy into a falling stock
+  - add `news.red_flag` to exit.when_any so it does not hold dips caused by bad company news
+  - backtest against simply holding QQQ over the same two months
+universe:
+  from: {news_today: false}
+  filters:
+    - prior_close >= min_price
+    - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_price:    {value: 20,            range: [5, 200]}
+  min_adv:      {value: 2_000_000_000, range: [500_000_000, 10_000_000_000]}
+  dip_pct:      {value: 3%,            range: [1%, 5%]}
+  max_drop_pct: {value: 5%,            range: [3%, 10%]}
+  take_pct:     {value: 3%,            range: [1%, 6%]}
+vars:
+  dip_level: prior_close * (1 - dip_pct)
+  floor_level: prior_close * (1 - max_drop_pct)
+  take_level: prior_close * (1 + take_pct)
+entry:
+  side: long
+  window: "09:35-15:30"
+  when_all:
+    - crosses_below(close, dip_level)
+    - close > floor_level
+sizing:
+  risk_per_trade: 0.5%
+exit:
+  stop: floor_level
+  target: take_level
+  flatten_at: "15:55"
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 10
+  max_open_positions: 3
+  max_position: 10%

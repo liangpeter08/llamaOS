@@ -1,0 +1,57 @@
+dsl: 0.1
+kind: portfolio
+id: big_tech_software_tilt_hold
+version: 1
+source:
+  text: >-
+    I think the top tech companies are going get a boost during the next two month, build a strategy to buy top 10 big tech companies evenly with more allocation on software companies like 70%. Generate me a buy and hold strategy. On above +3% gains days, sell 30% of the stock, if above +5% one day gain do not sell. On -3% loss days, add more position but no more than 150% original allocation, if more than -5% lost, wait for a positive gain day, and re-enter the stock at 20% per day.
+  compiled_by: claude-opus-5-5
+  prompt: written by hand in a Claude Code session against compiler@v2
+assumptions:
+  - "Top 10 big tech = the ten largest US tech companies by market cap: NVDA, MSFT, AAPL, GOOGL, AMZN, META, AVGO, TSLA, ORCL, NFLX."
+  - "Software = MSFT, GOOGL, META, ORCL, NFLX (software and internet services) and gets 70%, 14% each; NVDA, AAPL, AMZN, AVGO, TSLA get the other 30%, 6% each."
+  - "Capital = 60% of account equity at the first buy. With adds capped at 150% the sleeve can reach 90% of equity, the risk.yaml portfolio.max_allocation; any larger starting size would need leverage, which is not supported."
+  - "The whole basket is bought on the first session at the decision time (15:45 ET), with market orders."
+  - "A day's gain or loss = price at 15:45 ET vs the prior close. Rules run once a day per stock at 15:45 ET and orders fill before the close."
+  - "Above +5% (strictly): hold, sell nothing. Above +3% up to +5%: sell 30% of the shares held. Exactly +3.00% or +5.00% falls in the lower band."
+  - "-3% or worse (down to -5%): add 25% of the original allocation per day (amount not stated), never above 150% of the original allocation at market value."
+  - "Worse than -5%: sell the whole stock and wait. On the first later day that closes the 15:45 check positive, buy back 20% of the original allocation, then 20% more each session until it is back at 100%. During re-entry only the -5% rule applies (trim and add wait until it is rebuilt)."
+  - "Two months = until 2026-12-10 or 42 sessions after the first buy, whichever comes first; then everything is sold."
+  - "Sleeve stop: the account-level portfolio.max_drawdown (15% from the sleeve's peak value) sells everything and stops the strategy."
+  - "While the sleeve holds a symbol, intraday strategies can't trade it (Alpaca nets one position per symbol)."
+suggestions:
+  - "Trimming 30% on every +3% day can shrink winners quickly in a rally; consider a lower trim_size or trimming only above max_holding 100%."
+  - "Selling everything on one -5% day and rebuilding at 20% a day can lock in losses on a sharp dip; compare the backtest with and without the exit rule."
+holdings:
+  capital: 60%
+  max_holding: 150%
+  groups:
+    software:
+      weight: 70%
+      symbols: [MSFT, GOOGL, META, ORCL, NFLX]
+    other_big_tech:
+      weight: 30%
+      symbols: [NVDA, AAPL, AMZN, AVGO, TSLA]
+schedule:
+  hold_sessions: 42
+  end_date: "2026-12-10"
+  decide_at: "15:45"
+params:
+  no_sell_gain:  {value: 5%,   range: [3%, 15%]}
+  trim_gain:     {value: 3%,   range: [1%, 10%]}
+  trim_size:     {value: 30%,  range: [5%, 100%]}
+  exit_loss:     {value: -5%,  range: [-20%, -2%]}
+  add_loss:      {value: -3%,  range: [-10%, -1%]}
+  add_size:      {value: 25%,  range: [5%, 50%]}
+  reenter_gain:  {value: 0%,   range: [0%, 5%]}
+  reenter_step:  {value: 20%,  range: [5%, 100%]}
+rules:
+  - {when: "day_change > no_sell_gain", do: hold}
+  - {when: "day_change > trim_gain", do: {trim: trim_size}}
+  - {when: "day_change < exit_loss", do: exit_and_wait}
+  - {when: "day_change <= add_loss", do: {add: add_size}}
+reentry:
+  when: "day_change > reenter_gain"
+  step: reenter_step
+execution:
+  mode: manual

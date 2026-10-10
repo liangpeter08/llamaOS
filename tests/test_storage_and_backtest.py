@@ -44,3 +44,30 @@ def test_sim_is_deterministic():
     d = sim.chain_for(T.session_date(), 2, 1)
     a, b = sim.simulate(d, 7), sim.simulate(d, 7)
     assert a[-1].bars["ACMX"][100] == b[-1].bars["ACMX"][100]
+
+
+def test_idealab_reads_any_feed_and_guards_empty_runs(conn):
+    import pytest
+    from services.models import idealab
+
+    # empty database: refuse before touching the daily quota or any model
+    with pytest.raises(idealab.NoEvents):
+        idealab.run(conn)
+    assert not db.rows(conn, "SELECT k FROM kv WHERE k LIKE 'idealab.quota.%'")
+
+    seed(conn, history_days=12, seed_=7)
+    backfill(conn)
+    conn.execute("UPDATE news SET session='alpaca'")  # e.g. the Alpaca paper feed
+    study = idealab.event_study(conn)
+    assert sum(g["n"] + g["n_holdout"] for g in study["groups"]) > 0
+
+
+def test_reaction_uses_next_session_for_overnight_news(conn):
+    from datetime import time as dtime
+    from services.models import idealab
+
+    seed(conn, history_days=3, seed_=7)
+    days = MD.bar_days(conn)
+    evening = T.ts_at(days[0], dtime(18, 0))
+    rx = idealab._reaction(conn, {"symbol": "ACMX", "ts": evening})
+    assert rx["day"] == days[1].isoformat() and rx["when"] == "premarket" and rx["r60"] is not None

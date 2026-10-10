@@ -1,0 +1,47 @@
+dsl: 0.1
+kind: portfolio
+id: healthcare_staples_hold
+version: 1
+source:
+  text: "Hold the big healthcare names, plus a few staples for balance, for about a month. Take some profit on strong days and buy more on weak ones, but cut anything that falls hard and only buy it back once it bounces."
+  compiled_by: claude-opus-5-5
+  prompt: compiler@v2
+assumptions:
+  - "Big healthcare = LLY, UNH, JNJ, ABBV (60%, 15% each); staples = PG, KO, PEP, COST (40%, 10% each)."
+  - "Capital = 50% of equity at the first buy; adds stop at 150% of each original allocation."
+  - "About a month = 21 sessions, then everything is sold."
+  - "Strong day = above +2.5%: sell 25% of the shares held."
+  - "Weak day = -2% or worse: add 20% of the original allocation."
+  - "Falls hard = worse than -4%: sell all; buy back 25% of the allocation per session, starting on the first up day."
+suggestions:
+  - "Consider a tighter limits.max_drawdown for a defensive basket."
+holdings:
+  capital: 50%
+  max_holding: 150%
+  groups:
+    healthcare:
+      weight: 60%
+      symbols: [LLY, UNH, JNJ, ABBV]
+    staples:
+      weight: 40%
+      symbols: [PG, KO, PEP, COST]
+schedule:
+  hold_sessions: 21
+  decide_at: "15:45"
+params:
+  trim_gain:    {value: 2.5%, range: [1%, 8%]}
+  trim_size:    {value: 25%,  range: [5%, 100%]}
+  exit_loss:    {value: -4%,  range: [-15%, -2%]}
+  add_loss:     {value: -2%,  range: [-8%, -1%]}
+  add_size:     {value: 20%,  range: [5%, 50%]}
+  reenter_gain: {value: 0%,   range: [0%, 3%]}
+  reenter_step: {value: 25%,  range: [5%, 100%]}
+rules:
+  - {when: "day_change > trim_gain", do: {trim: trim_size}}
+  - {when: "day_change < exit_loss", do: exit_and_wait}
+  - {when: "day_change <= add_loss", do: {add: add_size}}
+reentry:
+  when: "day_change > reenter_gain"
+  step: reenter_step
+execution:
+  mode: manual
