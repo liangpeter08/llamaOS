@@ -52,6 +52,7 @@ class Config(BaseModel):
     min_trades: int = Field(default=15, ge=3, le=500)
     slippage_bps: float = Field(default=2, ge=0, le=100)
     save_drafts: bool = True
+    save_all: bool = False  # also save every other valid, evaluated trial as a draft (not only holdout survivors)
     # follow-up runs: continue from candidates of an earlier run, or from a saved strategy file
     seed_trials: list[int] = Field(default_factory=list, max_length=5)
     seed_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
@@ -76,7 +77,7 @@ class OfflineGenerator:
 
     def revise(self, conn, cfg: Config, trial: dict, ev: dict, history: list[dict], risk: RiskConfig, n: int) -> list[dict]:
         out = []
-        for w in ev.get("weaknesses") or []:
+        for w in [*(ev.get("weaknesses") or []), *EV.explorations(ev, trial["kind"])]:  # fixes first, then exploration
             if not w.get("fix"):
                 continue
             r = M.apply(trial["yaml"], w["fix"])
@@ -185,15 +186,19 @@ class Ledger:
             " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (self.run_id, time.time(), kind, gen, parent["id"] if parent else None, cand.get("origin") or "unknown",
              cand.get("family") or (parent or {}).get("family"), cand.get("title") or (parent or {}).get("title"),
-             json.dumps({k: cand.get(k) for k in ("mechanism", "falsify", "addresses", "why")}), cand.get("change"), cand["yaml"], h, status))
+             json.dumps({**{k: cand.get(k) or (parent or {}).get(k) for k in ("mechanism", "falsify")},  # revisions inherit the hypothesis
+                         **{k: cand.get(k) for k in ("addresses", "why")}}), cand.get("change"), cand["yaml"], h, status))
         return {"id": tid, "kind": kind, "generation": gen, "parent": parent["id"] if parent else None, "yaml": cand["yaml"], "hash": h,
                 "family": cand.get("family") or (parent or {}).get("family"), "title": cand.get("title") or (parent or {}).get("title"),
                 "change": cand.get("change"), "origin": cand.get("origin"), "status": status,
-                "mechanism": cand.get("mechanism") or (parent or {}).get("mechanism")}
+                "mechanism": cand.get("mechanism") or (parent or {}).get("mechanism"),
+                "falsify": cand.get("falsify") or (parent or {}).get("falsify")}
 
     def record(self, t: dict, ev: dict, status: str):
         t.update(status=status, ev=ev, score=ev.get("score") if ev.get("ok") else None)
         stored = {k: v for k, v in ev.items() if k != "series"}
+        if ev.get("ok"):  # per-session Sharpe: follow-up runs need every ancestor trial's for the deflated Sharpe
+            stored["sr"] = ST.sharpe(ev["series"], annualize=False) or 0.0
         self.conn.execute("UPDATE discovery_trials SET status=?, score=?, evaluation=? WHERE id=?",
                           (status, t["score"], json.dumps(stored, default=str), t["id"]))
 
@@ -219,7 +224,7 @@ def _brief(ev: dict) -> dict:
 def run_kind(conn, cfg: Config, kind: str, win: dict, prof: dict, closes: dict, peers: list[str], risk: RiskConfig,
              gen_: OfflineGenerator, ledger: Ledger, progress: Callable[[str], None], seeds: list[dict] = (),
              prior: dict | None = None) -> dict:
-    prior = prior or {"trials": 0, "looks": 0}
+    prior = prior or {"trials": 0, "looks": 0, "srs": []}
     ctx = EV.Context(cfg.ticker, kind, win["discovery"], peers=peers, closes=closes, folds=cfg.folds,
                      slippage=cfg.slippage_bps / 10_000, min_trades=cfg.min_trades,
                      min_history_sessions=20)
@@ -246,10 +251,11 @@ def run_kind(conn, cfg: Config, kind: str, win: dict, prof: dict, closes: dict, 
     best = max((EV.score_or(t.get("ev") or {}) for t in trials), default=float("-inf"))
     stale = 0
     for g in range(1, cfg.generations + 1):
-        pool = sorted([t for t in trials if t["status"] in ("evaluated", "improved", "not_better") and t["id"] not in revised
-                       and any(w.get("fix") for w in t["ev"].get("weaknesses") or []) or (t["status"] in ("evaluated", "improved")
-                       and t["id"] not in revised and getattr(gen_, "free_revisions", False))],
-                      key=lambda t: -EV.score_or(t["ev"]))
+        def revisable(t):
+            return (t["status"] in ("evaluated", "improved", "not_better") and t["id"] not in revised
+                    and (getattr(gen_, "free_revisions", False) or any(w.get("fix") for w in t["ev"].get("weaknesses") or [])
+                         or bool(EV.explorations(t["ev"], kind))))
+        pool = sorted([t for t in trials if revisable(t)], key=lambda t: -EV.score_or(t["ev"]))
         # polish the leaders, and repair the best candidate that fails a gate (a poor result with a known cause)
         parents = pool[:max(1, cfg.parents - 1)]
         repair = next((t for t in pool if not t["ev"]["gates"]["passed"] and t not in parents), None)
@@ -279,19 +285,27 @@ def run_kind(conn, cfg: Config, kind: str, win: dict, prof: dict, closes: dict, 
             break
 
     ok = [t for t in trials if (t.get("ev") or {}).get("ok")]
-    passed = sorted([t for t in ok if t["ev"]["gates"]["passed"]], key=lambda t: -t["ev"]["score"])
+    # an unchanged seed was already judged in its own run; only revisions earn a (new) holdout look
+    passed = sorted([t for t in ok if t["ev"]["gates"]["passed"] and t["origin"] != "seed"], key=lambda t: -t["ev"]["score"])
+    # candidates that trade identically (same per-session returns) are one candidate: keep the first
+    distinct, seen_series = [], set()
+    for t in passed:
+        key = tuple(round(x, 10) for x in t["ev"]["series"])
+        if key not in seen_series:
+            seen_series.add(key)
+            distinct.append(t)
     finalists, families = [], set()
-    for t in passed:  # one per family first, then fill
+    for t in distinct:  # one per family first, then fill
         if t["family"] not in families and len(finalists) < 2:
             finalists.append(t)
             families.add(t["family"])
-    finalists += [t for t in passed if t not in finalists][:2 - len(finalists)]
+    finalists += [t for t in distinct if t not in finalists][:2 - len(finalists)]
 
     # sealed holdout: each finalist replayed once, nothing changes afterwards
     hctx = EV.Context(cfg.ticker, kind, win["holdout"], peers=peers, closes=closes, folds=2,
                       slippage=cfg.slippage_bps / 10_000, min_trades=max(3, cfg.min_trades // 3), thorough=False)
     n_trials = len(trials) + prior["trials"]  # follow-ups share the holdout with their ancestors: count every trial
-    trial_srs = [ST.sharpe(t["ev"]["series"], annualize=False) or 0.0 for t in ok]
+    trial_srs = [ST.sharpe(t["ev"]["series"], annualize=False) or 0.0 for t in ok] + list(prior.get("srs") or [])
     by_id = {t["id"]: t for t in trials}
     out_finalists = []
     for t in finalists:
@@ -325,8 +339,17 @@ def run_kind(conn, cfg: Config, kind: str, win: dict, prof: dict, closes: dict, 
     }
 
 
+def _strings(d: dict) -> None:
+    """A model-written `- key: text` list item parses as a mapping; keep assumptions/suggestions plain strings."""
+    for k in ("assumptions", "suggestions"):
+        if isinstance(d.get(k), list):
+            d[k] = [x if isinstance(x, str) else "; ".join(f"{a}: {b}" for a, b in x.items()) if isinstance(x, dict) else str(x)
+                    for x in d[k]]
+
+
 def _annotate(text: str, run_id: int, f: dict, rep: dict) -> str:
     d = yaml.safe_load(text)
+    _strings(d)
     disc, hold = f["discovery"], f["holdout"]
     dsr = hold.get("dsr") or {}
     d.setdefault("assumptions", []).append(
@@ -338,6 +361,53 @@ def _annotate(text: str, run_id: int, f: dict, rep: dict) -> str:
         + (f", PBO {rep['pbo']['pbo']:.2f}" if (rep.get("pbo") or {}).get("pbo") is not None else ""))
     d.setdefault("suggestions", []).append("paper trade before relying on it: the holdout is short and was scored once")
     return TPL.dump(d)
+
+
+SAVABLE = ("evaluated", "improved", "not_better", "holdout_pass", "holdout_fail")
+
+
+def save_trial(conn, tid: int, risk: RiskConfig, actor: str) -> dict:
+    """Save any evaluated trial as a new draft strategy file (idempotent: returns the existing one if already saved).
+
+    Survivors keep the file's id; other trials get `<id>_t<trial>` so each saved trial is its own strategy line.
+    The draft still goes through the normal lifecycle (backtest, paper, approval) before it can trade."""
+    t = db.row(conn, "SELECT * FROM discovery_trials WHERE id=?", (tid,))
+    if not t:
+        raise ValueError("no such trial")
+    if t["strategy_hash"] and db.row(conn, "SELECT hash FROM strategies WHERE hash=?", (t["strategy_hash"],)):
+        s = db.row(conn, "SELECT sid, path FROM strategies WHERE hash=?", (t["strategy_hash"],))
+        return {"trial_id": tid, "hash": t["strategy_hash"], "id": s["sid"], "path": s["path"], "existing": True}
+    if t["status"] not in SAVABLE:
+        raise ValueError(f"trial #{tid} is {t['status']}: only evaluated trials can be saved")
+    ev = json.loads(t["evaluation"] or "{}")
+    hold = json.loads(t["holdout"]) if t["holdout"] else None
+    d = yaml.safe_load(t["yaml"])
+    _strings(d)
+    if t["status"] != "holdout_pass":
+        d["id"] = f"{d['id']}_t{tid}"[:60]
+    b = ev.get("base") or {}
+    note = f"discovery run #{t['run_id']}, trial #{tid} ({t['status'].replace('_', ' ')}), saved by {actor}"
+    if b:
+        note += f"; discovery Sharpe {b.get('sharpe', 0):.2f} over {b.get('trades', 0)} trades"
+    failed = [k for k, v in (ev.get("gates") or {}).items() if k not in ("passed", "valid") and v is False]
+    if failed:
+        note += f"; failed gates: {', '.join(failed)}"
+    if hold:
+        note += f"; sealed holdout Sharpe {hold.get('sharpe') or 0:.2f} ({'passed' if hold.get('passed') else 'failed'})"
+    else:
+        note += "; never scored on the holdout"
+    d.setdefault("assumptions", []).append(note)
+    d.setdefault("suggestions", []).append("backtest and paper trade before relying on it")
+    text = TPL.dump(d)
+    v = validate(text, risk)
+    if not v.ok:
+        raise ValueError("the trial's file does not validate: " + "; ".join(v.errors[:3]))
+    path = registry.write_new_version(d["id"], text)
+    registry.sync(conn, risk)
+    h = file_hash(path.read_text())
+    conn.execute("UPDATE discovery_trials SET strategy_hash=? WHERE id=?", (h, tid))
+    audit.log(conn, "discovery.trial_saved", actor, {"trial_id": tid, "run_id": t["run_id"], "hash": h, "path": path.name})
+    return {"trial_id": tid, "hash": h, "id": d["id"], "path": path.name, "existing": False}
 
 
 def run(conn, cfg: Config, actor: str, generator=None, progress: Callable[[str], None] | None = None,
@@ -356,6 +426,7 @@ def run(conn, cfg: Config, actor: str, generator=None, progress: Callable[[str],
             progress(stage)
 
     try:
+        note("loading sessions and seeds")
         seeds, parent = resolve_seeds(conn, cfg, risk)
         if seeds:
             refs = [r for sd in seeds for r in (yaml.safe_load(sd["yaml"]).get("references") or [])]
@@ -369,6 +440,7 @@ def run(conn, cfg: Config, actor: str, generator=None, progress: Callable[[str],
         runnable = {k: w for k, w in wins.items() if "error" not in w}
         if not runnable:
             raise ValueError("; ".join(w["error"] for w in wins.values()))
+        note(f"profiling {cfg.ticker} on its discovery sessions")
         # the profile only sees sessions before the earliest holdout of any kind
         prof_end = min(w["discovery"][-1] for w in runnable.values())
         peers_all = sorted({p for k, w in runnable.items() for p in _available_peers(conn, cfg, k, w["discovery"])})
@@ -386,11 +458,15 @@ def run(conn, cfg: Config, actor: str, generator=None, progress: Callable[[str],
             peers = _available_peers(conn, cfg, kind, w["discovery"])
             end = w["holdout"][-1].isoformat()
             closes = {s: [(r["day"], r["c"]) for r in PF.daily_rows(conn, s, date.fromisoformat(end))] for s in [cfg.ticker, *peers]}
-            prior = {"trials": 0, "looks": 0}
+            prior = {"trials": 0, "looks": 0, "srs": []}
             if chain:
                 marks = ",".join("?" * len(chain))
                 prior = db.row(conn, f"SELECT COUNT(*) trials, COUNT(holdout) looks FROM discovery_trials WHERE kind=? AND run_id IN ({marks})",
                                (kind, *chain))
+                # trials recorded before per-trial Sharpes were stored are skipped rather than counted as zero
+                prior["srs"] = [sr for r in db.rows(
+                    conn, f"SELECT evaluation FROM discovery_trials WHERE kind=? AND status NOT IN ('invalid','duplicate','pending') AND run_id IN ({marks})",
+                    (kind, *chain)) if r["evaluation"] and (sr := json.loads(r["evaluation"]).get("sr")) is not None]
             report["kinds"][kind] = run_kind(conn, cfg, kind, w, prof, closes, peers, risk, gen_, ledger, note, seeds, prior)
         drafts = []
         if cfg.save_drafts:
@@ -408,6 +484,14 @@ def run(conn, cfg: Config, actor: str, generator=None, progress: Callable[[str],
                     conn.execute("UPDATE discovery_trials SET strategy_hash=? WHERE id=?", (h, f["trial_id"]))
                     f["strategy_hash"], f["path"] = h, str(path.name)
                     drafts.append({"kind": kind, "id": sid, "hash": h, "path": path.name})
+        if cfg.save_drafts and cfg.save_all:
+            for r in db.rows(conn, "SELECT id, kind FROM discovery_trials WHERE run_id=? AND strategy_hash IS NULL AND status IN"
+                                   f" ({','.join('?' * len(SAVABLE))}) ORDER BY id", (run_id, *SAVABLE)):
+                try:
+                    sv = save_trial(conn, r["id"], risk, actor)
+                    drafts.append({"kind": r["kind"], "id": sv["id"], "hash": sv["hash"], "path": sv["path"]})
+                except (ValueError, FileExistsError):
+                    continue  # e.g. a trial whose file no longer validates against the current risk controls
         report["drafts"] = drafts
         report["profile"] = prof
         if hasattr(gen_, "calls"):

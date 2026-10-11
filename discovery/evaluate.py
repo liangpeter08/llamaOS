@@ -332,5 +332,21 @@ def weaknesses(ev: dict, s, ctx: Context) -> list[dict]:
     return out
 
 
+def explorations(ev: dict, kind: str) -> list[dict]:
+    """Speculative revisions for a candidate with nothing measurably wrong: skip its weakest regimes.
+
+    Weaker evidence than a weakness (any losing bucket with n >= 5, worst first). Each is still a counted
+    trial that has to beat its parent's score to be kept.
+    """
+    reg, out = ev.get("regimes") or {}, []
+    for feat in ("vol", "trend", "market"):
+        for bucket, st in (reg.get(feat) or {}).items():
+            fix = {"op": "add_filter", "feature": feat, "bucket": bucket, "peer": reg.get("peer")}
+            if st["n"] >= 5 and st["mean"] < 0 and M.filter_available(fix, kind):
+                out.append((st["t"] if st["t"] is not None else 0.0, {"kind": "exploration", "detail": f"weakest regime: {bucket} "
+                            f"(mean {st['mean']:+.3%}, n={st['n']})", "fix": fix}))
+    return [w for _, w in sorted(out, key=lambda x: x[0])]
+
+
 def score_or(ev: dict, default: float = -math.inf) -> float:
     return ev["score"] if ev.get("ok") and ev.get("score") is not None else default

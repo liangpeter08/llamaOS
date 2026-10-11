@@ -1081,6 +1081,7 @@ class DiscoveryStartIn(BaseModel):
     max_trials: int = Field(default=60, ge=5, le=300)
     holdout_pct: float = Field(default=0.25, ge=0.1, le=0.5)
     save_drafts: bool = True
+    save_all: bool = False
     offline: bool = False
     seed_trials: list[int] = Field(default_factory=list, max_length=5)
     seed_hash: str | None = None
@@ -1176,6 +1177,18 @@ def discovery_trial(tid: int, u: dict = Depends(user)):
     v = validate(t["yaml"], load_risk())
     t["back_translation"] = back_translate(v.strategy) if v.ok else None
     return t
+
+
+@app.post("/api/discovery/trials/{tid}/save")
+def discovery_trial_save(tid: int, u: dict = Depends(owner)):
+    from discovery.run import save_trial
+    c = conn()
+    try:
+        r = save_trial(c, tid, load_risk(), u["username"])
+    except (ValueError, FileExistsError) as e:
+        fail(str(e))
+    msg = f"Trial #{tid} is already saved as {r['path']}." if r["existing"] else f"Saved trial #{tid} as draft {r['path']}."
+    return ok(msg, hash=r["hash"], path=r["path"])
 
 
 class IdeaIn(BaseModel):

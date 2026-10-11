@@ -1,0 +1,57 @@
+dsl: 0.1
+id: first_strat_googl
+version: 1
+source:
+  text: >-
+    GOOGL tends to rebound over the following days after closing more than one standard
+    deviation below its 20-day mean (forced or mechanical selling absorbed by liquidity
+    providers). On such sessions, buy GOOGL after the noisy open (from 10:00) to capture
+    the intraday part of the rebound. Stop under the day low, target 2R, flat by 15:50.
+    Trader's complaint on the copy: It trades too rarely to tell whether it works, it also
+    trades too little, do 100% allocation when possible
+  based_on: {id: disc_googl_zscore_reversion, version: 1}
+  compiled_by: claude-opus-5-5
+  prompt: architect@v1
+assumptions:
+  - "CHANGED: new id disc_bigtech_zscore_reversion, version 1; copy of disc_googl_zscore_reversion v1."
+  - "CHANGED: universe GOOGL only -> AAPL, AMD, AMZN, GOOGL, META, MSFT, NVDA, TSLA (the watchlist names with stored 1-min bars). AVGO, NFLX and ORCL are excluded: daily bars only, no intraday bars to replay."
+  - "CHANGED: max_open_positions 1 -> 3 (the account cap) and max_trades_per_day 1 -> 3, so up to three stretched-down symbols can be held at once."
+  - "When more than 3 symbols qualify on the same day, the first 3 to trigger are taken; the DSL cannot rank by how stretched each one is."
+  - "CHANGED: entry window 10:00-14:30 -> 10:00-10:05 ET. All 7 v1 entries filled on the 10:00 bar; the short window keeps that behaviour and prevents re-entering a symbol after a same-day target or stop."
+  - "CHANGED: risk_per_trade 0.5% -> 1.0% (account max), so the 10% position cap, not the stop distance, sets size: 'trade bigger when possible'."
+  - "CHANGED: limits.max_position set explicitly to 10% of equity (equal to the account cap)."
+  - "NOT SUPPORTED: 100% allocation. Account rules cap an intraday position at 10% of equity and open positions at 3, so peak exposure is about 30% of equity; total exposure is further capped by this strategy's fund allocation on the Funds page (30% is enough)."
+  - "Kept: stretched down = zscore_d(20) <= -1.0 from completed daily closes, fixed for the session; same thresholds for every symbol, no per-symbol tuning."
+  - "Kept: stop 0.1% below the day low at entry, target 2R, flat by 15:50 ET."
+  - "Known weakness: these 8 names are highly correlated, so stretched-down days will cluster; judge the backtest by the number of distinct episodes, not only by trade count."
+  - "Falsifiable: if the multi-symbol backtest shows avg R near zero or negative, the v1 result was one GOOGL episode, not an edge."
+suggestions:
+  - "A portfolio (daily) version using zscore_d could be tested on the 2020-2026 daily bars (~1,500 sessions), a far larger sample than the ~84 stored intraday sessions, and could hold up to 15% per symbol."
+  - "Paper trade before relying on it."
+universe:
+  symbols: [AAPL, AMD, AMZN, GOOGL, META, MSFT, NVDA, TSLA]
+timeframe: 1min
+params:
+  z_n:         {value: 20,   range: [10, 40]}
+  z_max:       {value: -1.0, range: [-2.0, -0.5]}
+  stop_buffer: {value: 0.1%, range: [0%, 0.5%]}
+  target_r:    {value: 2.0,  range: [1.0, 4.0]}
+vars:
+  stop_level: day_low * (1 - stop_buffer)
+entry:
+  side: long
+  window: "10:00-10:05"
+  when_all:
+    - zscore_d(z_n) <= z_max
+sizing:
+  risk_per_trade: 1.0%
+exit:
+  stop: stop_level
+  target: entry_price + target_r * risk_per_share
+  flatten_at: "15:50"
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 3
+  max_open_positions: 3
+  max_position: 10%

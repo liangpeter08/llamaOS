@@ -18,7 +18,7 @@ export type Depth = keyof typeof DEPTHS;
 export const WEAKNESS: Record<string, string> = {
   missing_data: "missing data", too_few_trades: "too few trades", never_acts: "never acts", dead_condition: "dead condition",
   regime_drag: "loses in a regime", fragile_param: "fragile parameter", stop_heavy: "stopped out often",
-  cost_sensitive: "costs eat the edge", inconsistent: "inconsistent across folds",
+  cost_sensitive: "costs eat the edge", inconsistent: "inconsistent across folds", exploration: "exploration",
 };
 export const GATE: Record<string, string> = {
   consistent: "consistent folds", survives_costs: "survives 3x costs", enough_trades: "enough trades", positive_edge: "positive edge",
@@ -102,6 +102,7 @@ export function DiscoverForm({ onDone }: { onDone?: () => void }) {
   const [depth, setDepth] = useState<Depth>("standard");
   const [claude, setClaude] = useState(true);
   const [save, setSave] = useState(true);
+  const [saveAll, setSaveAll] = useState(false);
   const [pf, setPf] = useState<any>(null);
   const { start, busy, error } = useStartRun();
   const usable = kinds.filter((k) => pf?.kinds?.[k]?.ok);
@@ -110,7 +111,7 @@ export function DiscoverForm({ onDone }: { onDone?: () => void }) {
     <form className="disc-form" onSubmit={(e) => {
       e.preventDefault();
       start({ ticker, peers: peers.split(",").map((p) => p.trim()).filter(Boolean), kinds: usable,
-              generations: DEPTHS[depth].generations, max_trials: DEPTHS[depth].max_trials, save_drafts: save, offline: !claude || !pf?.llm });
+              generations: DEPTHS[depth].generations, max_trials: DEPTHS[depth].max_trials, save_drafts: save || saveAll, save_all: saveAll, offline: !claude || !pf?.llm });
       onDone?.();
     }}>
       {error && <Notice kind="bad">{error}</Notice>}
@@ -138,6 +139,8 @@ export function DiscoverForm({ onDone }: { onDone?: () => void }) {
           Claude proposes and revises{pf && !pf.llm && <span className="muted"> (no key: templates only)</span>}
         </label>
         <label className="row" style={{ gap: 4 }}><input type="checkbox" checked={save} onChange={(e) => setSave(e.target.checked)} /> Save holdout survivors as drafts</label>
+        <label className="row" style={{ gap: 4 }} title="Every valid, evaluated trial becomes its own draft strategy (can be many files)">
+          <input type="checkbox" checked={saveAll} onChange={(e) => setSaveAll(e.target.checked)} /> Save every evaluated candidate</label>
         <span className="grow" />
         <button className="primary" disabled={busy || !usable.length || !!pf?.running}
           title={pf?.running ? `Run #${pf.running} is still running` : !usable.length ? "No selected kind has enough stored data" : undefined}>

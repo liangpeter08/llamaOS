@@ -1,0 +1,63 @@
+dsl: 0.1
+id: disc_googl_zscore_reversion
+version: 1
+source:
+  text: GOOGL tends to rebound over the following days after closing more than one standard deviation below its 20-day mean (forced or mechanical selling absorbed by liquidity providers). On such sessions, buy GOOGL after the noisy open (from 10:00) to capture the intraday part of the rebound. Stop under the day low, target 2R, flat by 15:50.
+  compiled_by: claude-opus-5-5
+  prompt: discovery@v1
+assumptions:
+- stretched down = zscore_d(20) <= -1.0, fixed for the session from completed daily closes; filters out the middle and stretched-up regimes where the profile shows negative forward returns
+- entry = the first 1-min bar close in the window on a stretched-down session; no intraday trigger, because the edge is the daily mean-reversion drift
+- window 10:00-14:30 ET to skip the noisy open and leave time for the move
+- stop = 0.1% below the day low at entry; target = 2R; flat by 15:50 ET
+- risk 0.5% per trade, one trade per day
+- falsifiable: if fold consistency does not improve and Sharpe falls back toward zero without the VWAP gate, the intraday expression of the daily reversion effect is not real
+- 'discovery revision: removed crosses_above(close, vwap); ablation showed it cost +0.38 Sharpe and did not filter out losing days'
+- 'discovery run #1, trial #15: one of 20 intraday trials; discovery Sharpe 1.49 over 63 sessions, sealed holdout Sharpe 3.46 over 21 sessions, deflated Sharpe probability 0.19, PBO 0.67'
+suggestions:
+- a portfolio (daily) version would capture the multi-day drift that this intraday file leaves on the table
+- z_n and z_max neighbours are fragile; consider testing z_n around 28 and a wider z_max band in a later revision
+- 'paper trade before relying on it: the holdout is short and was scored once'
+universe:
+  symbols:
+  - GOOGL
+timeframe: 1min
+params:
+  z_n:
+    value: 20
+    range:
+    - 10
+    - 40
+  z_max:
+    value: -1.0
+    range:
+    - -2.0
+    - -0.5
+  stop_buffer:
+    value: 0.1%
+    range:
+    - 0%
+    - 0.5%
+  target_r:
+    value: 2.0
+    range:
+    - 1.0
+    - 4.0
+vars:
+  stop_level: day_low * (1 - stop_buffer)
+entry:
+  side: long
+  window: 10:00-14:30
+  when_all:
+  - zscore_d(z_n) <= z_max
+sizing:
+  risk_per_trade: 0.5%
+exit:
+  stop: stop_level
+  target: entry_price + target_r * risk_per_share
+  flatten_at: '15:50'
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 1
+  max_open_positions: 1

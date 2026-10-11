@@ -12,6 +12,7 @@ import { isOwner, useSession } from "@/components/session";
 import { OverlaysCard, PortfolioBacktest, SleeveCard } from "@/components/Portfolio";
 import { CategoryEditor, DeleteZone } from "@/components/Organize";
 import { AllocationInput, allocText, allocValue, type AllocMode } from "@/components/Allocation";
+import { IterateCard } from "@/components/Discovery";
 
 export default function StrategyPage() {
   const { hash } = useParams<{ hash: string }>();
@@ -90,11 +91,12 @@ export default function StrategyPage() {
       {isOwner(me) && <Lifecycle s={s} ok={v.ok} busy={busy} act={act} minPaper={data.lifecycle?.min_paper_sessions ?? 0}
         needsReview={!!data.portfolio?.overlays?.review_required} category={data.category} categories={data.categories} fund={data.fund_suggest} />}
       {isOwner(me) && <Duplicate s={s} />}
+      <IterateCard hash={s.hash} d={data.discovery} owner={isOwner(me)} />
 
       <div className="grid g2 mt">
         <Card title="Assumptions (need your OK)">
-          {data.assumptions.length ? <ul>{data.assumptions.map((a: string) => <li key={a}>{a}</li>)}</ul> : <Empty>None listed.</Empty>}
-          {data.suggestions.length > 0 && (<><h3>Suggestions (not applied)</h3><ul>{data.suggestions.map((a: string) => <li key={a}>{a}</li>)}</ul></>)}
+          {data.assumptions.length ? <ul>{data.assumptions.map((a: unknown, i: number) => <li key={i}>{asText(a)}</li>)}</ul> : <Empty>None listed.</Empty>}
+          {data.suggestions.length > 0 && (<><h3>Suggestions (not applied)</h3><ul>{data.suggestions.map((a: unknown, i: number) => <li key={i}>{asText(a)}</li>)}</ul></>)}
           {data.source?.text && (
             <>
               <h3>Source request</h3>
@@ -182,6 +184,13 @@ export default function StrategyPage() {
       )}
     </>
   );
+}
+
+// YAML turns an unquoted "key: text" list item into an object; show it as text instead of crashing.
+function asText(a: unknown): string {
+  if (typeof a === "string") return a;
+  if (a && typeof a === "object") return Object.entries(a).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join("; ");
+  return String(a);
 }
 
 function Lifecycle({ s, ok, busy, act, minPaper, needsReview, category, categories, fund }: { s: any; ok: boolean; busy: string | null; act: (l: string, p: string, b?: object) => void; minPaper: number; needsReview: boolean; category: string | null; categories: string[]; fund: any }) {

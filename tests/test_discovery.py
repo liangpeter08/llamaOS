@@ -236,6 +236,9 @@ def test_follow_up_run_iterates_seeds_and_counts_prior_trials(conn, risk, tmp_pa
     assert [r["origin"] for r in rows[:2]] == ["seed", "seed"] and all(r["origin"] != "seed" for r in rows[2:])  # no templates
     for f in r2["finalists"]:
         assert f["holdout"]["dsr"]["n_trials"] == r1["trials"] + r2["trials"]
+        assert f["origin"] != "seed"  # unchanged seeds are never re-scored on the holdout
+    stored = db.rows(conn, "SELECT evaluation FROM discovery_trials WHERE run_id=? AND status='evaluated'", (first["run_id"],))
+    assert all("sr" in json.loads(x["evaluation"]) for x in stored)  # follow-ups read every ancestor trial's Sharpe
     # a saved strategy can be the seed too; it must be a single-ticker file for this ticker
     if first["drafts"]:
         again = run(conn, Config(ticker="TKR", seed_hash=first["drafts"][0]["hash"], generations=1, save_drafts=False), "test", risk=risk)
@@ -266,3 +269,31 @@ def test_api_preflight_trial_detail_and_provenance(conn, risk, monkeypatch, tmp_
     if rep["drafts"]:
         s = c.get(f"/api/strategies/{rep['drafts'][0]['hash']}").json()["discovery"]
         assert s["ticker"] == "TKR" and s["kind"] == "daily" and s["made_by"]["run_id"] == rep["run_id"]
+
+
+def test_any_evaluated_trial_can_be_saved_as_a_strategy(conn, risk, monkeypatch, tmp_path):
+    from tests.test_api import login
+    monkeypatch.setattr(registry, "STRATEGIES_DIR", tmp_path)
+    seed_trending(conn)
+    rep = run(conn, Config(ticker="TKR", peers=["SPY"], kinds=["daily"], generations=1, save_drafts=False), "test", risk=risk)
+    c, csrf, _ = login(conn)
+    trials = c.get(f"/api/discovery/{rep['run_id']}").json()["trials"]
+    t = next(x for x in trials if x["status"] in ("evaluated", "not_better", "improved"))
+    r = c.post(f"/api/discovery/trials/{t['id']}/save", headers={"x-csrf-token": csrf}).json()
+    s = c.get(f"/api/strategies/{r['hash']}").json()
+    assert s["s"]["status"] == "draft" and s["s"]["sid"].endswith(f"_t{t['id']}")
+    assert all(isinstance(a, str) for a in s["assumptions"]) and f"trial #{t['id']}" in s["assumptions"][-1]
+    again = c.post(f"/api/discovery/trials/{t['id']}/save", headers={"x-csrf-token": csrf}).json()
+    assert again["hash"] == r["hash"] and "already" in again["message"]  # idempotent
+    bad = next((x for x in trials if x["status"] in ("invalid", "duplicate")), None)
+    if bad:
+        assert c.post(f"/api/discovery/trials/{bad['id']}/save", headers={"x-csrf-token": csrf}).status_code == 400
+
+
+def test_save_all_saves_every_evaluated_trial(conn, risk, monkeypatch, tmp_path):
+    monkeypatch.setattr(registry, "STRATEGIES_DIR", tmp_path)
+    seed_trending(conn)
+    rep = run(conn, Config(ticker="TKR", peers=["SPY"], kinds=["daily"], generations=1, save_all=True), "test", risk=risk)
+    n = db.row(conn, "SELECT COUNT(*) n FROM discovery_trials WHERE run_id=? AND status IN"
+                     " ('evaluated','improved','not_better','holdout_pass','holdout_fail')", (rep["run_id"],))["n"]
+    assert len(rep["drafts"]) == n > 1 and len(list(tmp_path.glob("*.yaml"))) == n

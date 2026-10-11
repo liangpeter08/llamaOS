@@ -7,6 +7,7 @@ import { money, pct, pnlClass, short } from "@/lib/format";
 import { Card, Empty, Loading, Notice, StatusPill } from "@/components/ui";
 import { isOwner, useSession } from "@/components/session";
 import { BulkBar, ViewSwitch, type View } from "@/components/Organize";
+import { DiscoverPanel } from "@/components/Discovery";
 
 const STATUSES = ["draft", "backtested", "paper", "live", "retired"];
 
@@ -73,7 +74,8 @@ export default function Strategies() {
         new version that starts at draft. Archive old versions to hide them; archiving never changes the file or its status.
       </p>
       {msg && <Notice kind={msg.kind}>{msg.text}</Notice>}
-      <Card>
+      <DiscoverPanel owner={owner} />
+      <Card className="mt">
         <div className="filters">
           <ViewSwitch view={view} setView={(v) => { setView(v); setSelected(new Set()); }} archived={archivedCount} />
           <input type="search" aria-label="Search strategies" placeholder="Search name, id, category or hash" value={q} onChange={(e) => setQ(e.target.value)} />
