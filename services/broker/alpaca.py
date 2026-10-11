@@ -131,10 +131,10 @@ class Alpaca:
         return self.request("GET", "/v2/stocks/snapshots", data=True,
                             params={"symbols": ",".join(symbols), "feed": self.feed})
 
-    def bars(self, symbols, timeframe, start, end):
+    def bars(self, symbols, timeframe, start, end, adjustment="raw"):
         out = {s: [] for s in symbols}
         params = {"symbols": ",".join(symbols), "timeframe": timeframe, "start": iso(start), "end": iso(end),
-                  "feed": self.feed, "adjustment": "raw", "limit": 10000, "sort": "asc"}
+                  "feed": self.feed, "adjustment": adjustment, "limit": 10000, "sort": "asc"}
         while True:
             page = self.request("GET", "/v2/stocks/bars", data=True, params=params)
             for s, rows in page.get("bars", {}).items():

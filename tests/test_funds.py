@@ -140,3 +140,65 @@ def test_risk_and_funds_api(conn, risk):
     assert c.post(f"/api/funds/{s.id}/pause", json={"reason": "review"}, headers=h).status_code == 200
     assert funds.status(conn, s.id) == ("paused", "review")
     assert c.post(f"/api/funds/{s.id}/resume", json={}, headers=h).status_code == 200
+
+
+# ---------------------------------------------------------------- fixed-dollar allocations
+def test_fixed_dollar_allocation(conn, risk):
+    from common.units import parse_usd
+    assert parse_usd("$25,000") == 25_000 and parse_usd("25k") == 25_000 and parse_usd("1.5m") == 1_500_000
+    with pytest.raises(ValueError):
+        parse_usd("ten bucks")
+    assert F.StrategyFund("orb", "intraday", 0.5, "set", 0.2, None, fixed_usd=8_000).cap_usd(100_000) == 8_000
+
+    s = running_orb(conn, risk)
+    db.kv_set(conn, "account", {"equity": 100_000, "cash": 100_000})
+    assert funds.set_allocation(conn, risk, s, None, 0.2, 0.05, "owner", alloc_usd=15_000) == []
+    f = funds.account(conn, risk).strategies[s.id]
+    assert f.cap_usd(100_000) == 15_000 and f.allocation == pytest.approx(0.15) and f.base_usd == 15_000
+    # the dollar cap holds as equity moves; its share of equity moves instead
+    db.kv_set(conn, "account", {"equity": 150_000, "cash": 150_000})
+    f = funds.account(conn, risk).strategies[s.id]
+    assert f.cap_usd(150_000) == 15_000 and f.allocation == pytest.approx(0.10)
+    assert funds.unallocated(conn, risk) == pytest.approx(risk.funds.max_deployed - 0.10)
+    assert F.room_usd(s.id, "intraday", funds.account(conn, risk), risk.funds) == pytest.approx(15_000)
+    # checked against the limits at today's equity
+    errs = funds.set_allocation(conn, risk, s, None, 0.2, 0.05, "owner", alloc_usd=10_000_000)
+    assert errs and "of equity" in errs[0]
+    funds.pause(conn, s.id, "x", "owner")
+    funds.resume(conn, s.id, "owner")
+    assert db.row(conn, "SELECT base_usd FROM strategy_funds WHERE sid=?", (s.id,))["base_usd"] == 15_000
+
+
+def test_funds_api_fixed_dollars_keeps_stops(conn, risk):
+    from tests.test_api import login
+    c, csrf, _ = login(conn)
+    h = {"x-csrf-token": csrf}
+    s = running_orb(conn, risk)
+    db.kv_set(conn, "account", {"equity": 100_000, "cash": 100_000})
+    assert c.post(f"/api/funds/{s.id}", json={"allocation": "10%", "max_drawdown": "15%", "daily_loss": "4%"}, headers=h).status_code == 200
+    r = c.post(f"/api/funds/{s.id}", json={"allocation": "$12,500", "alloc_mode": "usd"}, headers=h)
+    assert r.status_code == 200, r.text
+    row = next(x for x in c.get("/api/funds").json()["strategies"] if x["sid"] == s.id)
+    assert row["alloc_mode"] == "usd" and row["allocation_usd"] == 12_500
+    assert row["max_drawdown"] == pytest.approx(0.15) and row["daily_loss"] == pytest.approx(0.04)
+    assert c.post(f"/api/funds/{s.id}", json={"allocation": "lots", "alloc_mode": "usd"}, headers=h).status_code == 400
+    assert c.post(f"/api/funds/{s.id}", json={"allocation": "8"}, headers=h).status_code == 200  # bare number = percent
+    row = next(x for x in c.get("/api/funds").json()["strategies"] if x["sid"] == s.id)
+    assert row["alloc_mode"] == "pct" and row["allocation"] == pytest.approx(0.08)
+
+
+def test_promote_with_allocation(conn, risk):
+    from tests.test_api import login
+    c, csrf, _ = login(conn)
+    h = {"x-csrf-token": csrf}
+    registry.sync(conn, risk)
+    hh = db.row(conn, "SELECT hash FROM strategies WHERE sid='orb_news_long'")["hash"]
+    registry.set_status(conn, hh, "backtested", "pytest")
+    db.kv_set(conn, "account", {"equity": 100_000, "cash": 100_000})
+    sug = c.get(f"/api/strategies/{hh}").json()["fund_suggest"]
+    assert sug["room"] == pytest.approx(risk.funds.max_deployed) and sug["current"] is None
+    r = c.post(f"/api/strategies/{hh}/promote", json={"to": "paper", "allocation": "20k", "alloc_mode": "usd"}, headers=h)
+    assert r.status_code == 200, r.text
+    assert "$20,000 fixed" in r.json()["message"]
+    fr = db.row(conn, "SELECT alloc_usd FROM strategy_funds WHERE sid='orb_news_long'")
+    assert fr["alloc_usd"] == 20_000

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from collections import Counter
 
 from common import timeutil as T
 from common.config import RiskConfig
@@ -53,9 +54,13 @@ class StrategyRunner:
         self.evals: dict[str, Evaluator] = {}
         self.cooldown: dict[str, int] = {}
         self.trades_today = 0
+        self.diagnostics: Counter | None = None
+        self.failed_conditions: Counter | None = None
 
-    def start_day(self, days: dict[str, DayData], signals: SignalBook):
-        self.evals = {sym: Evaluator(self.s, d, signals) for sym, d in days.items()}
+    def start_day(self, days: dict[str, DayData], signals: SignalBook, refs: dict[str, DayData] | None = None):
+        """refs: reference-only symbols (read by peer() and friends, never traded); traded symbols are peers too."""
+        peers = {**(refs or {}), **days}
+        self.evals = {sym: Evaluator(self.s, d, signals, peers) for sym, d in days.items()}
         self.cooldown.clear()
         self.trades_today = 0
 
@@ -74,21 +79,33 @@ class StrategyRunner:
         """busy = this symbol already has a position, working order or pending intent.
         max_notional = money left in this strategy's fund allocation (sizes the entry down to fit; None = no fund limit)."""
         ev = self.evals.get(symbol)
-        if ev is None or busy or i < self.cooldown.get(symbol, -1):
+        if self.s.universe_symbols and symbol not in self.s.universe_symbols:
+            return None  # not this strategy's ticker: not an evaluation at all
+        def blocked(reason):
+            if self.diagnostics is not None:
+                self.diagnostics[reason] += 1
             return None
+        if self.diagnostics is not None:
+            self.diagnostics['evaluations'] += 1
+        if ev is None or busy or i < self.cooldown.get(symbol, -1):
+            return blocked('cooldown_or_busy')
         s, d = self.s, ev.d
         close_ts = d.close_ts(i)
         if not T.in_window(close_ts, s.entry_window):
-            return None
+            return blocked('outside_entry_window')
         cap = s.limits.get("max_trades_per_day")
         if cap is not None and self.trades_today >= cap:
-            return None
+            return blocked('strategy_trade_cap')
         ok, uni = ev.in_universe(i)
         if not ok:
-            return None
+            if self.failed_conditions is not None:
+                self.failed_conditions.update(r['cond'] + (' (missing value)' if r.get('missing') else '') for r in uni if not r['ok'])
+            return blocked('universe_filtered')
         decision = [ev.explain(c, i) for c in s.entry_when_all]
         if not all(r["ok"] for r in decision):
-            return None
+            if self.failed_conditions is not None:
+                self.failed_conditions.update(r['cond'] + (' (missing value)' if r.get('missing') else '') for r in decision if not r['ok'])
+            return blocked('entry_conditions_false')
 
         entry = d.c[i]
         side = s.side
@@ -96,23 +113,25 @@ class StrategyRunner:
         try:
             stop = ev.value(s.exit_stop, i) if s.exit_stop is not None else None
             if stop is None:
-                return None
+                return blocked('stop_unavailable')
             ev.position = Position(side, entry, stop, i)
             target = ev.value(s.exit_target, i) if s.exit_target is not None else None
         finally:
             ev.position = None
         if target is None:
-            return None
+            return blocked('target_unavailable')
         rps = abs(entry - stop)
         if rps <= 0 or (side == "long" and not stop < entry < target) or (side == "short" and not target < entry < stop):
-            return None
+            return blocked('invalid_bracket')
         qty = math.floor(equity * s.risk_per_trade / rps)
         max_pos = min(self.risk.max_position, s.limits.get("max_position", self.risk.max_position))
         qty = min(qty, math.floor(max_pos * equity / entry))
         if max_notional is not None:
             qty = min(qty, math.floor(max_notional / (entry * (1 + self.risk.max_slippage))))
         if qty < 1:
-            return None
+            return blocked('size_below_one_share')
+        if self.diagnostics is not None:
+            self.diagnostics['intents_generated'] += 1
         limit = entry * (1 + self.risk.max_slippage) if side == "long" else entry * (1 - self.risk.max_slippage)
         sigs = {name: ev._signal(name, i) for name in s.signals}
         return Intent(

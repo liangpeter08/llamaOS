@@ -74,13 +74,16 @@ class Broker:
             self.registry_rows[s.hash] = row
         self.syms = [s for s in universe() if s in self.simday.bars]
         self.days = {s: DayData(s, self.day, MD.history(conn, s, self.day)) for s in self.syms}
+        # reference-only symbols (peer() reads): replayed with the session, never traded
+        ref_syms = sorted({r for s in strategies for r in getattr(s, "references", []) if r in self.simday.bars} - set(self.syms))
+        self.refs = {s: DayData(s, self.day, MD.history(conn, s, self.day)) for s in ref_syms}
         self.book = SignalBook()
         # carry the account over from the last recorded session (replay or live), so history is continuous
         last = db.row(conn, "SELECT equity FROM equity_history WHERE ts < ? ORDER BY ts DESC LIMIT 1",
                       (T.open_ts(self.day),))
         cash = float(last["equity"]) if last else float(self.cfg.get("starting_equity", 100_000))
         self.session = TradingSession(risk, strategies, self.days, self.book, cash=cash,
-                                      slippage=parse_pct(self.cfg.get("fill_slippage", "0.02%")), gate=self.gate)
+                                      slippage=parse_pct(self.cfg.get("fill_slippage", "0.02%")), gate=self.gate, refs=self.refs)
         ks = db.kv_get(conn, "kill_switch") or {}
         if ks.get("active"):
             self.session.kill, self.session.kill_reason = True, ks.get("reason", "")
@@ -148,6 +151,8 @@ class Broker:
                 b = self.simday.bars[s][i]
                 self.days[s].append(*b)
                 rows.append((s, *b))
+            for s, d in self.refs.items():
+                d.append(*self.simday.bars[s][i])
             conn.executemany("INSERT INTO bars(symbol, ts, o, h, l, c, v) VALUES (?,?,?,?,?,?,?) ON CONFLICT (symbol, ts) DO NOTHING", rows)
             self.refresh_signals()
             self.persist_events(self.session.step(i))

@@ -16,6 +16,7 @@ import re
 import secrets
 import time
 from datetime import date, timedelta
+from typing import Literal
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -25,7 +26,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from backtest import engine as bt
 from common import audit, db, registry, sleeves, monitoring
-from common import funds, risk_settings as RS
+from common import funds, market_inputs, risk_settings as RS
 from common.config import risk_defaults
 from core import funds as F
 from common.config import RiskConfig, load_risk, load_yaml, mode, risk_path
@@ -453,7 +454,8 @@ def strategies(u: dict = Depends(user)):
     c = conn()
     risk = load_risk()
     registry.sync(c, risk)
-    rows = db.rows(c, "SELECT * FROM strategies ORDER BY sid, version DESC")
+    rows = db.rows(c, "SELECT s.*, k.category FROM strategies s LEFT JOIN strategy_categories k ON k.sid=s.sid"
+                      " ORDER BY s.sid, s.version DESC")
     for r in rows:
         b = j(r.pop("backtest"))
         r["bt"] = {"metrics": b["metrics"], "days": len(b["days"])} if b else None
@@ -462,7 +464,7 @@ def strategies(u: dict = Depends(user)):
         r["validation"] = validate(text, risk).as_dict() if text else j(r["validation"], {})
         r["sim"] = db.row(c, "SELECT COUNT(*) n, COALESCE(SUM(pnl),0) pnl FROM trades WHERE strategy_hash=?", (r["hash"],))
         r["kind"] = "portfolio" if "kind: portfolio" in text else "intraday"
-    return {"rows": rows}
+    return {"rows": rows, "categories": [r["category"] for r in db.rows(c, "SELECT DISTINCT category FROM strategy_categories ORDER BY category")]}
 
 
 @app.get("/api/strategies/{h}")
@@ -480,18 +482,35 @@ def strategy(h: str, u: dict = Depends(user)):
         "kind": kind, "portfolio": portfolio_view(c, h) if kind == "portfolio" else None,
         "monitoring": monitoring.coverage(c, s) if s else {"required": [], "unwatched": []},
         "decide_at": f"{s.decide_at:%H:%M}" if kind == "portfolio" and s else None,
-        "fund": db.row(c, "SELECT allocation, status, reason, max_drawdown FROM strategy_funds WHERE sid=?", (row["sid"],)),
+        "fund": db.row(c, "SELECT allocation, alloc_usd, status, reason, max_drawdown FROM strategy_funds WHERE sid=?", (row["sid"],)),
+        "fund_suggest": fund_suggest(c, risk, s) if s and risk.funds and row["status"] == "backtested" else None,
         "s": {k: v_ for k, v_ in row.items() if k not in ("backtest", "validation")},
         "text": text, "integrity": v.hash == h,
         "validation": v.as_dict(),
         "assumptions": s.assumptions if s else [], "suggestions": s.suggestions if s else [],
         "source": s.source if s else {}, "back_translation": back_translate(s) if s else None,
         "backtest": j(row["backtest"]),
-        "versions": db.rows(c, "SELECT hash, version, status FROM strategies WHERE sid=? ORDER BY version", (row["sid"],)),
+        "versions": db.rows(c, "SELECT hash, version, status, archived_at FROM strategies WHERE sid=? ORDER BY version", (row["sid"],)),
+        "category": (db.row(c, "SELECT category FROM strategy_categories WHERE sid=?", (row["sid"],)) or {}).get("category"),
+        "categories": [r["category"] for r in db.rows(c, "SELECT DISTINCT category FROM strategy_categories ORDER BY category")],
+        "delete_blockers": registry.delete_blockers(c, h),
+        "saved_runs": db.row(c, "SELECT COUNT(*) n FROM backtest_runs WHERE strategy_hash=?", (h,))["n"],
         "intents": db.rows(c, "SELECT id, ts, symbol, qty, status FROM intents WHERE strategy_hash=? ORDER BY id DESC LIMIT 20", (h,)),
         "trades": db.rows(c, "SELECT id, symbol, exit_kind, pnl FROM trades WHERE strategy_hash=? ORDER BY id DESC LIMIT 20", (h,)),
         "lifecycle": load_yaml("lifecycle.yaml"),
+        "discovery": discovery_links(c, h, s),
     }
+
+
+def discovery_links(c, h: str, s) -> dict:
+    """Where this file came from in discovery, follow-up runs seeded from it, and whether it can be iterated (one ticker)."""
+    syms = (list(s.symbols) if s.kind == "portfolio" else list(s.universe_symbols)) if s else []
+    made = db.row(c, "SELECT t.id trial_id, t.run_id, t.holdout FROM discovery_trials t WHERE t.strategy_hash=? ORDER BY t.id DESC LIMIT 1", (h,))
+    follow = [r for r in db.rows(c, "SELECT id, status, created_at, config FROM discovery_runs ORDER BY id DESC LIMIT 200")
+              if (j(r["config"]) or {}).get("seed_hash") == h][:10]
+    return {"ticker": syms[0] if len(syms) == 1 else None, "kind": ("daily" if s.kind == "portfolio" else "intraday") if s else None,
+            "made_by": {**made, "holdout": j(made["holdout"])} if made else None,
+            "follow_ups": [{k: r[k] for k in ("id", "status", "created_at")} for r in follow]}
 
 
 def portfolio_view(c, h: str) -> dict:
@@ -508,12 +527,37 @@ def portfolio_view(c, h: str) -> dict:
                          "unrealized": (px - x.cost) * x.qty if px else None, "holding": x.qty * px / base if px and base else None,
                          "mode": sl.symbols[sym].mode if sl and sym in sl.symbols else None})
     day = db.row(c, "SELECT day, records, event FROM portfolio_days WHERE strategy_hash=? ORDER BY day DESC LIMIT 1", (h,))
-    return {
+    out = {
         "state": sl.to_json() if sl else None, "realized": realized, "holdings": rows,
-        "orders": db.rows(c, "SELECT id, day, symbol, side, qty, ref_price, reason, status, filled_qty, avg_price, note"
+        "orders": db.rows(c, "SELECT id, day, symbol, side, qty, ref_price, reason, status, filled_qty, avg_price, note, reserve_qty, overlay"
                              " FROM portfolio_orders WHERE strategy_hash=? ORDER BY id DESC LIMIT 60", (h,)),
         "last_day": {"day": day["day"], "event": day["event"], "records": j(day["records"], [])} if day else None,
     }
+    s, _ = registry.load(c, h, load_risk())
+    v2 = getattr(s, "v2", None) if s else None
+    if v2 is not None:
+        locked = sleeves.locked_cash(c, h)
+        out["overlays"] = {
+            "file_mode": v2.mode, "enforced": sleeves.enforced(c, s), "owner_enabled": bool(db.kv_get(c, f"overlays.enforce.{h}")),
+            "review_required": v2.review_required, "authoring": v2.authoring,
+            "catalog_pinned": db.kv_get(c, f"scenario_catalog.pin.{h}") == v2.catalog_hash,
+            "missing_feeds": market_inputs.missing_feeds(s), "input_symbols": s.input_symbols,
+            "rules": [{"id": o.id, "scenario": o.scenario, "action": o.action, "metric": o.metric, "on": o.on,
+                       "phase": (sl.overlays.get(o.id) or {}).get("phase", "normal") if sl else "normal",
+                       "state": (sl.overlays.get(o.id) or {}) if sl else {}} for o in v2.overlays],
+            "locked_cash": locked, "released_usd": sl.released_usd if sl else 0.0,
+            "locked_effective": max(0.0, locked - (sl.released_usd if sl else 0.0)),
+            "inputs": db.kv_get(c, f"portfolio.inputs.{h}"), "observed": db.kv_get(c, f"portfolio.observed.{h}"),
+            "events": [{**e, "payload": j(e["payload"], {}), "context": j(e["context"], None)}
+                       for e in db.rows(c, "SELECT id, day, ts, kind, overlay, mode, payload, context FROM portfolio_events"
+                                           " WHERE strategy_hash=? ORDER BY id DESC LIMIT 60", (h,))],
+            "assumptions": [{"id": a.id, "statement": a.statement, "monitored": a.monitored, "critical": a.critical,
+                             "latest": db.row(c, "SELECT ts, tier, status, answers, actions, mode, error FROM assumption_checks"
+                                                 " WHERE strategy_hash=? AND assumption_id=? ORDER BY id DESC LIMIT 1", (h, a.id))}
+                            for a in v2.assumptions],
+            "assumption_block": db.kv_get(c, f"assumption.block.{h}"),
+        }
+    return out
 
 
 @app.get("/api/strategies/{h}/diff")
@@ -526,32 +570,45 @@ def strategy_diff(h: str, against: str, u: dict = Depends(user)):
 
 @app.post("/api/strategies/{h}/backtest")
 def strategy_backtest(h: str, u: dict = Depends(owner)):
+    from backtest import workspace as W
     c = conn()
-    risk = load_risk()
-    s, why = registry.load(c, h, risk)
-    if not s:
-        fail(f"Can't backtest: {why}")
-    t0 = time.time()
     try:
-        report = bt.run(c, s, risk, starting_equity=float(load_yaml("sim.yaml").get("starting_equity", 100_000)))
+        config = W.RunConfig(strategy_hash=h, name='Strategy quick backtest',
+                             starting_equity=float(load_yaml('sim.yaml').get('starting_equity', 100_000)))
+        rid = W.create_run(c, config, u['username'], submit=False)
+        W.execute(db.url(), rid)
     except ValueError as e:
         fail(f"Can't backtest: {e}")
-    report.update(ran_at=time.time(), ran_by=u["username"], seconds=round(time.time() - t0, 2))
-    status_ = db.row(c, "SELECT status FROM strategies WHERE hash=?", (h,))["status"]
-    c.execute("UPDATE strategies SET backtest=?, updated_at=? WHERE hash=?", (json.dumps(report, default=str), time.time(), h))
-    if status_ == "draft":
-        registry.set_status(c, h, "backtested", u["username"])
-    audit.log(c, "strategy.backtested", u["username"], {"hash": h, "metrics": report["metrics"]})
+    run = db.row(c, 'SELECT report,error FROM backtest_runs WHERE id=?', (rid,))
+    if run['error']:
+        fail(f"Can't backtest: {run['error']}")
+    report = j(run['report'])
     if report.get("kind") == "portfolio":
         m = report["metrics"]
         return ok(f"Backtest finished: {m['orders']} orders over {len(report['days'])} sessions, {m['return_pct']:+.2%} "
-                  f"vs {m['benchmark_return_pct']:+.2%} for plain buy-and-hold.")
-    return ok(f"Backtest finished: {report['metrics']['trades']} trades over {len(report['days'])} sessions.")
+                  f"vs {m['basket_buy_hold_return_pct']:+.2%} for plain buy-and-hold. "
+                  f"Saved as run #{rid}.", run_id=rid)
+    return ok(f"Backtest finished: {report['metrics']['trades']} trades over {len(report['days'])} evaluated sessions. "
+              f"Saved as run #{rid}; inspect diagnostics in Backtesting.", run_id=rid)
 
 
 class PromoteIn(BaseModel):
     to: str
     reviewed: bool = False
+    allocation: str | None = None  # paper only: '10%' of equity, or a dollar amount with alloc_mode 'usd'
+    alloc_mode: Literal["pct", "usd"] = "pct"
+
+
+def parse_allocation(text: str, mode: str) -> tuple[float | None, float | None]:
+    """(share of equity, fixed dollars) from the owner's input; exactly one is set."""
+    from common.units import parse_pct, parse_usd
+    try:
+        if mode == "usd":
+            return None, parse_usd(text)
+        v = text.strip()
+        return parse_pct(v if v.endswith("%") else v + "%"), None
+    except ValueError as e:
+        fail(str(e))
 
 
 @app.post("/api/strategies/{h}/promote")
@@ -570,11 +627,33 @@ def strategy_promote(h: str, body: PromoteIn, u: dict = Depends(owner)):
     if not s:
         fail(f"Blocked: {why}")
     if body.to == "paper":
+        if row["archived_at"]:
+            fail("This version is archived. Unarchive it before promoting.", 409)
         if row["status"] not in ("backtested", "live"):
             fail("Paper needs a passing validation and a backtest first.")
+        v2 = getattr(s, "v2", None)
+        if v2 is not None:
+            gaps = market_inputs.missing_feeds(s)
+            if gaps:
+                fail(f"Blocked: no index feed configured for {', '.join(gaps)} (config/market_inputs.yaml). "
+                     "The strategy can't silently use a proxy.")
+            if v2.review_required and not body.reviewed:
+                fail("This file's authoring.status is proposed_requires_review: confirm you reviewed its proposed defaults "
+                     "(reviewed: true) to promote it.", 409)
+            if v2.overlays and not v2.catalog_hash:
+                fail("Blocked: config/scenario-catalog.yaml is missing.")
         risk = load_risk()
         fund_note = ""
-        if risk.funds and not db.row(c, "SELECT sid FROM strategy_funds WHERE sid=?", (s.id,)):
+        if risk.funds and body.allocation:
+            share, usd = parse_allocation(body.allocation, body.alloc_mode)
+            fr = db.row(c, "SELECT max_drawdown, daily_loss FROM strategy_funds WHERE sid=?", (s.id,))
+            errs = funds.set_allocation(c, risk, s, share, fr["max_drawdown"] if fr else risk.funds.strategy_max_drawdown,
+                                        (fr["daily_loss"] if fr else risk.funds.strategy_daily_loss) if s.kind == "intraday" else None,
+                                        u["username"], alloc_usd=usd)
+            if errs:
+                fail("Can't allocate: " + "; ".join(errs))
+            fund_note = f" Fund allocation: ${usd:,.0f} fixed." if usd is not None else f" Fund allocation: {share:.1%} of equity."
+        elif risk.funds and not db.row(c, "SELECT sid FROM strategy_funds WHERE sid=?", (s.id,)):
             want = funds.default_allocation(s, risk)
             room = funds.unallocated(c, risk, exclude=s.id)
             need = s.capital if s.kind == "portfolio" else min(want, risk.funds.default_allocation)
@@ -588,6 +667,10 @@ def strategy_promote(h: str, body: PromoteIn, u: dict = Depends(owner)):
             with db.tx(c):
                 monitoring.activate(c, s, u["username"])
                 db.kv_set(c, 'monitoring.strategy.' + h, True)
+                if v2 is not None and v2.overlays:
+                    db.kv_set(c, f"scenario_catalog.pin.{h}", v2.catalog_hash)
+                    audit.log(c, "scenario_catalog.pinned", u["username"], {"hash": h, "catalog_hash": v2.catalog_hash,
+                                                                           "reviewed_defaults": body.reviewed})
                 registry.set_status(c, h, "paper", u["username"], paper_started_at=time.time())
         except ValueError as e:
             fail(str(e))
@@ -596,6 +679,49 @@ def strategy_promote(h: str, body: PromoteIn, u: dict = Depends(owner)):
     if body.to == "live":
         fail("Real-money execution is disabled; this release supports paper trading only.", 403)
     fail("unknown target")
+
+
+class OverlayModeIn(BaseModel):
+    enforce: bool
+    reason: str = Field(default="", max_length=500)
+
+
+@app.post("/api/strategies/{h}/overlays")
+def strategy_overlays(h: str, body: OverlayModeIn, u: dict = Depends(owner)):
+    """Owner paper enforcement of a 0.2 file's overlays. Only files that declare monitoring.mode: enforce can act."""
+    c = conn()
+    s, why = registry.load(c, h, load_risk())
+    if not s or getattr(s, "v2", None) is None or not s.v2.overlays:
+        fail(f"No portfolio overlays to enforce: {why if not s else 'not a DSL 0.2 file with overlays'}")
+    if body.enforce and s.v2.mode != "enforce":
+        fail("This version declares monitoring.mode: shadow, so its overlays only log decisions. "
+             "Save a new version with mode: enforce to let them trade.", 409)
+    if body.enforce and (db.row(c, "SELECT status FROM strategies WHERE hash=?", (h,)) or {}).get("status") != "paper":
+        fail("Enforcement is for strategies running on paper.", 409)
+    db.kv_set(c, f"overlays.enforce.{h}", body.enforce)
+    audit.log(c, "portfolio.overlays_enforce", u["username"], {"hash": h, "enforce": body.enforce, "reason": body.reason})
+    command("reload", {}, u["username"])
+    return ok("Overlays enforced on paper: numeric reductions, buy pauses and rebuilds now place orders through the "
+              "normal approval mode." if body.enforce else "Overlays back in shadow mode: decisions are logged only.")
+
+
+@app.post("/api/strategies/{h}/release-cash")
+def strategy_release_cash(h: str, u: dict = Depends(owner)):
+    """Release the sleeve's locked rotation proceeds so buys may use them again."""
+    c = conn()
+    sl = sleeves.load_state(c, h)
+    if sl is None:
+        fail("No sleeve state for this strategy yet.", 404)
+    locked = sleeves.locked_cash(c, h)
+    if locked - sl.released_usd <= 0.01:
+        fail("No locked cash to release.", 409)
+    with db.tx(c):
+        c.execute("SELECT state FROM portfolio_state WHERE strategy_hash=? FOR UPDATE", (h,))
+        sl = sleeves.load_state(c, h)
+        released, sl.released_usd = locked - sl.released_usd, locked
+        sleeves.save_state(c, h, (db.row(c, "SELECT sid FROM strategies WHERE hash=?", (h,)) or {}).get("sid", ""), sl)
+    audit.log(c, "portfolio.cash_released", u["username"], {"hash": h, "usd": released})
+    return ok(f"Released ${released:,.0f} of locked rotation proceeds.")
 
 
 class ModeIn(BaseModel):
@@ -613,6 +739,63 @@ def strategy_mode(h: str, body: ModeIn, u: dict = Depends(owner)):
     return ok(f"Execution mode set to {body.mode}.")
 
 
+class StrategyMetaIn(BaseModel):
+    hashes: list[str] = Field(min_length=1, max_length=500)
+    category: str | None = Field(default=None, max_length=60)  # None leaves it unchanged; "" clears it
+    archived: bool | None = None
+
+
+@app.post("/api/strategies/meta")
+def strategy_meta(body: StrategyMetaIn, u: dict = Depends(owner)):
+    """Categorize and archive/unarchive one or more versions. Category applies to each version's whole line (sid)."""
+    c = conn()
+    found = db.rows(c, "SELECT hash, sid, status FROM strategies WHERE hash = ANY(?)", (body.hashes,))
+    if not found:
+        fail("no such strategy", 404)
+    if body.category is not None:
+        for sid in sorted({r["sid"] for r in found}):
+            registry.set_category(c, sid, body.category, u["username"])
+    skipped = []
+    if body.archived is not None:
+        for r in found:
+            try:
+                registry.set_archived(c, r["hash"], body.archived, u["username"])
+            except ValueError:
+                skipped.append(r["sid"])
+    parts = []
+    if body.category is not None:
+        parts.append(f"Category {'set to ' + body.category.strip() if body.category.strip() else 'cleared'}")
+    if body.archived is not None:
+        n = len(found) - len(skipped)
+        parts.append(f"{'Archived' if body.archived else 'Unarchived'} {n} version{'s' * (n != 1)}")
+    msg = "; ".join(parts) + "."
+    if skipped:
+        msg += f" Skipped {len(skipped)} running on paper/live (retire first): {', '.join(sorted(set(skipped)))}."
+    return ok(msg)
+
+
+class StrategyDeleteIn(BaseModel):
+    confirm: str
+    delete_runs: bool = False
+
+
+@app.post("/api/strategies/{h}/delete")
+def strategy_delete(h: str, body: StrategyDeleteIn, u: dict = Depends(owner)):
+    c = conn()
+    row = db.row(c, "SELECT sid FROM strategies WHERE hash=?", (h,))
+    if not row:
+        fail("no such strategy", 404)
+    if body.confirm != row["sid"]:
+        fail(f"Type the strategy id ({row['sid']}) to confirm permanent deletion.")
+    try:
+        res = registry.delete(c, h, u["username"], delete_runs=body.delete_runs)
+    except ValueError as e:
+        fail(str(e), 409)
+    runs = f" and {res['runs']} saved backtest run{'s' * (res['runs'] != 1)}" if res["runs"] else ""
+    return ok(f"Deleted {res['sid']} v{res['version']}{runs} permanently. Trade history and the audit log are kept.",
+              last_version=res["last_version"])
+
+
 class TextIn(BaseModel):
     text: str
     name: str = Field(default="", max_length=80)
@@ -622,6 +805,37 @@ class TextIn(BaseModel):
 def strategy_compile(body: TextIn, u: dict = Depends(owner)):
     # Up to two Opus calls (draft + one repair round) at 240s each.
     return models_api("/compile", {"text": body.text, "name": body.name.strip(), "actor": u["username"]}, timeout=600)
+
+
+class DuplicateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+@app.post("/api/strategies/{h}/duplicate")
+def strategy_duplicate(h: str, body: DuplicateIn, u: dict = Depends(owner)):
+    """Copy a strategy file unchanged under a new id: a separate draft strategy (v1) with its own lifecycle."""
+    from services.models.authoring import named_draft
+    c = conn()
+    row = db.row(c, "SELECT sid, version FROM strategies WHERE hash=?", (h,))
+    text = registry.text_of(c, h) if row else None
+    if text is None:
+        fail("no such strategy", 404)
+    risk = load_risk()
+    copy = named_draft(text, body.name)
+    v = validate(copy, risk)
+    if not v.ok:
+        fail("The copy doesn't validate: " + "; ".join(v.errors))
+    if registry.next_version(v.strategy.id) > 1:
+        fail(f"A strategy with id {v.strategy.id} already exists. Choose another name.", 409)
+    path = registry.write_new_version(v.strategy.id, copy)
+    registry.sync(c, risk)
+    nh = validate(path.read_text(), risk).hash
+    c.execute("UPDATE strategies SET display_name=? WHERE hash=?", (body.name.strip(), nh))
+    cat = db.row(c, "SELECT category FROM strategy_categories WHERE sid=?", (row["sid"],))
+    if cat:
+        registry.set_category(c, v.strategy.id, cat["category"], u["username"])
+    audit.log(c, "strategy.duplicated", u["username"], {"from": h, "sid": row["sid"], "version": row["version"], "to": path.name, "hash": nh})
+    return ok(f"Duplicated {row['sid']} v{row['version']} as {path.name} (draft).", hash=nh, path=path.name)
 
 
 class DiffIn(BaseModel):
@@ -665,6 +879,163 @@ def chat_post(body: ChatIn, u: dict = Depends(owner)):
     return chat_get(body.thread, u)
 
 
+# ---------------------------------------------------------------- strategy design chat (architect)
+DESIGN = re.compile(r"^design:[A-Za-z0-9]{6,32}$")
+
+
+def _design_thread(thread: str) -> str:
+    if not DESIGN.match(thread):
+        fail("bad design thread id")
+    return thread
+
+
+def _improving(content: str) -> dict | None:
+    """The strategy a design thread was started from ("duplicate and improve"), read from its first message."""
+    from services.models.authoring import CONTEXT_MARK, IMPROVE_TAG
+    m = IMPROVE_TAG.search(content.split(CONTEXT_MARK, 1)[0])
+    return {"sid": m.group(1), "version": int(m.group(2)), "hash": m.group(3)} if m else None
+
+
+def _design_view(c, thread: str) -> dict:
+    from services.models.authoring import CONTEXT_MARK, check_draft
+    risk = load_risk()
+    rows = db.rows(c, "SELECT id, ts, role, content, model FROM chats WHERE thread=? ORDER BY id", (thread,))
+    draft, improving = None, None
+    for r in rows:
+        if r["role"] == "user" and CONTEXT_MARK in r["content"]:
+            improving = _improving(r["content"])
+            r["content"] = r["content"].split(CONTEXT_MARK, 1)[1].removesuffix("\n</my_idea>")
+            r["has_context"] = True
+        if r["role"] == "assistant":
+            d = check_draft(r["content"], risk)
+            if d:
+                draft = d | {"message_id": r["id"]}
+    saved = [r for r in rows if r["role"] == "user" and r["content"].startswith("[saved]")]
+    reviews = {}
+    if draft:
+        for r in db.rows(c, "SELECT role, ts, result FROM design_reviews WHERE thread=? AND draft_hash=? ORDER BY id", (thread, draft["hash"])):
+            reviews[r["role"]] = {**json.loads(r["result"]), "ts": r["ts"]}  # latest run per role wins
+    return {"thread": thread, "messages": rows, "draft": draft, "saved": len(saved), "reviews": reviews, "improving": improving}
+
+
+@app.get("/api/design")
+def design_list(u: dict = Depends(user)):
+    from services.models.authoring import CONTEXT_MARK
+    rows = db.rows(conn(), "SELECT thread, MIN(ts) started, MAX(ts) updated, COUNT(*) n FROM chats WHERE thread LIKE 'design:%'"
+                           " GROUP BY thread ORDER BY MAX(ts) DESC LIMIT 30")
+    for r in rows:
+        first = db.row(conn(), "SELECT content FROM chats WHERE thread=? ORDER BY id LIMIT 1", (r["thread"],))
+        r["title"] = (first["content"].split(CONTEXT_MARK, 1)[-1].removesuffix("\n</my_idea>") if first else "")[:140]
+        if first and (imp := _improving(first["content"])):
+            r["title"] = f"Improve {imp['sid']} v{imp['version']}: {r['title']}"
+    return {"threads": rows}
+
+
+@app.get("/api/design/{thread}")
+def design_get(thread: str, u: dict = Depends(user)):
+    return _design_view(conn(), _design_thread(thread))
+
+
+class DesignMsgIn(BaseModel):
+    message: str = Field(min_length=1, max_length=8000)
+    source: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")  # duplicate-and-improve: the strategy to start from
+
+
+@app.post("/api/design/{thread}")
+def design_post(thread: str, body: DesignMsgIn, u: dict = Depends(owner)):
+    _design_thread(thread)
+    if body.source and not db.row(conn(), "SELECT 1 FROM strategies WHERE hash=?", (body.source,)):
+        fail("no such strategy", 404)
+    # Opus at high effort, plus one automatic repair round when the draft doesn't validate.
+    res = models_api("/design", {"thread": thread, "message": body.message, "actor": u["username"], "source": body.source}, timeout=900)
+    if res.get("error"):
+        fail(res["error"], 503)
+    return _design_view(conn(), thread)
+
+
+class DraftIn(BaseModel):
+    yaml: str = Field(min_length=10, max_length=40_000)
+    name: str = Field(default="", max_length=80)
+
+
+def _summarize_backtest(rep: dict) -> dict:
+    m = rep["metrics"]
+    out = {"sessions": len(rep["days"]), "from": rep["days"][0] if rep["days"] else None, "to": rep["days"][-1] if rep["days"] else None,
+           "note": rep.get("signal_note"), "rejected_by_limits": rep.get("rejected_by_guard"),
+           "metrics": {k: (round(v, 4) if isinstance(v, float) else v) for k, v in m.items()}}
+    if rep.get("kind") == "portfolio":
+        out["orders_by_reason"] = {}
+        for o in rep["orders"]:
+            out["orders_by_reason"][o["reason"]] = out["orders_by_reason"].get(o["reason"], 0) + 1
+    out["sample_trades"] = [{k: t.get(k) for k in ("day", "symbol", "qty", "entry_price", "exit_price", "exit_kind", "pnl", "r_multiple")}
+                            for t in rep["trades"][:12]]
+    return out
+
+
+@app.post("/api/design/{thread}/backtest")
+def design_backtest(thread: str, body: DraftIn, u: dict = Depends(owner)):
+    """Backtest an unsaved draft and add the result to the conversation, so Claude can iterate on it."""
+    c = conn()
+    _design_thread(thread)
+    risk = load_risk()
+    v = validate(body.yaml, risk)
+    if not v.ok:
+        fail("The draft doesn't validate: " + "; ".join(v.errors))
+    t0 = time.time()
+    try:
+        rep = bt.run(c, v.strategy, risk, starting_equity=float(load_yaml("sim.yaml").get("starting_equity", 100_000)))
+    except ValueError as e:
+        if "No daily bars" in str(e):
+            fail(f"Can't backtest yet: {e} Unsaved drafts don't trigger downloads; save the draft or use symbols that have stored bars.")
+        fail(f"Can't backtest: {e}")
+    summary = _summarize_backtest(rep)
+    summary["seconds"] = round(time.time() - t0, 2)
+    c.execute("INSERT INTO chats(ts, thread, role, content, model) VALUES (?,?,?,?,?)",
+              (time.time(), thread, "user", f"[backtest] Draft {v.strategy.id} (sha256 {v.hash[:12]}):\n{json.dumps(summary, default=str)}", u["username"]))
+    audit.log(c, "strategy.design_backtest", u["username"], {"thread": thread, "hash": v.hash, "metrics": summary["metrics"]})
+    return {"backtest": summary, **_design_view(c, thread)}
+
+
+@app.post("/api/design/{thread}/review")
+def design_review(thread: str, body: DraftIn, u: dict = Depends(owner)):
+    """Four Opus agents (Analyst, Researcher, Trader, Risk Team) review the draft in parallel."""
+    c = conn()
+    _design_thread(thread)
+    v = validate(body.yaml, load_risk())
+    if not v.ok:
+        fail("The draft doesn't validate: " + "; ".join(v.errors))
+    backtest = None  # the latest backtest of this exact draft, if the trader ran one
+    for r in db.rows(c, "SELECT content FROM chats WHERE thread=? AND content LIKE '[backtest]%' ORDER BY id DESC", (thread,)):
+        if f"sha256 {v.hash[:12]}" in r["content"].split("\n", 1)[0]:
+            backtest = json.loads(r["content"].split("\n", 1)[1])
+            break
+    res = models_api("/review", {"thread": thread, "yaml": body.yaml, "actor": u["username"], "backtest": backtest}, timeout=900)
+    if res.get("error"):
+        fail(res["error"], 503)
+    return _design_view(c, thread)
+
+
+@app.post("/api/design/{thread}/save")
+def design_save(thread: str, body: DraftIn, u: dict = Depends(owner)):
+    from services.models.authoring import named_draft
+    c = conn()
+    _design_thread(thread)
+    risk = load_risk()
+    text = named_draft(body.yaml.strip() + "\n", body.name)
+    v = validate(text, risk)
+    if not v.ok:
+        fail("The draft doesn't validate: " + "; ".join(v.errors))
+    path = registry.write_new_version(v.strategy.id, text)
+    registry.sync(c, risk)
+    h = validate(path.read_text(), risk).hash
+    if body.name.strip():
+        c.execute("UPDATE strategies SET display_name=? WHERE hash=?", (body.name.strip(), h))
+    c.execute("INSERT INTO chats(ts, thread, role, content, model) VALUES (?,?,?,?,?)",
+              (time.time(), thread, "user", f"[saved] The trader saved this draft as {path.name} (a new draft strategy).", u["username"]))
+    audit.log(c, "strategy.designed", u["username"], {"thread": thread, "file": path.name, "hash": h})
+    return ok(f"Saved as {path.name} (draft). Backtest it on its page, then promote to paper.", hash=h, path=path.name)
+
+
 # ---------------------------------------------------------------- idea lab / theses
 @app.get("/api/ideas")
 def ideas(u: dict = Depends(user)):
@@ -699,6 +1070,112 @@ def ideas_run(body: FocusIn, u: dict = Depends(owner)):
     if res.get("note"):
         detail += f" ({res['note']})"
     return ok(f"Run {res['run_id']} ({res['model']}): {len(res['ideas'])} new hypotheses{detail}.")
+
+
+# ---------------------------------------------------------------- strategy discovery (single ticker)
+class DiscoveryStartIn(BaseModel):
+    ticker: str = Field(min_length=1, max_length=8)
+    peers: list[str] = Field(default_factory=lambda: ["SPY", "QQQ"], max_length=4)
+    kinds: list[str] = Field(default_factory=lambda: ["intraday", "daily"], min_length=1, max_length=2)
+    generations: int = Field(default=4, ge=0, le=8)
+    max_trials: int = Field(default=60, ge=5, le=300)
+    holdout_pct: float = Field(default=0.25, ge=0.1, le=0.5)
+    save_drafts: bool = True
+    offline: bool = False
+    seed_trials: list[int] = Field(default_factory=list, max_length=5)
+    seed_hash: str | None = None
+    templates: bool | None = None  # default: on for new searches, off for follow-ups
+
+
+@app.get("/api/discovery/preflight")
+def discovery_preflight(ticker: str, peers: str = "SPY,QQQ", u: dict = Depends(user)):
+    """What a run for this ticker can use: stored sessions per kind, peers with data, history download, model generator."""
+    from common import history
+    from discovery.run import Config, sessions
+    try:
+        cfg = Config(ticker=ticker, peers=[p for p in peers.split(",") if p.strip()])
+    except ValueError as e:
+        fail(str(e).splitlines()[-1] if str(e) else "invalid ticker")
+    c = conn()
+    wins = sessions(c, cfg)
+    kinds = {k: ({"ok": False, "why": w["error"]} if "error" in w else
+                 {"ok": True, "discovery": len(w["discovery"]), "holdout": len(w["holdout"]),
+                  "from": str(w["discovery"][0]), "to": str(w["holdout"][-1])}) for k, w in wins.items()}
+    peer_rows = [{"symbol": p, "daily": db.row(c, "SELECT COUNT(*) n FROM daily WHERE symbol=?", (p,))["n"],
+                  "intraday": db.row(c, "SELECT COUNT(DISTINCT ts/86400) n FROM bars WHERE symbol=?", (p,))["n"]} for p in cfg.peers]
+    try:
+        with httpx.Client(trust_env=False, timeout=3) as client:
+            llm_on = bool(client.get(f"{MODELS_URL}/health").json().get("llm"))
+    except (httpx.HTTPError, ValueError):
+        llm_on = False
+    if load_risk().portfolio is None:
+        kinds["daily"] = {"ok": False, "why": "portfolio strategies are disabled on the Risk page"}
+    running = db.row(c, "SELECT id FROM discovery_runs WHERE status='running' ORDER BY id DESC LIMIT 1")
+    return {"ticker": cfg.ticker, "kinds": kinds, "peers": peer_rows, "history_download": history.available(c),
+            "llm": llm_on, "running": running["id"] if running else None}
+
+
+@app.post("/api/discovery")
+def discovery_start(body: DiscoveryStartIn, u: dict = Depends(owner)):
+    cfg = body.model_dump(exclude={"offline", "templates"})
+    cfg["templates"] = body.templates if body.templates is not None else not (body.seed_trials or body.seed_hash)
+    res = models_api("/discovery/run", {"config": cfg, "actor": u["username"], "offline": body.offline}, timeout=30)
+    if res.get("error"):
+        fail(f"Discovery didn't start: {res['error']}", 409 if "still running" in str(res["error"]) else 503)
+    audit.log(conn(), "discovery.started", u["username"], {"run_id": res.get("run_id"), "config": cfg})
+    return ok(f"Discovery run #{res['run_id']} started for {body.ticker.upper()} ({res.get('model')}).", run_id=res.get("run_id"))
+
+
+@app.get("/api/discovery")
+def discovery_runs(u: dict = Depends(user)):
+    rows = db.rows(conn(), "SELECT id, created_at, created_by, ticker, status, stage, progress, error, finished_at, config, report"
+                           " FROM discovery_runs ORDER BY id DESC LIMIT 50")
+    for r in rows:  # list view: counts only
+        cfg, rep = j(r.pop("config")) or {}, j(r.pop("report")) or {}
+        kinds = rep.get("kinds") or {}
+        r.update(kinds=cfg.get("kinds"), parent_run_id=cfg.get("parent_run_id"), follow_up=bool(cfg.get("seed_trials") or cfg.get("seed_hash")),
+                 generator=rep.get("generator"), trials=sum(k["trials"] for k in kinds.values()),
+                 passed_gates=sum(k["passed_gates"] for k in kinds.values()),
+                 holdout_pass=sum(f["passed"] for k in kinds.values() for f in k["finalists"]), drafts=len(rep.get("drafts") or []))
+    return {"runs": rows}
+
+
+@app.get("/api/discovery/{rid}")
+def discovery_run(rid: int, u: dict = Depends(user)):
+    c = conn()
+    r = db.row(c, "SELECT * FROM discovery_runs WHERE id=?", (rid,))
+    if not r:
+        fail("No such discovery run.", 404)
+    for k in ("config", "profile", "report"):
+        r[k] = j(r[k])
+    trials = db.rows(c, "SELECT id, kind, generation, parent_id, origin, family, title, change, status, score, hash, strategy_hash,"
+                        " evaluation, holdout FROM discovery_trials WHERE run_id=? ORDER BY id", (rid,))
+    for t in trials:
+        ev = j(t.pop("evaluation")) or {}
+        t["holdout"] = j(t["holdout"])
+        gates = ev.get("gates") or {}
+        failed = [k for k, v in gates.items() if k not in ("passed", "valid") and v is False]
+        t["summary"] = {"sharpe": (ev.get("base") or {}).get("sharpe"), "trades": (ev.get("base") or {}).get("trades"),
+                        "stress_sharpe": (ev.get("stress") or {}).get("sharpe"), "consistency": (ev.get("base") or {}).get("consistency"),
+                        "gates": gates, "failed_gates": failed, "weaknesses": [w["kind"] for w in ev.get("weaknesses") or []],
+                        "errors": ev.get("errors")}
+        # worth iterating: passed every gate on discovery data, or missed by one gate with a positive score
+        t["promising"] = bool(ev.get("ok") and (gates.get("passed") or (len(failed) == 1 and (t["score"] or 0) > 0)))
+    children = [x for x in db.rows(c, "SELECT id, status, created_at, config FROM discovery_runs WHERE id > ? ORDER BY id", (rid,))
+                if (j(x["config"]) or {}).get("parent_run_id") == rid]
+    return {"run": r, "trials": trials, "follow_ups": [{k: x[k] for k in ("id", "status", "created_at")} for x in children]}
+
+
+@app.get("/api/discovery/trials/{tid}")
+def discovery_trial(tid: int, u: dict = Depends(user)):
+    t = db.row(conn(), "SELECT * FROM discovery_trials WHERE id=?", (tid,))
+    if not t:
+        fail("No such trial.", 404)
+    for k in ("evaluation", "holdout", "hypothesis"):
+        t[k] = j(t[k])
+    v = validate(t["yaml"], load_risk())
+    t["back_translation"] = back_translate(v.strategy) if v.ok else None
+    return t
 
 
 class IdeaIn(BaseModel):
@@ -927,6 +1404,17 @@ def risk_save(body: RiskIn, u: dict = Depends(owner)):
 
 
 # ---------------------------------------------------------------- funds
+def fund_suggest(c, risk: RiskConfig, s) -> dict:
+    """Defaults for the promote form: what the rules can use, what's free, and any existing allocation of the line."""
+    eq, _ = funds.equity_now(c)
+    room = max(0.0, funds.unallocated(c, risk, exclude=s.id))
+    want = funds.default_allocation(s, risk)
+    cur = db.row(c, "SELECT allocation, alloc_usd FROM strategy_funds WHERE sid=?", (s.id,))
+    return {"equity": eq, "wants": want, "room": room, "suggested": min(want, room), "kind": s.kind,
+            "current": {"mode": "usd" if cur["alloc_usd"] is not None else "pct",
+                        "allocation": funds.share(cur, eq), "usd": funds.base_usd(cur, eq)} if cur else None}
+
+
 def fund_view(c, risk: RiskConfig) -> dict:
     run = funds.running(c, risk)
     acct = funds.account(c, risk, run)
@@ -939,6 +1427,7 @@ def fund_view(c, risk: RiskConfig) -> dict:
         hashes = db.rows(c, "SELECT hash, version, status FROM strategies WHERE sid=? AND status IN ('paper','live') ORDER BY version", (sid,))
         rows.append({
             "sid": sid, "kind": f.kind, "versions": hashes, "allocation": f.allocation, "allocation_usd": f.cap_usd(eq),
+            "alloc_mode": "usd" if f.fixed_usd is not None else "pct", "pnl_pct": f.pnl / f.base_usd if f.base_usd else None,
             "source": f.source, "deployed": f.deployed, "used": f.deployed / f.cap_usd(eq) if f.cap_usd(eq) else None,
             "pnl": f.pnl, "pnl_today": f.pnl_today, "peak_pnl": f.peak_pnl, "drawdown": f.drawdown, "max_drawdown": f.max_drawdown,
             "daily_loss": f.daily_loss, "status": f.status, "reason": f.reason, "base_usd": f.base_usd, "base_ts": f.base_ts,
@@ -967,8 +1456,9 @@ def funds_get(u: dict = Depends(user)):
 
 class FundIn(BaseModel):
     allocation: str
-    max_drawdown: str
-    daily_loss: str | None = None
+    alloc_mode: Literal["pct", "usd"] = "pct"
+    max_drawdown: str | None = None  # omitted: keep the current stop
+    daily_loss: str | None = None  # omitted: keep the current stop; null clears it
 
 
 def _strategy_for(c, risk, sid):
@@ -986,15 +1476,19 @@ def funds_set(sid: str, body: FundIn, u: dict = Depends(owner)):
     if risk.funds is None:
         fail("Fund controls are off.")
     s = _strategy_for(c, risk, sid)
+    cur = funds.ensure(c, risk, s)
+    share, usd = parse_allocation(body.allocation, body.alloc_mode)
     try:
-        vals = [parse_pct(body.allocation), parse_pct(body.max_drawdown), parse_pct(body.daily_loss) if body.daily_loss else None]
+        dd = parse_pct(body.max_drawdown) if body.max_drawdown else cur["max_drawdown"]
+        dl = (parse_pct(body.daily_loss) if body.daily_loss else None) if "daily_loss" in body.model_fields_set else cur["daily_loss"]
     except ValueError as e:
         fail(str(e))
-    errs = funds.set_allocation(c, risk, s, *vals, u["username"])
+    errs = funds.set_allocation(c, risk, s, share, dd, dl, u["username"], alloc_usd=usd)
     if errs:
         fail("; ".join(errs))
-    return ok(f"{sid}: allocation {vals[0]:.1%} of equity, drawdown stop {vals[1]:.0%} of it"
-              + (f", daily loss stop {vals[2]:.0%}" if vals[2] and s.kind == "intraday" else "") + ". Drawdown is measured from now.")
+    what = f"${usd:,.0f} fixed" if usd is not None else f"{share:.1%} of equity"
+    return ok(f"{sid}: allocation {what}, drawdown stop {dd:.0%} of it"
+              + (f", daily loss stop {dl:.0%}" if dl and s.kind == "intraday" else "") + ". Drawdown is measured from now.")
 
 
 @app.post("/api/funds/{sid}/{action}")
@@ -1093,3 +1587,7 @@ def watchlist_update(symbol: str, body: WatchIn, u: dict = Depends(owner)):
         fail(str(e))
     audit.log(c,'monitoring.changed',u['username'],{'symbol':symbol,'enabled':body.enabled,'strategies':deps})
     return ok(f"{symbol} monitoring {'enabled' if body.enabled else 'disabled'}. Changes apply automatically within a few seconds.")
+
+# Keep research routes separate from the trading lifecycle API.
+from .backtests import router as backtest_router
+app.include_router(backtest_router(user, owner))

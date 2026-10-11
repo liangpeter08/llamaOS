@@ -200,6 +200,10 @@ Claude discovers patterns and proposes strategies grounded in **real recorded ev
 
 ---
 
+### Single-ticker discovery
+
+`make discover T=AMD` searches for intraday and daily strategies for one ticker and returns drafts only. The loop runs on the oldest 75% of stored sessions. The latest 25% stay sealed until the end. Each generation, the loop backtests every candidate, then diagnoses it: costs, folds, ablation, parameter neighbourhood, and the regimes where it loses money. It revises the leaders and the best failing candidate against those weaknesses. It keeps only revisions that beat their parent, after a complexity penalty. Finalists are replayed once on the sealed sessions. The run reports a deflated Sharpe and the probability of backtest overfitting, counted over every trial. Claude proposes and revises when `ANTHROPIC_API_KEY` is set; otherwise offline templates and deterministic fixes do. See [docs/design/strategy-discovery.md](docs/design/strategy-discovery.md).
+
 ## Strategy lifecycle
 
 ```text
@@ -230,6 +234,8 @@ The dashboard is a Next.js app (`services/dashboard`) behind HTTPS. Pages:
 | **Overview → Today** | The current session: equity chart, day P&L vs the daily loss limit, exposure, open positions, pending approvals, system health, kill switch |
 | **Portfolio** | Positions, open orders and bracket legs, fills, P&L by strategy/day/symbol, exposure vs caps |
 | **Strategies** | Every strategy and version with its status, live vs paper vs backtest metrics, drift alerts, assumptions awaiting your OK, and a diff between versions |
+| **Backtesting** | Dedicated research workspace: configurations and presets, data preflight, background runs, durable history, comparison, transaction costs, diagnostics, benchmark/equity/drawdown charts, holdout, cost stress, rolling fixed-rule windows and bootstrap. See [Backtesting guide](docs/backtesting.md) and the [research catalog](docs/backtesting-research.md) for supported models and remaining capabilities. |
+| **Strategies → New strategy** | A design conversation with Claude Opus 5.5 (`architect@v1`). Claude sees the DSL reference, the live risk and fund controls, the stored data, every existing strategy with its backtest and paper results, Idea Lab findings and your theses. It asks about what's ambiguous, flags unsupported parts with the closest supported version, points to similar strategies already tested, suggests improvements, and drafts the file. Each draft is validated (one automatic repair round on errors); you can backtest the unsaved draft, which feeds the result back into the conversation, and save it as a new draft strategy |
 | **Strategy detail → Ask Claude** | A fresh Claude chat seeded with the strategy file, back-translation, backtest report, paper/live results and recent decision records. Ask "does this make sense?", challenge assumptions, request what-ifs |
 | **Idea Lab** | Proposed ideas with evidence (events, sample sizes, reactions), the hypothesis counter, your theses, and accept/reject/edit actions |
 | **Theses** | Add, edit and expire your own assumptions. Shows which ideas and strategies each thesis influenced |
@@ -303,7 +309,7 @@ The live risk controls are rows in `risk_settings`, edited by the owner on the *
 
 ### Fund allocations (Funds page)
 
-Each running strategy line (its `id`, across versions) has an allocation: a reserved share of equity. Allocations add up to at most max deployed, so strategies are isolated. Every buy is checked against the strategy's allocation, the cash reserve, max deployed and (intraday) the intraday budget; intraday entries are sized down to fit what is left in the allocation. Each strategy has its own drawdown stop (measured from its best P&L since the allocation was set, as a share of the allocation) that pauses it, and intraday strategies have a daily loss stop that blocks entries until the next session. A paused portfolio sleeve is sold at its next decision time. Promoting to paper assigns the default allocation if there is unallocated room, and refuses otherwise. The Funds page shows equity, cash, reserve, deployed and available capital, budget meters and each strategy's slice, and lets the owner edit allocations, pause and resume.
+Each running strategy line (its `id`, across versions) has an allocation: a reserved share of equity, or a fixed dollar amount (whose share then moves with equity; it is checked against the limits at the equity of the day it is set). Allocations add up to at most max deployed, so strategies are isolated. Every buy is checked against the strategy's allocation, the cash reserve, max deployed and (intraday) the intraday budget; intraday entries are sized down to fit what is left in the allocation. Each strategy has its own drawdown stop (measured from its best P&L since the allocation was set, as a share of the allocation) that pauses it, and intraday strategies have a daily loss stop that blocks entries until the next session. A paused portfolio sleeve is sold at its next decision time. Promoting to paper asks for the allocation (percent of the fund or fixed dollars, defaulting to what the rules can use within the unallocated room); a new portfolio sleeve is sized so its peak fits the allocation. The Overview page lists running strategies with an on/off switch (pause/resume) and an allocation editor. The Funds page shows equity, cash, reserve, deployed and available capital, budget meters and each strategy's slice, and lets the owner edit allocations, pause and resume.
 
 Factory defaults in `config/risk.yaml`:
 
@@ -346,16 +352,25 @@ A backup flatten job on a separate host at 15:57 ET is recommended.
 
 ---
 
-## Strategy DSL (v0.1)
+## Strategy DSL (v0.1, portfolio v0.2)
 
 There are two kinds of strategy file. **Intraday** (the default, described below) trades 1-minute bars within a session and is flat by the close. **Portfolio** (`kind: portfolio`) holds a basket overnight for days or weeks:
 
 - `holdings`: `capital` (share of equity at the first buy), `max_holding` (cap for adds, share of each original allocation) and `groups` of symbols with weights (equal split inside a group).
 - `schedule`: `hold_sessions`, optional `start_date` / `end_date`, optional `decide_at`.
-- `rules`: once a day per symbol, at `decide_at` (15:45 ET), the first matching `{when, do}` applies: `hold`, `exit`, `exit_and_wait`, `{trim: p}` or `{add: p}`. Conditions use params and `day_change`, `holding`, `sessions_held`, `gain`.
+- `rules`: once a day per symbol, at `decide_at` (15:45 ET), the first matching `{when, do}` applies: `hold`, `exit`, `exit_and_wait`, `{trim: p}` or `{add: p}`. Conditions use params, `day_change`, `holding`, `sessions_held`, `gain`, the daily-history functions and `peer()` (see Builtins).
 - `reentry`: after `exit_and_wait`, rebuild `step` of the allocation per session once `when` is true.
 
 The first session buys the whole basket with market orders. The engine (`core/portfolio.py`) is shared by the daily backtester (`backtest/portfolio.py`) and the paper broker's portfolio desk (`services/broker/portfolio_desk.py`). Sleeve positions are not flattened at the close or by the watchdog's deadline, don't count toward intraday open positions, and their P&L is excluded from the intraday daily-loss limit; while a sleeve holds a symbol, intraday strategies can't trade it. The kill switch still closes everything. See `strategies/big_tech_software_tilt_hold.v1.yaml` and `prompts/examples/portfolio.yaml`. The compiler (`compiler@v2`) chooses the kind from the request.
+
+**Portfolio DSL 0.2** (`dsl: "0.2"`) keeps every 0.1 section and adds portfolio overlays; see [docs/design/portfolio-monitoring.md](docs/design/portfolio-monitoring.md) and `strategies/big_tech_software_tilt_hold.v2.yaml`:
+
+- `market_inputs`: an index (`instrument: NASDAQ_COMPOSITE`, read from the feed in `config/market_inputs.yaml`, never a silent proxy) or an equal-weight ticker basket (synchronized 1-minute bars vs split-adjusted prior closes; a missing member makes it unknown). Basket members that aren't held are monitored only.
+- `portfolio_overlays`: rules that bind a scenario from `config/scenario-catalog.yaml` to local inputs, params and groups. `trim_sleeve_and_rebuild` trims every holding once per session when the input crosses its threshold (intraday or at the decision), pauses and cancels buys, waits for a later positive session, then rebuilds in steps toward `max_holding`. `trim_group_to_cash` trims a group in proportion to a positive basket return and locks the proceeds as strategy cash (the owner can release them). Reductions at one snapshot merge to the largest; full exits win; a reduction suppresses that symbol's buys.
+- `monitoring`: `mode: shadow` logs what the overlays would do while only the daily rules trade; `mode: enforce` lets them trade once the owner enables enforcement on the strategy page. Structured `assumptions` with typed questions are assessed by T1 (Laya) and, on escalation, T2 (Claude) within the file's budget; they can log, notify and (critical ones, enforce mode) block buys, never sell or veto a numeric reduction.
+- `authoring`: proposed defaults that need review; promoting such a file asks you to confirm the review. Promotion also pins the scenario catalog's hash and needs every index feed configured.
+
+Many 0.2 fields are fixed declarations of the semantics the engine implements (`missing_member: unknown_do_not_reweight`); any other value is rejected rather than ignored.
 
 Strategies are YAML files with a small expression language. Hard limits are not part of the language, and there is no leverage field: a leverage request becomes a compiler warning.
 
@@ -378,8 +393,17 @@ Strategies are YAML files with a small expression language. Hard limits are not 
 | Session | `vwap`, `day_open`, `day_high`, `day_low`, `prior_close`, `gap`, `or_high(min)`, `or_low(min)` |
 | Indicators | `sma`, `ema`, `atr`, `rsi`, `highest`, `lowest`, `rvol(days)` |
 | Daily | `adv(days)`, `atr_d(n)` |
+| Daily history (builtins@v2) | `ret_d(n)`, `vol_d(n)`, `vol_rank(n, m)`, `sma_d(n)`, `zscore_d(n)`, `highest_d(n)`, `lowest_d(n)`, `up_days(n)`, `corr_d(SYM, n)`, `beta_d(SYM, n)` |
+| Cross-symbol (builtins@v2) | `peer(SYM, expr)`: `expr` evaluated for another symbol at the same moment |
 | Events | `crosses_above`, `crosses_below`, `streak(cond)` |
 | Position (exits only) | `entry_price`, `risk_per_share`, `bars_held` |
+
+**Cross-symbol and daily-history features** (`dsl/features.py`, reference in `prompts/features@v1.md`):
+
+- Daily-history functions read completed sessions only (up to yesterday's close), so a value is fixed for the session and identical in replay and live. Windows are literals or whole-number params; the validator caps the total lookback at 250 sessions (params count at the top of their range) and records it, so the backtester, history download and brokers load enough daily bars.
+- Every symbol a rule reads must be declared under `references:`. References are loaded and replayed as-of (intraday: the peer's latest bar closed at or before this one, at most 2 minutes old, else missing), and never traded by the strategy.
+- `universe.symbols:` restricts an intraday strategy to named tickers.
+- Inside `peer()`: no position builtins and no nested `peer()`; in portfolio rules only the peer's `day_change` and daily functions. Signal fencing applies inside `peer()` as everywhere else.
 
 ### Signals (`news_agent@v1`)
 
@@ -485,6 +509,8 @@ Then:
 | File | Purpose |
 |---|---|
 | `config/risk.yaml` | Hard limits (read-only to the app) |
+| `config/market_inputs.yaml` | Index feeds for portfolio DSL 0.2 market inputs (copied from the example by `make init`) |
+| `config/scenario-catalog.yaml` | Scenarios portfolio overlays can bind; its hash is pinned when a strategy is promoted |
 | `config/models.yaml` | Provider per tier and task (Laya / Gemini lite / Haiku / Sonnet / Opus), model IDs, timeouts, daily budgets |
 | `config/idealab.yaml` | Event-study windows, minimum sample sizes, holdout length, run schedule |
 | `config/universe.yaml` | Watchlists and universe size cap |
@@ -525,7 +551,7 @@ Key environment variables:
 ├── scripts/                # dev launcher, dev owner, demo setup, kill-switch reset
 ├── dsl/                    # grammar, builtins library (versioned), validator, evaluator
 ├── backtest/               # vectorized replay using dsl/ evaluator
-├── prompts/                # versioned prompts: news_agent@v1, compiler@v1, idealab@v1, chat@v1
+├── prompts/                # versioned prompts: news_agent@v1, compiler@v1/v2, architect@v1, idealab@v1, chat@v1
 └── tests/                  # DSL fixtures, risk guard, approval flow, look-ahead checks
 ```
 

@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from common import audit, db, timeutil as T
 from common.config import load_yaml
 
-from . import authoring, heuristic, idealab, llm, triage
+from . import assumption_monitor, authoring, heuristic, idealab, llm, triage
 from .quicklayer import provider_status
 
 log = logging.getLogger("models")
@@ -89,6 +89,44 @@ def chat(body: ChatIn):
         _api_error(e)
 
 
+class DesignIn(BaseModel):
+    thread: str
+    message: str = Field(min_length=1, max_length=8000)
+    actor: str
+    source: str | None = None
+
+
+@app.post("/design")
+def design(body: DesignIn):
+    try:
+        return authoring.design(conn(), body.thread, body.message, body.actor, body.source)
+    except KeyError:
+        raise HTTPException(400, "bad design thread id") from None
+    except (authoring.Offline, llm.LLMUnavailable) as e:
+        _offline(e)
+    except anthropic.APIError as e:
+        _api_error(e)
+
+
+class ReviewIn(BaseModel):
+    thread: str
+    yaml: str = Field(min_length=10, max_length=40_000)
+    actor: str
+    backtest: dict | None = None
+
+
+@app.post("/review")
+def review(body: ReviewIn):
+    try:
+        return authoring.review(conn(), body.thread, body.yaml, body.actor, body.backtest)
+    except KeyError:
+        raise HTTPException(400, "bad design thread id") from None
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    except (authoring.Offline, llm.LLMUnavailable) as e:
+        _offline(e)
+
+
 @app.post("/compile")
 def compile_(body: CompileIn):
     try:
@@ -119,6 +157,44 @@ def ideas_run(body: IdeasIn):
         _api_error(e)
 
 
+class DiscoveryIn(BaseModel):
+    config: dict
+    actor: str
+    offline: bool = False
+
+
+@app.post("/discovery/run")
+def discovery_run(body: DiscoveryIn):
+    """Start a single-ticker discovery run in the background; returns its id at once (progress is in discovery_runs)."""
+    from discovery.run import Config, run as run_discovery
+    try:
+        cfg = Config(**body.config)
+    except Exception as e:  # noqa: BLE001 - pydantic validation errors become a 400
+        raise HTTPException(400, str(e)) from None
+    c = conn()
+    busy = db.row(c, "SELECT id FROM discovery_runs WHERE status='running' AND created_at > ?", (time.time() - 6 * 3600,))
+    if busy:
+        raise HTTPException(409, f"discovery run #{busy['id']} is still running; one run at a time")
+    rid = c.insert("INSERT INTO discovery_runs(created_at, created_by, ticker, config, status, stage) VALUES (?,?,?,?,?,?)",
+                   (time.time(), body.actor, cfg.ticker, cfg.model_dump_json(), "running", "queued"))
+
+    def work():
+        wc = db.connect()
+        try:
+            gen = None
+            if not body.offline and llm.available():
+                from .discovery import ClaudeGenerator
+                gen = ClaudeGenerator()
+            run_discovery(wc, cfg, body.actor, generator=gen, run_id=rid)
+        except Exception:  # noqa: BLE001 - the run row already records the failure
+            log.exception("discovery run %s failed", rid)
+        finally:
+            wc.close()
+
+    threading.Thread(target=work, name=f"discovery-{rid}", daemon=True).start()
+    return {"run_id": rid, "model": "claude" if (llm.available() and not body.offline) else "templates@v1"}
+
+
 @app.post("/notes/parse")
 def notes_parse(body: NoteIn):
     # one-word stance; the offline parser keeps this free and instant
@@ -129,8 +205,12 @@ def worker(stop: threading.Event):
     c = db.connect()
     db.init(c)
     audit.log(c, "models.start", "models", {"llm": llm.available(), "providers": provider_status()})
+    assumptions_at = 0.0
     while not stop.is_set():
         try:
+            if time.time() - assumptions_at >= 30:  # DSL 0.2 monitored assumptions and overlay context
+                assumptions_at = time.time()
+                assumption_monitor.run(c)
             now = db.kv_get(c, "sim.now")
             if now is not None:
                 triage.run_pending(c, int(now))
@@ -162,6 +242,8 @@ def main():
     stop = threading.Event()
     t = threading.Thread(target=worker, args=(stop,), daemon=True)
     t.start()
+    from .replay_worker import ReplayWorker
+    ReplayWorker().start()  # backtest model replay, on its own connection
     # Inference may be slow on first load; process liveness is separate from triage progress.
     def heartbeat():
         c=db.connect()

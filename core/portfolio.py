@@ -18,6 +18,7 @@ from dataclasses import asdict, dataclass, field
 
 from common.config import RiskConfig
 from dsl import expr as E
+from dsl import features as F
 from dsl.portfolio import PortfolioStrategy, Rule
 
 from .risk_guard import Check
@@ -29,6 +30,7 @@ FULL = 0.995  # holding at or above this fraction of the allocation counts as fu
 class Quote:
     price: float
     prior_close: float
+    closes: list = field(default_factory=list)  # completed prior sessions as (day, close), oldest first
 
 
 @dataclass
@@ -55,6 +57,10 @@ class Sleeve:
     realized: float = 0.0
     status: str = "active"  # active | finished | stopped | halted
     reason: str = ""
+    funded: bool = False  # 0.2: the initial basket was bought (sessions count from here)
+    funded_day: str | None = None
+    overlays: dict = field(default_factory=dict)  # 0.2: overlay id -> state (phase, trigger day, targets, ...)
+    released_usd: float = 0.0  # 0.2: locked rotation cash the owner released
 
     def to_json(self) -> dict:
         return asdict(self)
@@ -74,17 +80,22 @@ class Order:
     price: float  # reference price at the decision
     reason: str  # rule action or sleeve event
     decision: list[dict] = field(default_factory=list)
+    reserve_qty: int = 0  # 0.2: shares of this sell whose filled proceeds are locked as strategy cash
+    overlay: str = ""  # 0.2: overlay id that requested (part of) this order
 
 
 @dataclass
 class DayPlan:
     orders: list[Order]
     records: list[dict]  # one per symbol: what was seen and decided
-    event: str = ""  # sleeve-level event: horizon | max_drawdown | retired
+    event: str = ""  # sleeve-level event: horizon | max_drawdown | retired | macro_liquidation
+    events: list[dict] = field(default_factory=list)  # 0.2 overlay events (triggers, phase changes, missing inputs)
+    shadow: list[dict] = field(default_factory=list)  # 0.2 shadow mode: what the overlays would have done instead
 
 
-def start(s: PortfolioStrategy, equity: float, day: str) -> Sleeve:
-    cap = s.capital * equity
+def start(s: PortfolioStrategy, equity: float, day: str, capital_usd: float | None = None) -> Sleeve:
+    """A new sleeve: the rules' capital of equity, or `capital_usd` when its fund allocation sizes it."""
+    cap = s.capital * equity if capital_usd is None else capital_usd
     return Sleeve(capital_usd=cap, symbols={sym: SymState(base_usd=cap * w) for sym, w in s.weights.items()},
                   started=day, peak=cap)
 
@@ -96,10 +107,16 @@ def sleeve_value(sl: Sleeve, holdings: dict[str, Holding], prices: dict[str, flo
 
 
 def plan(s: PortfolioStrategy, sl: Sleeve, quotes: dict[str, Quote], holdings: dict[str, Holding], day: str,
-         risk: RiskConfig, retire: bool = False) -> DayPlan:
-    """Decide today's orders and advance the sleeve state. Missing quotes fail closed for that symbol."""
+         risk: RiskConfig, retire: bool = False, **v2) -> DayPlan:
+    """Decide today's orders and advance the sleeve state. Missing quotes fail closed for that symbol.
+
+    0.2 files go to core.portfolio_v2.plan_v2, which also takes the market inputs, working sells, locked
+    cash and enforcement mode (keyword arguments in `v2`)."""
     if sl.status != "active" or sl.last_day == day:
         return DayPlan([], [])
+    if getattr(s, "v2", None) is not None:
+        from .portfolio_v2 import plan_v2
+        return plan_v2(s, sl, quotes, holdings, day, risk, retire=retire, **v2)
     k = sl.sessions
     prices = {sym: q.price for sym, q in quotes.items()}
     held = {sym: holdings.get(sym, Holding()) for sym in s.symbols}
@@ -136,10 +153,11 @@ def plan(s: PortfolioStrategy, sl: Sleeve, quotes: dict[str, Quote], holdings: d
                 records.append(rec)
                 continue
             vals = {
-                "day_change": q.price / q.prior_close - 1,
+                "day_change": round(q.price / q.prior_close - 1, 10),  # 105/100-1 must equal +5% exactly
                 "holding": h.qty * q.price / st.base_usd if st.base_usd else 0.0,
                 "sessions_held": float(k),
                 "gain": q.price / h.cost - 1 if h.qty and h.cost else None,
+                "_sym": sym, "_quotes": quotes,  # context for daily functions and peer()
             }
             rec.update(day_change=round(vals["day_change"], 6), holding=round(vals["holding"], 4))
             o = _decide(s, st, h, q, vals, rec)
@@ -164,7 +182,7 @@ def _decide(s: PortfolioStrategy, st: SymState, h: Holding, q: Quote, vals: dict
     decision = match[1] if match else []
 
     def buy_usd(usd: float, why: str) -> Order | None:
-        qty = math.floor(max(usd, 0.0) / px)
+        qty = math.floor(max(usd, 0.0) / px + 1e-9)
         rec["action"] = f"buy {qty}" if qty else "none"
         return Order(rec["symbol"], "buy", qty, px, why, decision) if qty else None
 
@@ -206,7 +224,7 @@ def _decide(s: PortfolioStrategy, st: SymState, h: Holding, q: Quote, vals: dict
     r = match[0]
     size = s.params[r.size]
     if r.action == "trim":
-        return sell(math.floor(h.qty * size), "trim")
+        return sell(math.floor(h.qty * size + 1e-9), "trim")
     room = s.max_holding - vals["holding"]
     return buy_usd(min(size, room) * st.base_usd, "add")
 
@@ -267,6 +285,35 @@ def _eval(s: PortfolioStrategy, node: E.Node, vals: dict):
         if node.op == "and":
             return False if any(x is False for x in xs) else (None if any(x is None for x in xs) else True)
         return True if any(x is True for x in xs) else (None if any(x is None for x in xs) else False)
+    if isinstance(node, E.Call):
+        return _call(s, node, vals)
+    raise TypeError(f"not allowed in portfolio rules: {node.src!r}")
+
+
+def _call(s: PortfolioStrategy, node: E.Call, vals: dict):
+    """Daily-history functions and peer(): read quotes in vals["_quotes"]; anything missing fails closed."""
+    quotes = vals.get("_quotes") or {}
+    if node.fn == "peer":
+        sym = node.args[0].id
+        q = quotes.get(sym)
+        if q is None or not q.prior_close or q.price <= 0:
+            return None
+        return _eval(s, node.args[1], {"day_change": round(q.price / q.prior_close - 1, 10), "_sym": sym, "_quotes": quotes})
+    if node.fn in F.DAILY_FUNCTIONS:
+        own = quotes.get(vals.get("_sym"))
+        if own is None:
+            return None
+        takes_symbol = F.DAILY_FUNCTIONS[node.fn][1]
+        other = None
+        if takes_symbol:
+            oq = quotes.get(node.args[0].id)
+            if oq is None:
+                return None
+            other = oq.closes
+        args = [_eval(s, a, vals) for a in (node.args[1:] if takes_symbol else node.args)]
+        if any(a is None for a in args):
+            return None
+        return F.compute(node.fn, own.closes, [int(a) for a in args], other)
     raise TypeError(f"not allowed in portfolio rules: {node.src!r}")
 
 

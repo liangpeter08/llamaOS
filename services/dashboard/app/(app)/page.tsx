@@ -6,6 +6,7 @@ import { usePoll } from "@/lib/hooks";
 import { et, money, num, pct, pnlClass, wall } from "@/lib/format";
 import type { Account } from "@/lib/types";
 import { PerformanceChart } from "@/components/PerformanceChart";
+import { StrategyControls } from "@/components/Allocation";
 import { Card, Empty, Loading, Meter, Notice, Pill, Stat } from "@/components/ui";
 import { isOwner, useSession } from "@/components/session";
 
@@ -21,41 +22,45 @@ interface Overview {
   trades: { id: number; symbol: string; sid: string; exit_kind: string; pnl: number }[];
 }
 
-type Tab = "portfolio" | "today";
+type Tab = "intraday" | "portfolio";
 
 export default function OverviewPage() {
-  const [tab, setTab] = useState<Tab>("portfolio");
+  const [tab, setTab] = useState<Tab>("intraday");
   useEffect(() => {
-    if (location.hash === "#today") setTab("today");
+    if (location.hash === "#portfolio") setTab("portfolio");
   }, []);
   const select = (t: Tab) => {
     setTab(t);
-    history.replaceState(null, "", t === "today" ? "#today" : location.pathname);
+    history.replaceState(null, "", t === "portfolio" ? "#portfolio" : location.pathname);
   };
   return (
     <>
       <div className="tabs-main" role="tablist">
+        <button role="tab" aria-selected={tab === "intraday"} className={tab === "intraday" ? "on" : ""} onClick={() => select("intraday")}>Intraday</button>
         <button role="tab" aria-selected={tab === "portfolio"} className={tab === "portfolio" ? "on" : ""} onClick={() => select("portfolio")}>Portfolio</button>
-        <button role="tab" aria-selected={tab === "today"} className={tab === "today" ? "on" : ""} onClick={() => select("today")}>Today</button>
       </div>
-      {tab === "portfolio" ? <PortfolioTab /> : <TodayTab />}
+      {tab === "intraday" ? <IntradayTab /> : <PortfolioTab />}
     </>
   );
 }
 
 function PortfolioTab() {
+  const { me } = useSession();
   return (
-    <PerformanceChart
-      title="Portfolio over time"
-      ranges={["1W", "1M", "3M", "YTD", "ALL", "custom"]}
-      defaultRange="ALL"
-      defaultMetric="return"
-      height={360}
-    />
+    <>
+      <PerformanceChart
+        title="Portfolio over time"
+        ranges={["1W", "1M", "3M", "YTD", "ALL", "custom"]}
+        defaultRange="ALL"
+        defaultMetric="return"
+        height={360}
+      />
+      <div className="mt"><StrategyControls owner={isOwner(me)} /></div>
+    </>
   );
 }
 
-function TodayTab() {
+function IntradayTab() {
   const { data, error } = usePoll<Overview>("/api/overview", 2000);
   const { me, status, refresh } = useSession();
   if (!data) return <Loading error={error} />;
@@ -85,6 +90,8 @@ function TodayTab() {
             sub={`${acct.trades_today ?? 0}/${risk.max_trades_per_day} trades today`} />
         </Card>
       </div>
+
+      <div className="mt"><StrategyControls owner={isOwner(me)} /></div>
 
       <div className="mt">
         <PerformanceChart title="Today's session" ranges={["1D"]} defaultRange="1D" defaultMetric="equity" height={260} poll={3000} />

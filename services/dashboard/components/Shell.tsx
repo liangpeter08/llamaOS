@@ -14,6 +14,7 @@ const NAV: [string, string][] = [
   ["/portfolio", "Portfolio"],
   ["/funds", "Funds"],
   ["/strategies", "Strategies"],
+  ["/backtests", "Backtesting"],
   ["/ideas", "Idea Lab"],
   ["/theses", "Theses"],
   ["/news", "News & signals"],

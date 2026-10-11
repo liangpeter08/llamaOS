@@ -1,0 +1,657 @@
+# DESIGN PROPOSAL ONLY: named scenario library referenced by the monitoring proposal.
+# Thresholds and interpretations are illustrative; this file does not place trades.
+schema: "scenario-catalog@proposal-v1"
+
+macro_environment:
+  series:
+    nasdaq_composite:
+      instrument_class: index
+      instrument: NASDAQ_COMPOSITE
+      source: account_configured_index_feed
+      required: true
+      return_reference: previous_regular_session_close
+      max_age: 30s
+      proxy:
+        enabled: false
+        instrument: QQQ
+        requires_owner_approval: true
+        label: Nasdaq-100 ETF proxy, not Nasdaq Composite
+    nasdaq_100:
+      instrument_class: index
+      instrument: NASDAQ_100
+      source: account_configured_index_feed
+      required: false
+      max_age: 30s
+    broad_market:
+      instrument_class: equity_etf
+      instrument: SPY
+      source: account_configured_equity_feed
+      max_age: 30s
+    volatility:
+      instrument_class: index
+      instrument: VIX
+      source: account_configured_index_feed
+      required: false
+      max_age: 2min
+    treasury_10y:
+      instrument_class: yield
+      source: account_configured_rates_feed
+      required: false
+      units: percent_yield
+      change_units: basis_points
+      max_age: 5min
+    dollar_index:
+      instrument_class: index
+      source: account_configured_fx_feed
+      required: false
+      max_age: 5min
+    sector_benchmark:
+      instrument_class: equity_etf
+      source: approved_sector_mapping
+      per_ticker: true
+      max_age: 60s
+    market_breadth:
+      source: account_configured_breadth_feed
+      required: false
+      fields: [advancers, decliners, advancing_volume, declining_volume]
+      max_age: 2min
+    event_calendar:
+      source: account_configured_economic_calendar
+      required: false
+      events: [central_bank_decision, inflation_release, employment_release, treasury_auction]
+      retain: [scheduled_time, actual_release_time, consensus, previous, actual, revision, source]
+
+  regime:
+    states: [normal, caution, risk_off, stress, unknown]
+    features: [nasdaq_return_since_prior_close, broad_market_return, volatility_change, breadth, sector_relative_return, rates_change_bps]
+    numeric_features: deterministic
+    contextual_assessment: laya_then_claude_if_needed
+    unsupported_or_missing_required_input: unknown
+    confidence_is_not_probability: true
+    state_changes:
+      critical_downshift: immediate_on_fresh_trigger
+      recovery: requires_fresh_evidence_and_confirmation
+      recovery_hold: 10min
+      deduplicate_same_crossing: true
+
+news_environment:
+  classification:
+    scope: [company_specific, sector, market, macro, unrelated, unknown]
+    polarity: [positive, negative, mixed, neutral, unknown]
+    materiality: [low, medium, high, unknown]
+    novelty: [new, update, correction, repeat, unknown]
+    evidence_quality: [primary_attributed, secondary_attributed, rumor, incomplete, unknown]
+    catalysts: [earnings, guidance, product, contract, m_and_a, financing, dilution, legal, regulatory, recall, management, analyst, macro, geopolitical, other]
+  expectations:
+    types: [scheduled, unscheduled, unknown]
+    calendar_required_for_scheduled: true
+    consensus_required_for_numeric_surprise: true
+    numeric_surprise: deterministic_when_units_comparable
+    missing_consensus: unknown
+    compare: [actual_vs_consensus, guidance_vs_prior_guidance, revision_vs_original]
+    distinguish: [earnings_vs_revenue, historical_result_vs_forward_guidance, headline_vs_article]
+    preserve_original_and_revised_values: true
+  impact:
+    horizons: [5min, 30min, session, multi_session]
+    direction: [positive, negative, mixed, neutral, unknown]
+    magnitude_band: [minor, moderate, material, severe, unknown]
+    # These are contextual assessments, not guaranteed price forecasts.
+    factors: [company_size, affected_revenue_share, dilution_size, liability_scope, reversibility, source_quality, surprise, existing_expectations, macro_regime, sector_context]
+    require_mechanism_and_evidence: true
+    no_invented_price_targets: true
+    probabilities: omit_unless_calibrated
+
+news_price_relationship:
+  anchor: local_first_available_article_time
+  require_publication_and_receipt_times: true
+  baselines: [pre_event_price, prior_close, sector_benchmark, broad_market]
+  windows: [1min, 5min, 15min, 30min, 60min]
+  features: [raw_return, benchmark_relative_return, sector_relative_return, volume_ratio, vwap_distance, realized_volatility, spread, gap, reversal_fraction]
+  price_features: deterministic
+  interpretation: [confirming_positive, confirming_negative, positive_news_negative_price, negative_news_positive_price, no_material_response, move_preceded_news, mixed, unknown]
+  same_time_correlation_is_not_causation: true
+  exclude_incomplete_future_windows: true
+  confounders: [macro_shock, sector_move, simultaneous_article, market_open, trading_halt, low_liquidity]
+  window_before_enough_bars: pending
+  delayed_feed: label_delay_and_do_not_backdate_actions
+
+scenario_defaults:
+  enabled: true
+  mode: shadow
+  applies_to: strategy_tickers
+  candidates_generated_by: deterministic_predicates
+  matcher:
+    provider: laya
+    question_template: Does this candidate scenario apply to this strategy and ticker given the verified trigger facts, assumptions and current exposure?
+    context: [trigger_facts, scenario_definition, monitored_assumptions, position_state, concise_news, macro_regime]
+    answers: [applicable, not_applicable, uncertain]
+    max_candidate_scenarios: 8
+    min_confidence: 0.75
+    unknown: block_new_entries_and_escalate
+    cannot_invent_scenarios: true
+  confirmation:
+    price_trigger: completed_bar
+    news_trigger: attributable_relevant_evidence
+    independent_evidence_required_for_exit_proposals: true
+  response:
+    route: approved_scenario_policy
+    default_actions: [log, notify_dashboard, block_new_entries]
+    exits: propose_for_owner_approval
+    entries: only_via_existing_entry_rules_and_risk_checks
+    changes_to_stop_or_target: prohibited
+  cooldown: 5min
+  once_per_evidence_revision: true
+  account_limits_always_apply: true
+
+scenarios:
+  # MACRO / MARKET: define the index and reference explicitly.
+  - id: nasdaq_five_percent_session_drop
+    category: macro_shock
+    description: Nasdaq Composite is at least 5% below its previous regular-session close.
+    priority: critical
+    when_all:
+      - {field: macro.nasdaq_composite.return_since_prior_close, operator: lte, value: "-5%"}
+      - {field: macro.nasdaq_composite.is_fresh, operator: eq, value: true}
+    confirmation: {price_trigger: fresh_verified_observation}
+    immediate_guard: [block_new_entries]
+    laya_question: Does this verified Nasdaq drop activate this strategy's configured macro stress response?
+    laya_context: [strategy_direction, sector_exposure, held_positions, monitored_assumptions]
+    on_applicable: [set_regime_stress, pause_strategy_entries, notify_dashboard, request_t2, propose_exit]
+    on_uncertain: [keep_entry_block, request_t2, notify_dashboard]
+    on_not_applicable: [retain_account_macro_guard, log]
+    recovery: {rule: regime_recovery_and_fresh_supported_thesis, hold: 10min, minimum_tier: t2}
+
+  - id: rapid_nasdaq_intraday_drop
+    category: macro_shock
+    priority: critical
+    when_all:
+      - {field: macro.nasdaq_composite.return_5min, operator: lte, value: "-3%"}
+      - {field: macro.nasdaq_composite.is_fresh, operator: eq, value: true}
+    immediate_guard: [block_new_entries]
+    laya_question: Is this rapid market decline relevant to this strategy's long exposure?
+    on_applicable: [pause_strategy_entries, request_t2, notify_dashboard, propose_exit]
+
+  - id: broad_market_risk_off
+    category: macro_regime
+    when_all:
+      - {field: macro.broad_market.return_since_prior_close, operator: lte, value: "-2%"}
+      - {field: macro.regime, operator: in, value: [risk_off, stress]}
+    laya_question: Does the broad-market regime contradict this strategy's current entry assumptions?
+    on_applicable: [block_new_entries, request_t2, notify_dashboard]
+
+  - id: sector_underperformance
+    category: sector
+    when_all:
+      - {field: macro.sector.relative_return_30min, operator: lte, value: "-1%"}
+    laya_question: Is the sector decline material to the monitored company's thesis?
+    on_applicable: [require_entry_approval, request_t2]
+
+  - id: volatility_spike
+    category: macro_regime
+    when_all:
+      - {field: macro.volatility.relative_change_30min, operator: gte, value: "25%"}
+    laya_question: Does this volatility shock make the strategy's current execution assumptions unreliable?
+    on_applicable: [block_new_entries, request_t2, notify_dashboard]
+
+  - id: rates_shock
+    category: macro_regime
+    when_all:
+      - {field: macro.treasury_10y.absolute_change_30min_bps, operator: gte, value: 15}
+    laya_question: Is the observed rates change relevant to this company's valuation or financing assumptions?
+    on_applicable: [require_entry_approval, request_t2]
+
+  - id: scheduled_macro_release_pending
+    category: macro_calendar
+    when_all:
+      - {field: calendar.next_high_impact_event.minutes_until_release, operator: lte, value: 10}
+      - {field: calendar.next_high_impact_event.minutes_until_release, operator: gte, value: 0}
+    laya_question: Does this imminent release fall within a strategy-defined event blackout?
+    on_applicable: [block_new_entries, notify_dashboard]
+    recovery: {rule: post_release_evidence_fresh, hold: 5min}
+
+  - id: macro_release_surprise
+    category: macro_calendar
+    when_all:
+      - {field: calendar.latest_event.has_verified_surprise, operator: eq, value: true}
+    laya_question: Does the release surprise affect this strategy's macro assumptions?
+    on_applicable: [block_new_entries, request_t2, notify_dashboard]
+
+  - id: macro_recovery
+    category: macro_regime
+    when_all:
+      - {field: macro.regime_recovery_confirmed, operator: eq, value: true}
+    laya_question: Does fresh evidence support reviewing the temporary macro restriction?
+    on_applicable: [request_t2, propose_resume]
+    resume_requires: [fresh_supported_assumptions, cooldown_elapsed, no_account_halt, owner_approval_if_manually_paused]
+
+  # COMPANY NEWS: positive and negative directions can coexist.
+  - id: company_positive_new_catalyst
+    category: company_news
+    when_all:
+      - {field: news.scope, operator: eq, value: company_specific}
+      - {field: news.polarity, operator: eq, value: positive}
+      - {field: news.novelty, operator: eq, value: new}
+    laya_question: Does the new positive company news support a monitored strategy assumption?
+    on_applicable: [refresh_assumptions, request_t2_if_material, allow_entry_rule_evaluation]
+
+  - id: company_negative_new_catalyst
+    category: company_news
+    when_all:
+      - {field: news.scope, operator: eq, value: company_specific}
+      - {field: news.polarity, operator: eq, value: negative}
+      - {field: news.novelty, operator: in, value: [new, update]}
+    laya_question: Does this negative company event contradict the current long thesis?
+    on_applicable: [block_new_entries, request_t2, notify_dashboard, propose_exit]
+
+  - id: unexpected_material_negative_news
+    category: company_news_surprise
+    priority: critical
+    when_all:
+      - {field: news.polarity, operator: eq, value: negative}
+      - {field: news.expectation, operator: eq, value: unscheduled}
+      - {field: news.materiality, operator: eq, value: high}
+    laya_question: Does this unexpected adverse event activate the strategy's invalidation response?
+    on_applicable: [pause_strategy_entries, request_t2, notify_dashboard, propose_exit]
+    expectation_unknown: route_to_general_negative_news_not_assume_expected
+
+  - id: expected_event_negative_surprise
+    category: company_news_surprise
+    when_all:
+      - {field: news.expectation, operator: eq, value: scheduled}
+      - {field: news.surprise_direction, operator: eq, value: negative}
+      - {field: news.consensus_available, operator: eq, value: true}
+    laya_question: Is the verified negative surprise material to the monitored thesis?
+    on_applicable: [block_new_entries, request_t2, propose_exit]
+
+  - id: expected_event_positive_surprise
+    category: company_news_surprise
+    when_all:
+      - {field: news.expectation, operator: eq, value: scheduled}
+      - {field: news.surprise_direction, operator: eq, value: positive}
+      - {field: news.consensus_available, operator: eq, value: true}
+    laya_question: Does the surprise add genuinely new support beyond existing expectations?
+    on_applicable: [refresh_assumptions, allow_entry_rule_evaluation]
+
+  - id: earnings_beat_guidance_cut
+    category: mixed_company_news
+    when_all:
+      - {field: news.earnings_vs_consensus, operator: eq, value: beat}
+      - {field: news.forward_guidance_vs_reference, operator: eq, value: lower}
+    laya_question: Does the forward guidance cut undermine the positive headline thesis?
+    on_applicable: [block_new_entries, request_t2, notify_dashboard]
+
+  - id: earnings_miss_guidance_raise
+    category: mixed_company_news
+    when_all:
+      - {field: news.earnings_vs_consensus, operator: eq, value: miss}
+      - {field: news.forward_guidance_vs_reference, operator: eq, value: higher}
+    laya_question: Does the mixed report need a forward-looking thesis assessment?
+    on_applicable: [require_entry_approval, request_t2]
+
+  - id: guidance_withdrawn
+    category: company_news
+    priority: high
+    when_all:
+      - {field: news.guidance_withdrawn, operator: eq, value: true}
+    laya_question: Does withdrawn guidance invalidate a monitored assumption requiring visibility?
+    on_applicable: [block_new_entries, request_t2, propose_exit]
+
+  - id: financing_or_dilution
+    category: company_news
+    when_all:
+      - {field: news.catalyst, operator: in, value: [financing, dilution]}
+    laya_question: Does the financing create material dilution or distress for the current thesis?
+    on_applicable: [block_new_entries, request_t2, notify_dashboard]
+
+  - id: legal_regulatory_accounting_event
+    category: company_news
+    priority: high
+    when_all:
+      - {field: news.catalyst, operator: in, value: [legal, regulatory]}
+      - {field: news.materiality, operator: in, value: [medium, high]}
+    laya_question: Is the reported event material and attributable rather than generic legal commentary?
+    on_applicable: [block_new_entries, request_t2, propose_exit]
+
+  - id: contract_product_or_recall_change
+    category: company_news
+    when_all:
+      - {field: news.catalyst, operator: in, value: [contract, product, recall]}
+    laya_question: Does this change a material revenue, cost or liability assumption?
+    on_applicable: [refresh_assumptions, request_t2_if_material]
+
+  - id: acquisition_or_deal_change
+    category: company_news
+    when_all:
+      - {field: news.catalyst, operator: eq, value: m_and_a}
+    laya_question: Does the deal announcement, termination or revised terms change the monitored thesis?
+    on_applicable: [require_entry_approval, request_t2, notify_dashboard]
+
+  - id: analyst_opinion_without_new_facts
+    category: opinion
+    when_all:
+      - {field: news.catalyst, operator: eq, value: analyst}
+      - {field: news.contains_new_company_facts, operator: eq, value: false}
+    laya_question: Is this opinion insufficient to satisfy this strategy's fundamental-catalyst requirement?
+    on_applicable: [mark_insufficient_fundamental_support, log]
+
+  - id: rumor_or_unattributed_claim
+    category: evidence_quality
+    when_all:
+      - {field: news.evidence_quality, operator: in, value: [rumor, unknown]}
+    laya_question: Is evidence too weak to change a critical assumption confidently?
+    on_applicable: [mark_uncertain, block_new_entries, request_t2, notify_dashboard]
+
+  - id: corrected_or_retracted_article
+    category: evidence_revision
+    priority: critical
+    when_all:
+      - {field: news.novelty, operator: eq, value: correction}
+    laya_question: Does this revision change facts supporting a previous assessment or trade intent?
+    immediate_guard: [invalidate_dependent_assessments]
+    on_applicable: [block_new_entries, request_t2, notify_dashboard]
+
+  - id: stale_or_duplicate_news
+    category: evidence_quality
+    when_any:
+      - {field: news.is_stale, operator: eq, value: true}
+      - {field: news.is_duplicate, operator: eq, value: true}
+    routing: deterministic_only
+    on_detected: [do_not_refresh_assessment_age, log]
+
+  # NEWS / PRICE RELATIONSHIP: observation, not a causal guarantee.
+  - id: positive_news_price_confirmation
+    category: news_price
+    when_all:
+      - {field: news.polarity, operator: eq, value: positive}
+      - {field: reaction.benchmark_relative_return_5min, operator: gte, value: "0.5%"}
+      - {field: reaction.volume_ratio_5min, operator: gte, value: 2}
+      - {field: reaction.window_complete, operator: eq, value: true}
+    laya_question: Is price/volume behavior consistent with the positive thesis after considering confounders?
+    on_applicable: [refresh_assumptions, allow_entry_rule_evaluation]
+
+  - id: positive_news_price_rejection
+    category: news_price
+    when_all:
+      - {field: news.polarity, operator: eq, value: positive}
+      - {field: reaction.benchmark_relative_return_5min, operator: lte, value: "-0.5%"}
+      - {field: reaction.window_complete, operator: eq, value: true}
+    laya_question: Does negative relative price response weaken the thesis or reflect another event?
+    on_applicable: [block_new_entries, request_t2, notify_dashboard]
+
+  - id: negative_news_price_confirmation
+    category: news_price
+    when_all:
+      - {field: news.polarity, operator: eq, value: negative}
+      - {field: reaction.benchmark_relative_return_5min, operator: lte, value: "-0.5%"}
+      - {field: reaction.window_complete, operator: eq, value: true}
+    laya_question: Does the observed decline reinforce an evidence-backed adverse thesis change?
+    on_applicable: [block_new_entries, request_t2, propose_exit]
+
+  - id: negative_news_price_resilience
+    category: news_price
+    when_all:
+      - {field: news.polarity, operator: eq, value: negative}
+      - {field: reaction.benchmark_relative_return_5min, operator: gte, value: "0.5%"}
+      - {field: reaction.window_complete, operator: eq, value: true}
+    laya_question: Does price resilience require reassessment without dismissing the negative facts?
+    on_applicable: [request_t2, keep_existing_risk_controls]
+
+  - id: price_move_precedes_article
+    category: news_price
+    when_all:
+      - {field: reaction.material_move_before_local_news, operator: eq, value: true}
+    laya_question: Is this article explaining an earlier move rather than a fresh actionable catalyst?
+    on_applicable: [mark_timing_ambiguity, require_entry_approval, request_t2]
+
+  - id: positive_news_move_fades
+    category: news_price
+    when_all:
+      - {field: news.polarity, operator: eq, value: positive}
+      - {field: reaction.positive_move_retraced_fraction_15min, operator: gte, value: "75%"}
+      - {field: reaction.window_complete, operator: eq, value: true}
+    laya_question: Does the reversal invalidate the strategy's continuation assumption?
+    on_applicable: [block_new_entries, request_t2, propose_exit]
+
+  - id: no_material_price_response
+    category: news_price
+    when_all:
+      - {field: reaction.absolute_relative_return_15min, operator: lt, value: "0.2%"}
+      - {field: reaction.window_complete, operator: eq, value: true}
+    laya_question: Is there insufficient market confirmation for this strategy's stated entry condition?
+    on_applicable: [wait_for_price_confirmation, log]
+
+  - id: company_positive_macro_negative
+    category: conflicting_context
+    when_all:
+      - {field: news.polarity, operator: eq, value: positive}
+      - {field: macro.regime, operator: in, value: [risk_off, stress]}
+    laya_question: Does company-specific support coexist with a macro restriction that prevents entry?
+    on_applicable: [retain_macro_entry_block, request_t2, notify_dashboard]
+
+  - id: unexplained_material_price_drop
+    category: price_anomaly
+    when_all:
+      - {field: price.benchmark_relative_return_5min, operator: lte, value: "-2%"}
+      - {field: news.relevant_current_evidence_available, operator: eq, value: false}
+    laya_question: Is the cause unknown and the strategy's informational premise unresolved?
+    on_applicable: [mark_uncertain, block_new_entries, request_t2, notify_dashboard]
+    forbid: [invent_cause, assume_no_negative_news]
+
+  # POSITION, EXECUTION, DATA AND OPERATIONAL SCENARIOS.
+  - id: held_position_thesis_contradicted
+    category: position_management
+    priority: critical
+    when_all:
+      - {field: position.is_open, operator: eq, value: true}
+      - {field: assessment.critical_status, operator: eq, value: contradicted}
+    on_applicable: [pause_strategy_entries, notify_dashboard, propose_exit]
+    exit_proposal_requires: [t2_evidence_backed_confirmation, current_position_version, owner_approval, risk_recheck]
+
+  - id: pending_entry_invalidated
+    category: execution_management
+    when_all:
+      - {field: order.has_pending_entry, operator: eq, value: true}
+      - {field: assessment.entry_allowed, operator: eq, value: false}
+    routing: deterministic_only
+    on_detected: [reject_unsubmitted_entry, request_cancel_working_entry, preserve_filled_quantity_protection]
+
+  - id: gap_or_overshoot_after_news
+    category: execution_management
+    when_all:
+      - {field: execution.reference_price_drift_exceeds_limit, operator: eq, value: true}
+    routing: deterministic_only
+    on_detected: [reject_entry, request_fresh_assessment, log]
+
+  - id: spread_or_liquidity_deterioration
+    category: execution_management
+    when_any:
+      - {field: execution.spread_exceeds_approved_limit, operator: eq, value: true}
+      - {field: execution.required_liquidity_unavailable, operator: eq, value: true}
+    routing: deterministic_only
+    on_detected: [block_new_entries, notify_dashboard]
+
+  - id: trading_halt_or_asset_restriction
+    category: execution_management
+    priority: critical
+    when_any:
+      - {field: asset.trading_halted, operator: eq, value: true}
+      - {field: asset.broker_restricted, operator: eq, value: true}
+    routing: deterministic_only
+    on_detected: [block_new_entries, notify_dashboard, preserve_exit_intent_until_executable]
+
+  - id: missing_required_macro_feed
+    category: data_quality
+    when_all:
+      - {field: data.required_macro_missing_or_stale, operator: eq, value: true}
+    routing: deterministic_only
+    on_detected: [set_regime_unknown, block_new_entries, notify_dashboard]
+
+  - id: stale_stock_feed_or_clock
+    category: data_quality
+    priority: critical
+    when_any:
+      - {field: data.stock_feed_stale, operator: eq, value: true}
+      - {field: data.clock_invalid, operator: eq, value: true}
+    routing: deterministic_only
+    on_detected: [block_new_entries, defer_to_account_watchdog, notify_dashboard]
+
+  - id: provider_timeout_or_budget_exhaustion
+    category: operational
+    when_any:
+      - {field: assessment.provider_unavailable, operator: eq, value: true}
+      - {field: assessment.budget_exhausted, operator: eq, value: true}
+    routing: deterministic_only
+    on_detected: [use_only_unexpired_results, block_if_no_fresh_result, keep_existing_risk_controls, notify_dashboard]
+
+  - id: overlapping_conflicting_scenarios
+    category: operational
+    when_all:
+      - {field: scenario.has_conflicting_responses, operator: eq, value: true}
+    routing: deterministic_only
+    on_detected: [choose_more_restrictive_policy, request_t2, notify_dashboard]
+
+  - id: account_risk_or_kill_breach
+    category: account_safety
+    priority: critical
+    routing: account_risk_engine
+    on_detected: [execute_existing_account_kill_policy]
+    model_confirmation_required: false
+    model_can_override: false
+
+  - id: earnings_release_blackout
+    category: event_calendar
+    when_all:
+      - {field: company_calendar.earnings_blackout_active, operator: eq, value: true}
+    routing: deterministic_only
+    on_detected: [block_new_entries, notify_dashboard]
+    recovery: {rule: release_received_and_assessed, minimum_tier: t2}
+
+  - id: corporate_action_price_adjustment
+    category: data_quality
+    when_all:
+      - {field: asset.unresolved_price_basis_change, operator: eq, value: true}
+    routing: deterministic_only
+    on_detected: [block_new_entries, suppress_unverified_return_triggers, notify_dashboard]
+    recovery: {rule: adjusted_price_basis_verified}
+
+  - id: buyback_or_capital_return
+    category: company_news
+    when_all:
+      - {field: news.capital_return_event, operator: eq, value: true}
+    laya_question: Does the attributable capital-return announcement materially support a monitored claim after considering size and financing?
+    on_applicable: [refresh_assumptions, request_t2_if_material]
+
+  - id: management_or_governance_change
+    category: company_news
+    when_all:
+      - {field: news.catalyst, operator: eq, value: management}
+    laya_question: Does a verified leadership or governance change affect an explicit execution or business assumption?
+    on_applicable: [require_entry_approval, request_t2, notify_dashboard]
+
+  - id: geopolitical_or_supply_chain_shock
+    category: macro_company_link
+    when_all:
+      - {field: news.catalyst, operator: eq, value: geopolitical}
+      - {field: company.exposure_to_reported_event, operator: in, value: [direct, uncertain]}
+    laya_question: Does the reported event affect a documented company exposure, without assuming exposure from the ticker alone?
+    on_applicable: [block_new_entries, request_t2, notify_dashboard]
+
+  - id: currency_or_commodity_exposure_shock
+    category: macro_company_link
+    when_all:
+      - {field: macro.verified_currency_or_commodity_shock, operator: eq, value: true}
+      - {field: company.documented_sensitive_exposure, operator: eq, value: true}
+    laya_question: Does the verified cross-asset move materially change this company's cost, revenue or financing premise?
+    on_applicable: [require_entry_approval, request_t2]
+
+  - id: market_breadth_divergence
+    category: macro_regime
+    when_all:
+      - {field: macro.breadth_verified_divergence, operator: eq, value: true}
+    laya_question: Does weak breadth make this strategy's broad participation assumption uncertain?
+    on_applicable: [require_entry_approval, refresh_assumptions]
+
+  - id: correlated_holdings_stress
+    category: portfolio_concentration
+    when_all:
+      - {field: portfolio.correlated_exposure_exceeds_approved_limit, operator: eq, value: true}
+    routing: deterministic_only
+    on_detected: [block_concentrating_entries, notify_dashboard, propose_exposure_review]
+    models_cannot_select_unapproved_hedge: true
+
+  - id: contradictory_attributed_reports
+    category: evidence_quality
+    when_all:
+      - {field: news.current_attributed_reports_conflict, operator: eq, value: true}
+    laya_question: Do the reports contradict one another on a fact essential to a monitored assumption?
+    on_applicable: [mark_uncertain, block_new_entries, request_t2, notify_dashboard]
+
+  - id: event_identity_or_units_mismatch
+    category: data_quality
+    when_any:
+      - {field: news.earnings_period_unresolved, operator: eq, value: true}
+      - {field: news.comparison_units_incompatible, operator: eq, value: true}
+    routing: deterministic_only
+    on_detected: [mark_surprise_unknown, block_dependent_entries, notify_dashboard]
+
+  - id: expected_impact_vs_observed_impact_divergence
+    category: news_price
+    when_all:
+      - {field: reaction.expected_vs_observed_direction_conflicts, operator: eq, value: true}
+      - {field: reaction.window_complete, operator: eq, value: true}
+    laya_question: Does the disagreement between the earlier impact assessment and observed relative price behavior require revisiting the thesis?
+    on_applicable: [require_entry_approval, request_t2, record_forecast_error]
+
+  - id: portfolio_horizon_or_thesis_expired
+    category: position_management
+    when_any:
+      - {field: strategy.holding_horizon_reached, operator: eq, value: true}
+      - {field: assessment.required_thesis_expired, operator: eq, value: true}
+    routing: deterministic_only
+    on_detected: [block_new_entries, execute_existing_horizon_policy, notify_dashboard]
+
+  # PORTFOLIO OVERLAYS: parameterized definitions; responses are local reviewed policy.
+  - id: portfolio_macro_session_decline
+    category: portfolio_macro_risk
+    parameters:
+      metric: {type: market_input_ref, requires: [freshness, comparable_reference]}
+      threshold_param: {type: negative_return_param_ref}
+    when: {metric_binding: metric, operator: lte, threshold_binding: threshold_param}
+    routing: numeric_mandatory_laya_context
+    laya_question: Explain the verified threshold crossing in the context of this sleeve's declared exposure without vetoing its numeric policy.
+    immediate_guard: [block_strategy_buys]
+    response: bound_local_portfolio_response
+    supported_responses: [trim_sleeve_and_rebuild, liquidate_sleeve]
+    authority: explicitly_reviewed_numeric_policy_only
+
+  - id: hardware_rally_software_cash_trim
+    category: cross_asset_allocation
+    parameters:
+      metric: {type: market_input_ref, requires: [freshness, synchronized_members, fixed_weights]}
+      target_group: {type: holdings_group_ref}
+    when: {metric_binding: metric, operator: gt, threshold: "0%"}
+    routing: numeric_mandatory_laya_context
+    laya_question: Explain the observed hardware basket strength relative to the declared software exposure; do not infer that it caused software weakness.
+    response: bound_local_portfolio_response
+    supported_responses: [trim_group_to_cash]
+    sizing: deterministic_proportional_positive_return_with_approved_anchors_and_cap
+    frequency: once_per_daily_decision_snapshot
+    cannot_invent_group_members_or_weights: true
+
+execution_contract:
+  model_selects: approved_candidate_scenario_ids_only
+  deterministic_engine_selects: authorized_actions_and_order_parameters
+  response_authority: intersection_of_strategy_allowlist_and_account_permissions
+  internal_operations: registered_state_updates_and_assessment_requests_only
+  catalog_cannot_grant_trade_authority: true
+  priority_order: [account_safety, data_quality, broker_restrictions, invalidation, exposure_reduction, entry_eligibility]
+  simultaneous_scenarios: merge_restrictions_not_independent_orders
+  positive_scenario_cannot_clear_negative_restriction: true
+  pause_scope: strategy_and_ticker_unless_explicit_account_policy
+  idempotency_key: [strategy_hash, ticker, scenario_id, evidence_revision, action_type]
+  recheck_before_submission: [ownership, mode, approval, risk, monitoring, assessment_freshness, broker_state]
+  repeated_same_event: no_duplicate_orders
+  stale_response: discard_if_snapshot_or_position_version_changed
+  partial_fill: manage_actual_filled_quantity
+  recovery: no_automatic_restart_after_account_kill
+  unsupported_field_or_action: reject_activation

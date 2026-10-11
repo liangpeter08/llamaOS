@@ -46,6 +46,19 @@ def owned_symbols(conn) -> dict[str, str]:
     return out
 
 
+def locked_cash(conn, h: str) -> float:
+    """Rotation proceeds reserved as strategy cash: filled sell proceeds up to each order's reserved quantity."""
+    r = db.row(conn, "SELECT COALESCE(SUM(LEAST(filled_qty, reserve_qty) * avg_price), 0) v FROM portfolio_orders"
+                     " WHERE strategy_hash=? AND side='sell' AND reserve_qty>0 AND filled_qty>0 AND avg_price IS NOT NULL", (h,))
+    return float(r["v"]) if r else 0.0
+
+
+def enforced(conn, s) -> bool:
+    """0.2 overlays act only when the file asks for enforce mode and the owner enabled paper enforcement for this hash."""
+    v2 = getattr(s, "v2", None)
+    return bool(v2 and v2.mode == "enforce" and db.kv_get(conn, f"overlays.enforce.{s.hash}"))
+
+
 def load_state(conn, h: str) -> Sleeve | None:
     r = db.row(conn, "SELECT state FROM portfolio_state WHERE strategy_hash=?", (h,))
     return Sleeve.from_json(json.loads(r["state"])) if r else None
@@ -55,6 +68,20 @@ def save_state(conn, h: str, sid: str, sl: Sleeve) -> None:
     conn.execute("INSERT INTO portfolio_state(strategy_hash, sid, state, updated_at) VALUES (?,?,?,?)"
                  " ON CONFLICT(strategy_hash) DO UPDATE SET state=excluded.state, updated_at=excluded.updated_at",
                  (h, sid, json.dumps(sl.to_json()), time.time()))
+
+
+def portfolio_indexes(conn, risk: RiskConfig) -> set[str]:
+    """Index instruments read by any registered, valid portfolio strategy (for history downloads)."""
+    from dsl.validator import validate
+
+    out: set[str] = set()
+    for r in db.rows(conn, "SELECT path FROM strategies WHERE status != 'retired'"):
+        p = STRATEGIES_DIR.parent / r["path"]
+        if p.exists() and "market_inputs:" in (text := p.read_text()):
+            v = validate(text, risk)
+            if v.ok and getattr(v.strategy, "v2", None):
+                out |= set(v.strategy.v2.index_instruments)
+    return out
 
 
 def portfolio_symbols(conn, risk: RiskConfig) -> set[str]:
@@ -68,5 +95,5 @@ def portfolio_symbols(conn, risk: RiskConfig) -> set[str]:
             continue
         v = validate(text, risk)
         if v.ok and v.strategy.kind == "portfolio":
-            out |= set(v.strategy.symbols)
+            out |= set(v.strategy.symbols) | set(v.strategy.input_symbols)
     return out

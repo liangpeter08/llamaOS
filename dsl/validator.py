@@ -15,15 +15,20 @@ from common.units import is_pct, parse_duration, parse_hhmm, parse_number, parse
 
 from . import expr as E
 from .builtins import FUNCTIONS, MAX_AGES, POSITION, SERIES, SESSION, SIGNAL_SOURCES, SIGNALS, is_signal
+from .features import DAILY_FUNCTIONS, MAX_LOOKBACK, lookback as feature_lookback, min_n
 from .loader import DSLError, file_hash, load_text
 
 TOP_KEYS = {
     "dsl", "kind", "id", "version", "source", "assumptions", "suggestions", "universe", "timeframe",
-    "params", "signals", "vars", "entry", "sizing", "exit", "execution", "limits",
+    "params", "signals", "vars", "entry", "sizing", "exit", "execution", "limits", "references",
 }
 REQUIRED = {"dsl", "id", "version", "universe", "timeframe", "params", "entry", "sizing", "exit", "execution"}
 LIMIT_KEYS = {"max_trades_per_day", "max_open_positions", "max_position"}
 MODES = {"manual", "auto", "paper"}
+SYMBOL = re.compile(r"[A-Z][A-Z.]{0,5}")
+UNIVERSE_KEYS = {"from", "filters", "symbols"}
+# Daily-history builtins that existed before builtins@v2: name -> sessions needed for argument n
+HISTORY_FNS = {"adv": 0, "rvol": 0, "atr_d": 1}
 
 
 @dataclass
@@ -62,10 +67,18 @@ class Strategy:
     suggestions: list[str] = field(default_factory=list)
     source: dict = field(default_factory=dict)
     kind: str = "intraday"
+    universe_symbols: list[str] = field(default_factory=list)  # empty: any symbol the session loads
+    references: list[str] = field(default_factory=list)  # symbols read through peer() / corr_d / beta_d
+    daily_lookback: int = 0  # prior completed sessions the rules need
 
     @property
     def uses_signals(self) -> bool:
         return bool(self.signals)
+
+    @property
+    def input_symbols(self) -> list[str]:
+        """Symbols the rules read but the strategy doesn't trade (loaded alongside, never traded by it)."""
+        return [r for r in self.references if r not in self.universe_symbols] if self.universe_symbols else list(self.references)
 
 
 @dataclass
@@ -86,6 +99,8 @@ class _V:
         self.risk = risk
         self.errors: list[str] = []
         self.warnings: list[str] = []
+        self.references: list[str] = []
+        self.lookback = 0
 
     def err(self, msg: str):
         self.errors.append(msg)
@@ -132,7 +147,8 @@ class _V:
 
         params, ranges = self.check_params(d.get("params") or {})
         signals = self.check_signals(d.get("signals") or {})
-        self.params, self.signals = params, signals
+        self.params, self.signals, self.ranges = params, signals, ranges
+        self.references = self.check_references(d.get("references"))
 
         # vars: parse, then compute which are signal- or position-tainted
         raw_vars = d.get("vars") or {}
@@ -156,9 +172,12 @@ class _V:
         uni = d["universe"] or {}
         news_today = False
         filters: list[E.Node] = []
+        uni_syms: list[str] = []
         if not isinstance(uni, dict):
             self.err("universe must be a mapping")
         else:
+            for k in set(uni) - UNIVERSE_KEYS:
+                self.err(f"unknown key universe.{k} (allowed: {sorted(UNIVERSE_KEYS)})")
             frm = uni.get("from") or {}
             if not isinstance(frm, dict) or set(frm) - {"news_today"}:
                 self.err("universe.from supports only {news_today: true|false}")
@@ -169,6 +188,7 @@ class _V:
                 if node is not None:
                     self.check_expr(f"universe.filters[{i}]", node, want="bool", signals_ok=False)
                     filters.append(node)
+            uni_syms = self.check_symbol_list("universe.symbols", uni.get("symbols"))
 
         # entry
         entry = d["entry"] or {}
@@ -292,6 +312,9 @@ class _V:
         for s in signals:
             if s not in used:
                 self.warnings.append(f"signal {s!r} is declared but never used")
+        for r in self.references:
+            if r not in used:
+                self.warnings.append(f"reference {r!r} is declared but never read")
 
         ok = not self.errors
         strat = None
@@ -306,6 +329,7 @@ class _V:
                 assumptions=list(d.get("assumptions") or []),
                 suggestions=list(d.get("suggestions") or []),
                 source=dict(d.get("source") or {}),
+                universe_symbols=uni_syms, references=self.references, daily_lookback=self.lookback,
             )
         return Validation(ok, self.errors, self.warnings, strat, h)
 
@@ -326,6 +350,62 @@ class _V:
             self.err(f"{kind} name {name!r} shadows a builtin")
         if kind == "var" and name in getattr(self, "params", {}):
             self.err(f"var {name!r} shadows a param")
+
+    def check_symbol_list(self, where: str, raw) -> list[str]:
+        if raw is None:
+            return []
+        if not isinstance(raw, list) or not raw:
+            self.err(f"{where} must be a non-empty list of ticker symbols")
+            return []
+        out = []
+        for sym in raw:
+            if not isinstance(sym, str) or not SYMBOL.fullmatch(sym):
+                self.err(f"{where}: {sym!r} is not a ticker symbol")
+            elif sym in out:
+                self.err(f"{where}: {sym} is listed twice")
+            else:
+                out.append(sym)
+        if len(out) > 20:
+            self.err(f"{where}: at most 20 symbols")
+        return out
+
+    def check_references(self, raw) -> list[str]:
+        refs = self.check_symbol_list("references", raw)
+        for r in refs:
+            if r in SERIES | SESSION | POSITION | set(FUNCTIONS) | set(self.params):
+                self.err(f"references: {r!r} collides with a builtin or param name")
+        return refs
+
+    def call_lookback(self, where: str, n: E.Call):
+        """Prior sessions a daily-history call needs; params count at the top of their range."""
+        if n.fn not in DAILY_FUNCTIONS and n.fn not in HISTORY_FNS:
+            return
+        consts = [a for a in n.args if not (isinstance(a, E.Name) and a.id in self.references)]
+        vals = []
+        for a in consts:
+            if isinstance(a, E.Num):
+                vals.append(int(a.value))
+            elif isinstance(a, E.Name) and a.id in self.params:
+                lo, hi = self.ranges.get(a.id, (self.params[a.id], self.params[a.id]))
+                if lo < min_n(n.fn) if n.fn in DAILY_FUNCTIONS else lo < 1:
+                    self.err(f"{where}: {n.fn}() needs a window of at least {min_n(n.fn) if n.fn in DAILY_FUNCTIONS else 1}; "
+                             f"param {a.id!r} can go down to {lo:g}")
+                if not (float(lo).is_integer() and float(hi).is_integer()):
+                    self.err(f"{where}: {n.fn}() windows must be whole numbers; param {a.id!r} has range [{lo:g}, {hi:g}]")
+                vals.append(int(hi))
+            else:
+                return
+        if not vals:
+            return
+        if n.fn in DAILY_FUNCTIONS:
+            if vals[0] < min_n(n.fn):
+                self.err(f"{where}: {n.fn}() needs a window of at least {min_n(n.fn)}")
+            need = feature_lookback(n.fn, vals)
+        else:
+            need = vals[0] + HISTORY_FNS[n.fn]
+        if need > MAX_LOOKBACK:
+            self.err(f"{where}: {n.src!r} needs {need} prior sessions; the limit is {MAX_LOOKBACK}")
+        self.lookback = max(self.lookback, need)
 
     def check_params(self, raw) -> tuple[dict, dict]:
         params, ranges = {}, {}
@@ -439,6 +519,8 @@ class _V:
         if isinstance(node, (E.Cmp, E.In, E.BoolOp, E.Not, E.BoolLit)):
             return "bool"
         if isinstance(node, E.Call):
+            if node.fn == "peer" and len(node.args) == 2:
+                return self.kind_of(node.args[1])
             sig = FUNCTIONS.get(node.fn)
             return sig.returns if sig else "?"
         if isinstance(node, E.Name):
@@ -455,9 +537,11 @@ class _V:
                    signals_ok: bool = False, position_ok: bool = False):
         if want and self.kind_of(node) not in (want, "?"):
             self.err(f"{where}: expected a {want} expression, got {node.src!r}")
+        symbol_args: set[int] = set()  # Name nodes that are ticker arguments, not values
         for n in E.walk(node):
             if isinstance(n, E.Name):
-                self._check_name(where, n.id, signals_ok, position_ok)
+                if id(n) not in symbol_args:
+                    self._check_name(where, n.id, signals_ok, position_ok)
             elif isinstance(n, E.Call):
                 sig = FUNCTIONS.get(n.fn)
                 if not sig:
@@ -469,6 +553,15 @@ class _V:
                 for a, kind in zip(n.args, sig.args):
                     if kind == "const" and not self._is_const(a):
                         self.err(f"{where}: {n.fn}() needs a whole-number literal or param, got {a.src!r}")
+                    elif kind == "symbol":
+                        if isinstance(a, E.Name):
+                            symbol_args.add(id(a))
+                        if not (isinstance(a, E.Name) and a.id in self.references):
+                            self.err(f"{where}: {n.fn}() needs a ticker listed under references:, got {a.src!r}"
+                                     + (f" (add {a.src} to references)" if isinstance(a, E.Name) and SYMBOL.fullmatch(a.id) else ""))
+                if n.fn == "peer":
+                    self.check_peer_body(where, n)
+                self.call_lookback(where, n)
             elif isinstance(n, E.Cmp):
                 for side in (n.l, n.r):
                     if self._bare_number(side):
@@ -490,6 +583,20 @@ class _V:
                     self.err(f"{where}: x[n] works on bar series and vars only, got {n.base.src!r}")
                 if n.n > 389:
                     self.err(f"{where}: bar offset {n.n} exceeds one session")
+
+    def check_peer_body(self, where: str, n: E.Call):
+        """peer(SYM, expr): expr is evaluated for SYM, so it can't read this symbol's position or nest peer()."""
+        body = n.args[1]
+        names = self.closure_names(body)
+        bad = sorted(names & POSITION) + sorted(v for v in names if v in self.vars and self.pos_taint.get(v))
+        if bad:
+            self.err(f"{where}: {n.src!r} reads position values ({', '.join(bad)}); a peer has no position")
+        inner = {c.fn for c in E.walk(body) if isinstance(c, E.Call)}
+        for v in names:
+            if v in self.vars:
+                inner |= E.calls(self.vars[v])
+        if "peer" in inner:
+            self.err(f"{where}: peer() can't be nested")
 
     def _check_name(self, where, name, signals_ok, position_ok):
         if name in self.params or name in SERIES or name in SESSION:

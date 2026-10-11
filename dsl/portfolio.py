@@ -22,6 +22,7 @@ from common.config import RiskConfig
 from common.units import is_pct, parse_hhmm, parse_pct
 
 from . import expr as E
+from .builtins import FUNCTIONS, PORTFOLIO_FUNCTIONS
 from .loader import file_hash
 
 # Values a rule can read, computed per symbol at the daily decision time.
@@ -35,9 +36,11 @@ ACTIONS = {"hold", "exit", "exit_and_wait"}  # bare actions
 SIZED = {"trim", "add"}  # {action: param}
 TOP_KEYS = {
     "dsl", "kind", "id", "version", "source", "assumptions", "suggestions", "holdings", "schedule",
-    "params", "rules", "reentry", "execution", "limits",
+    "params", "rules", "reentry", "execution", "limits", "references",
 }
 REQUIRED = {"dsl", "kind", "id", "version", "holdings", "schedule", "params", "rules", "execution"}
+TOP_KEYS_V2 = TOP_KEYS | {"authoring", "market_inputs", "portfolio_overlays", "monitoring"}
+VERSIONS = ("0.1", "0.2")
 SYMBOL = re.compile(r"[A-Z][A-Z.]{0,5}")
 
 
@@ -76,10 +79,24 @@ class PortfolioStrategy:
     kind: str = "portfolio"
     side: str = "long"
     signals: dict = field(default_factory=dict)
+    dsl: str = "0.1"
+    v2: object | None = None  # dsl.portfolio_v2.V2 for 0.2 files
+    references: list[str] = field(default_factory=list)  # tickers read by peer() / corr_d / beta_d
+    daily_lookback: int = 0  # prior completed sessions the rules need
 
     @property
     def symbols(self) -> list[str]:
         return list(self.weights)
+
+    @property
+    def input_symbols(self) -> list[str]:
+        """Tickers read by market inputs or rule references but not held (monitored only)."""
+        read = [*(self.v2.input_symbols if self.v2 else []), *self.references]
+        return [sym for sym in dict.fromkeys(read) if sym not in self.weights]
+
+    @property
+    def overlays(self) -> list:
+        return list(self.v2.overlays) if self.v2 else []
 
     @property
     def uses_signals(self) -> bool:
@@ -96,9 +113,11 @@ def validate_portfolio(v, d: dict):
 
     risk: RiskConfig = v.risk
     h = file_hash(v.text)
+    dsl_version = str(d.get("dsl"))
+    allowed = TOP_KEYS_V2 if dsl_version == "0.2" else TOP_KEYS
     for k in d:
-        if k not in TOP_KEYS and k != "leverage":
-            v.err(f"unknown top-level key {k!r}")
+        if k not in allowed and k != "leverage":
+            v.err(f"unknown top-level key {k!r}" + (" (needs dsl: \"0.2\")" if k in TOP_KEYS_V2 else ""))
     for k in sorted(REQUIRED - set(d)):
         v.err(f"missing required key {k!r}")
     if v.errors:
@@ -108,8 +127,9 @@ def validate_portfolio(v, d: dict):
         v.err("kind: portfolio is disabled: turn on 'Portfolio strategies enabled' on the dashboard Risk page")
         return Validation(False, v.errors, v.warnings, None, h)
 
-    if str(d["dsl"]) != "0.1":
-        v.err(f"unsupported dsl version {d['dsl']!r} (expected 0.1)")
+    if dsl_version not in VERSIONS:
+        v.err(f"unsupported dsl version {d['dsl']!r} (expected 0.1 or 0.2)")
+    is_v2 = dsl_version == "0.2"
     sid, version = d["id"], d["version"]
     if not isinstance(sid, str) or not re.fullmatch(r"[a-z][a-z0-9_]{1,63}", sid):
         v.err("id must be lowercase snake_case")
@@ -120,6 +140,7 @@ def validate_portfolio(v, d: dict):
     params, ranges = v.check_params(d.get("params") or {})
     v.params, v.ranges, v.signals, v.vars = params, ranges, {}, {}
     v.sig_taint, v.pos_taint = {}, {}
+    v.references = v.check_references(d.get("references"))
 
     # holdings
     hold = d["holdings"] if isinstance(d["holdings"], dict) else {}
@@ -127,7 +148,7 @@ def validate_portfolio(v, d: dict):
         v.err("holdings must be a mapping with capital, max_holding and groups")
     capital = _pct(v, "holdings.capital", hold.get("capital"))
     max_holding = _pct(v, "holdings.max_holding", hold.get("max_holding", "100%"))
-    for k in set(hold) - {"capital", "max_holding", "groups"}:
+    for k in set(hold) - {"capital", "max_holding", "groups"} - ({"allocation_basis"} if is_v2 else set()):
         v.err(f"unknown key holdings.{k}")
     groups: dict[str, tuple[float, list[str]]] = {}
     weights: dict[str, float] = {}
@@ -175,7 +196,8 @@ def validate_portfolio(v, d: dict):
 
     # schedule
     sch = d["schedule"] if isinstance(d["schedule"], dict) else {}
-    for k in set(sch) - {"hold_sessions", "start_date", "end_date", "decide_at"}:
+    from .portfolio_v2 import SCHEDULE_V2
+    for k in set(sch) - {"hold_sessions", "start_date", "end_date", "decide_at"} - (set(SCHEDULE_V2) if is_v2 else set()):
         v.err(f"unknown key schedule.{k}")
     hold_sessions = sch.get("hold_sessions")
     if not isinstance(hold_sessions, int) or isinstance(hold_sessions, bool) or not 1 <= hold_sessions <= pr.max_hold_sessions:
@@ -217,8 +239,9 @@ def validate_portfolio(v, d: dict):
     re_ = d.get("reentry")
     waits = any(r.action == "exit_and_wait" for r in rules)
     if re_ is not None:
-        if not isinstance(re_, dict) or set(re_) != {"when", "step"}:
-            v.err("reentry must be {when: <condition>, step: <param>}")
+        extra = {"size_basis", "once_started", "while_building", "blocked_by"} if is_v2 else set()
+        if not isinstance(re_, dict) or not {"when", "step"} <= set(re_) or set(re_) - {"when", "step"} - extra:
+            v.err("reentry must be {when: <condition>, step: <param>}" + (" plus optional size_basis, once_started, while_building, blocked_by" if is_v2 else ""))
         else:
             reentry_when = _cond(v, "reentry.when", re_["when"])
             reentry_step = _size(v, "reentry.step", re_["step"], params)
@@ -248,7 +271,14 @@ def validate_portfolio(v, d: dict):
                 v.err(f"limits.max_drawdown = {val} loosens risk control portfolio.max_drawdown ({pr.max_drawdown:.0%})")
             limits[k] = x
 
-    used = set()
+    v2, lines = None, None
+    if is_v2:
+        from .portfolio_v2 import validate_v2
+        v2, lines = validate_v2(v, d, params, groups, weights, max_holding)
+    elif not all(isinstance(a, str) for a in d.get("assumptions") or []):
+        v.err("assumptions must be a list of text in dsl 0.1 (structured assumptions need dsl: \"0.2\")")
+
+    used = set(getattr(v, "v2_params", set())) if is_v2 else set()
     for r in rules:
         used |= E.names(r.when) | ({r.size} if r.size else set())
     if reentry_when is not None:
@@ -267,8 +297,9 @@ def validate_portfolio(v, d: dict):
             groups=groups, weights=weights, hold_sessions=hold_sessions, start_date=start_date, end_date=end_date,
             decide_at=decide_at, params=params, param_ranges=ranges, rules=rules, reentry_when=reentry_when,
             reentry_step=reentry_step, mode=mode_, limits=limits,
-            assumptions=list(d.get("assumptions") or []), suggestions=list(d.get("suggestions") or []),
-            source=dict(d.get("source") or {}),
+            assumptions=lines if lines is not None else list(d.get("assumptions") or []),
+            suggestions=list(d.get("suggestions") or []), source=dict(d.get("source") or {}), dsl=dsl_version, v2=v2,
+            references=v.references, daily_lookback=v.lookback,
         )
     return Validation(ok, v.errors, v.warnings, strat, h)
 
@@ -296,23 +327,61 @@ def _date(v, where, raw) -> date | None:
         return None
 
 
+# Inside peer(SYM, expr) only the peer's own market values make sense, not this sleeve's position in it.
+PEER_DAILY = {"day_change"}
+
+
 def _cond(v, where, src) -> E.Node | None:
     node = v.parse_expr(where, src)
     if node is None:
         return None
     if v.kind_of(node) != "bool":
         v.err(f"{where}: expected a condition, got {node.src!r}")
+    _check_portfolio_expr(v, where, node, in_peer=False)
     for n in E.walk(node):
-        if isinstance(n, E.Name):
-            if n.id not in v.params and n.id not in DAILY:
-                v.err(f"{where}: unknown name {n.id!r} (portfolio rules can use params and {sorted(DAILY)})")
-        elif isinstance(n, (E.Call, E.Index, E.In)):
-            v.err(f"{where}: {n.src!r} is not available in portfolio rules (use params and {sorted(DAILY)})")
-        elif isinstance(n, E.Cmp):
+        if isinstance(n, E.Cmp):
             for side in (n.l, n.r):
                 if v._bare_number(side):
                     v.err(f"{where}: comparison {n.src!r} uses a bare number; thresholds must be params with declared ranges")
     return node
+
+
+def _check_portfolio_expr(v, where, node: E.Node, in_peer: bool):
+    """Names, calls and nesting rules for portfolio conditions (recursive so peer bodies get their own scope)."""
+    allowed = PEER_DAILY if in_peer else set(DAILY)
+    hint = f"params, {sorted(allowed)} and functions {sorted(PORTFOLIO_FUNCTIONS)}"
+    if isinstance(node, E.Name):
+        if node.id not in v.params and node.id not in allowed:
+            extra = " (inside peer() only the peer's day_change and daily functions are available)" if in_peer and node.id in DAILY else ""
+            v.err(f"{where}: unknown name {node.id!r} (portfolio rules can use {hint}){extra}")
+        return
+    if isinstance(node, (E.Index, E.In)):
+        v.err(f"{where}: {node.src!r} is not available in portfolio rules (use {hint})")
+        return
+    if isinstance(node, E.Call):
+        sig = FUNCTIONS.get(node.fn)
+        if node.fn not in PORTFOLIO_FUNCTIONS or sig is None:
+            v.err(f"{where}: {node.src!r} is not available in portfolio rules (use {hint})")
+            return
+        if len(node.args) != len(sig.args):
+            v.err(f"{where}: {node.fn}() takes {len(sig.args)} argument(s), got {len(node.args)}")
+            return
+        for a, kind in zip(node.args, sig.args):
+            if kind == "symbol":
+                if not (isinstance(a, E.Name) and a.id in v.references):
+                    v.err(f"{where}: {node.fn}() needs a ticker listed under references:, got {a.src!r}")
+            elif kind == "const":
+                if not v._is_const(a):
+                    v.err(f"{where}: {node.fn}() needs a whole-number literal or param, got {a.src!r}")
+            elif node.fn == "peer":
+                if in_peer:
+                    v.err(f"{where}: peer() can't be nested")
+                else:
+                    _check_portfolio_expr(v, where, a, in_peer=True)
+        v.call_lookback(where, node)
+        return
+    for ch in E.children(node):
+        _check_portfolio_expr(v, where, ch, in_peer)
 
 
 def _size(v, where, name, params) -> str | None:

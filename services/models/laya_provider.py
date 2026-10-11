@@ -72,3 +72,34 @@ def decide(conn, item):
     finally:
         conn.execute("INSERT INTO model_calls(ts,provider,model,task,latency_ms,ok,error,cost_usd) VALUES (?,?,?,?,?,?,?,?)",
                      (time.time(),"laya",model,"t1",(time.time()-start)*1000,int(ok),None if ok else "Laya inference failed",0))
+
+
+def ask(conn, state: str, typed_questions: dict, task: str = "assumption.t1") -> dict:
+    """Generic typed decisions: {name: {"type": "choice"|"noul", "instructions", "criteria"?}} -> raw Laya answers.
+
+    The state is data (evidence), never instructions. Raises on any failure; callers treat that as unavailable."""
+    global _router
+    import httpx
+    start = time.time()
+    model = os.environ.get("LAYA_MODEL", "typed-decisions")
+    ok = False
+    try:
+        with _lock:
+            if os.environ.get("LAYA_URL"):
+                response = httpx.post(os.environ["LAYA_URL"].rstrip('/') + '/v1/systemone',
+                                      json={"model": model, "state": state, "questions": typed_questions},
+                                      headers={"Authorization": "Bearer " + os.environ["LAYA_API_KEY"]} if os.environ.get("LAYA_API_KEY") else {},
+                                      timeout=20)
+                response.raise_for_status()
+                result = response.json()
+            else:
+                from laya import Router
+                if _router is None:
+                    _router = Router(max_loaded=1)
+                result = _router.predict(state, typed_questions, model=model)
+        answers = result["answers"]
+        ok = True
+        return answers
+    finally:
+        conn.execute("INSERT INTO model_calls(ts,provider,model,task,latency_ms,ok,error,cost_usd) VALUES (?,?,?,?,?,?,?,?)",
+                     (time.time(), "laya", model, task, (time.time() - start) * 1000, int(ok), None if ok else "Laya inference failed", 0))

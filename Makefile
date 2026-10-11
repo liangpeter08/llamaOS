@@ -1,13 +1,14 @@
 PY ?= .venv/bin/python
 DASH = services/dashboard
 
-.PHONY: news-backfill init seed demo replay dev dev-owner dev-code test typecheck build reset-db reset-kill-switch broker models api dashboard
+.PHONY: discover news-backfill init seed demo replay dev dev-owner dev-code test typecheck build reset-db reset-kill-switch broker models api dashboard
 
 init:            ## create venv, install Python + Node deps, copy example config
 	test -d .venv || python3 -m venv .venv
 	$(PY) -m pip install -q -r requirements.txt
 	cd $(DASH) && npm install --no-audit --no-fund
 	test -f config/risk.yaml || cp config/risk.example.yaml config/risk.yaml
+	test -f config/market_inputs.yaml || cp config/market_inputs.example.yaml config/market_inputs.yaml
 	test -f .env || (cp .env.example .env && echo "SESSION_SECRET=$$($(PY) -c 'import secrets; print(secrets.token_urlsafe(32))')" >> .env)
 
 seed:            ## simulated market history + recorded signals (offline model)
@@ -16,6 +17,10 @@ seed:            ## simulated market history + recorded signals (offline model)
 
 demo: seed dev-owner   ## seed, create a dev owner, backtest + paper the example strategies
 	$(PY) scripts/demo_setup.py
+
+discover:        ## single-ticker strategy discovery: make discover T=AMD [ARGS="--kinds daily --no-save"]
+	@test -n "$(T)" || (echo "usage: make discover T=TICKER [ARGS=...]" && exit 2)
+	$(PY) -c "import scripts.env as e; e.load(); import sys; from discovery.__main__ import main; main(sys.argv[1:])" $(T) $(ARGS)
 
 replay:          ## rebuild equity history by replaying the running strategies over stored sessions
 	$(PY) -m services.broker.replay

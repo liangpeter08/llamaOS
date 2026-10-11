@@ -174,6 +174,10 @@ def test_portfolio_backtest(conn, risk):
     assert a["metrics"]["total_pnl"] == pytest.approx(a["equity_curve"][-1]["equity"] - 100_000, abs=1.0)  # per-sale rounding
     reasons = {o["reason"] for o in a["orders"]}
     assert {"initial", "horizon"} <= reasons and reasons & {"trim", "add", "exit_and_wait"}
+    assert all(p["equity"] == pytest.approx(p["cash"] + p["stock"], abs=0.02) for p in a["equity_curve"])
+    first, last = a["orders"][0], a["orders"][-1]
+    assert first["side"] == "buy" and first["deployed_pct"] > 0 and first["cash_after"] < 100_000
+    assert last["allocated_pct"] == pytest.approx(0) and a["equity_curve"][-1]["stock"] == 0  # sold out at the horizon
     assert bt.simulate(conn, [s], risk, days=[])["trades"] == []  # the intraday replay ignores portfolio files
 
 
@@ -259,7 +263,7 @@ def test_runnable_splits_kinds(conn, risk):
     intraday = registry.runnable(conn, risk)
     portfolio = registry.runnable(conn, risk, kind="portfolio")
     assert intraday and all(s.kind == "intraday" for _, s in intraday)
-    assert [s.id for _, s in portfolio] == ["big_tech_software_tilt_hold"]
+    assert [(s.id, s.version) for _, s in portfolio] == [("big_tech_software_tilt_hold", 1), ("big_tech_software_tilt_hold", 2)]
 
 
 # ---------------------------------------------------------------- api and paper broker views

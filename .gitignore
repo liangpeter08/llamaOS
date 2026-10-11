@@ -6,6 +6,7 @@
 .venv/
 __pycache__/
 config/risk.yaml
+config/market_inputs.yaml
 data/
 secrets/*.env
 secrets/dev-owner.txt

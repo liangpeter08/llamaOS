@@ -8,7 +8,7 @@ const nextConfig = {
   poweredByHeader: false,
   output: "standalone",
   // The rewrite proxy drops requests after 30s by default; strategy compiles run for minutes.
-  experimental: { proxyTimeout: 600_000 },
+  experimental: { proxyTimeout: 900_000 },  // design-chat turns (Opus + a repair round) can run several minutes
   async rewrites() {
     return [{ source: "/api/:path*", destination: `${API_URL}/api/:path*` }];
   },

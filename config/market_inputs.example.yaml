@@ -1,0 +1,14 @@
+# Account-configured feeds for DSL 0.2 `market_inputs` (copied to market_inputs.yaml by `make init`).
+#
+# A strategy names an index (instrument: NASDAQ_COMPOSITE); this file says where the broker reads it.
+# An index with no entry here is unavailable: strategies that require it can't be promoted to paper,
+# and a running one blocks its buys. There is no silent proxy: QQQ or another ETF is a different
+# instrument and must be declared as one (a `symbols:` basket) in the strategy itself.
+#
+# Providers:
+#   yahoo  public chart endpoint (no key). Delayed or unofficial data is fine for paper trading; use a
+#          licensed index feed before relying on it for anything else.
+index_feeds:
+  NASDAQ_COMPOSITE: {provider: yahoo, symbol: "^IXIC"}
+  NASDAQ_100: {provider: yahoo, symbol: "^NDX"}
+  SP_500: {provider: yahoo, symbol: "^GSPC"}

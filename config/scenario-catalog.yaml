@@ -1,0 +1,36 @@
+# Executable scenario catalog for `kind: portfolio` DSL 0.2 overlays.
+#
+# A strategy's portfolio_overlays.rules[].scenario_ref must name one of these entries and bind every
+# parameter with the declared type. The catalog describes what a scenario may do; it never grants
+# trade authority by itself: the strategy's own response, the account risk controls and the owner's
+# execution mode all still apply. The catalog's SHA-256 is pinned when a strategy is promoted to
+# paper; a later edit stops that strategy until it is promoted again.
+schema: "scenario-catalog@v1"
+
+portfolio_scenarios:
+  - id: portfolio_macro_session_decline
+    category: portfolio_macro_risk
+    parameters:
+      metric: {type: market_input_ref, requires: [freshness, comparable_reference]}
+      threshold_param: {type: negative_return_param_ref}
+    when: {metric_binding: metric, operator: lte, threshold_binding: threshold_param}
+    routing: numeric_mandatory_laya_context
+    laya_question: Explain the verified threshold crossing in the context of this sleeve's declared exposure without vetoing its numeric policy.
+    immediate_guard: [block_strategy_buys]
+    response: bound_local_portfolio_response
+    supported_responses: [trim_sleeve_and_rebuild, liquidate_sleeve]
+    authority: explicitly_reviewed_numeric_policy_only
+
+  - id: hardware_rally_software_cash_trim
+    category: cross_asset_allocation
+    parameters:
+      metric: {type: market_input_ref, requires: [freshness, synchronized_members, fixed_weights]}
+      target_group: {type: holdings_group_ref}
+    when: {metric_binding: metric, operator: gt, threshold: "0%"}
+    routing: numeric_mandatory_laya_context
+    laya_question: Explain the observed hardware basket strength relative to the declared software exposure; do not infer that it caused software weakness.
+    response: bound_local_portfolio_response
+    supported_responses: [trim_group_to_cash]
+    sizing: deterministic_proportional_positive_return_with_approved_anchors_and_cap
+    frequency: once_per_daily_decision_snapshot
+    cannot_invent_group_members_or_weights: true

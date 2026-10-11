@@ -96,6 +96,87 @@ def set_status(conn, h: str, status: str, actor: str, **extra):
     audit.log(conn, "strategy.status", actor, {"hash": h, "status": status, **{k: v for k, v in extra.items() if k != 'backtest'}})
 
 
+def set_category(conn, sid: str, category: str, actor: str):
+    """Category of a strategy line (every version). Blank clears it."""
+    category = category.strip()[:60]
+    if category:
+        conn.execute("INSERT INTO strategy_categories(sid, category, updated_at) VALUES (?,?,?)"
+                     " ON CONFLICT(sid) DO UPDATE SET category=excluded.category, updated_at=excluded.updated_at",
+                     (sid, category, time.time()))
+    else:
+        conn.execute("DELETE FROM strategy_categories WHERE sid=?", (sid,))
+    audit.log(conn, "strategy.category", actor, {"sid": sid, "category": category or None})
+
+
+def set_archived(conn, h: str, archived: bool, actor: str):
+    r = db.row(conn, "SELECT status FROM strategies WHERE hash=?", (h,))
+    if not r:
+        raise ValueError("no such strategy")
+    if archived and r["status"] in RUNNABLE:
+        raise ValueError(f"{r['status'].title()} strategies can't be archived. Retire it first.")
+    conn.execute("UPDATE strategies SET archived_at=? WHERE hash=?", (time.time() if archived else None, h))
+    audit.log(conn, "strategy.archived" if archived else "strategy.unarchived", actor, {"hash": h})
+
+
+# kv entries keyed by one strategy hash (monitoring, overlays, catalog pin, sleeve inputs, assumption blocks).
+_KV_KEYS = ("monitoring.strategy.{h}", "overlays.enforce.{h}", "scenario_catalog.pin.{h}",
+            "portfolio.inputs.{h}", "portfolio.observed.{h}", "assumption.block.{h}")
+
+
+def delete_blockers(conn, h: str) -> list[str]:
+    """Why this version can't be permanently deleted right now (empty when it can)."""
+    from .sleeves import OPEN, holdings
+    r = db.row(conn, "SELECT status FROM strategies WHERE hash=?", (h,))
+    if not r:
+        return ["no such strategy"]
+    out = []
+    if r["status"] in RUNNABLE:
+        out.append(f"it is running on {r['status']}; retire it first")
+    if db.row(conn, "SELECT symbol FROM positions WHERE strategy_hash=? AND qty<>0 LIMIT 1", (h,)):
+        out.append("it has an open position")
+    if any(x.qty for x in holdings(conn, h)[0].values()):
+        out.append("its portfolio sleeve still holds shares")
+    if db.row(conn, f"SELECT id FROM portfolio_orders WHERE strategy_hash=? AND status IN {OPEN} LIMIT 1", (h,)) or \
+            db.row(conn, "SELECT id FROM intents WHERE strategy_hash=? AND status IN ('pending','approved','rechecking','submitting','submitted') LIMIT 1", (h,)):
+        out.append("it has working orders")
+    if db.row(conn, "SELECT id FROM backtest_runs WHERE strategy_hash=? AND status IN ('queued','running') LIMIT 1", (h,)):
+        out.append("a backtest of it is still running")
+    return out
+
+
+def delete(conn, h: str, actor: str, delete_runs: bool = False) -> dict:
+    """Permanently delete one version: its file, registry row and per-hash state.
+
+    Trades, intents, orders and the audit log are history and stay. Saved backtest runs keep a copy of the
+    strategy text, so they stay too unless delete_runs is set.
+    """
+    blockers = delete_blockers(conn, h)
+    if blockers:
+        raise ValueError("Can't delete: " + "; ".join(blockers) + ".")
+    r = db.row(conn, "SELECT sid, version, path FROM strategies WHERE hash=?", (h,))
+    p = STRATEGIES_DIR.parent / r["path"]
+    with db.tx(conn):
+        for table in ("portfolio_state", "portfolio_days", "portfolio_events", "assumption_checks", "assumption_replays"):
+            conn.execute(f"DELETE FROM {table} WHERE strategy_hash=?", (h,))
+        conn.execute("DELETE FROM kv WHERE k = ANY(?)", ([k.format(h=h) for k in _KV_KEYS],))
+        runs = 0
+        if delete_runs:
+            ids = [x["id"] for x in db.rows(conn, "SELECT id FROM backtest_runs WHERE strategy_hash=?", (h,))]
+            conn.execute("UPDATE backtest_runs SET parent_id=NULL WHERE parent_id = ANY(?)", (ids,))
+            runs = conn.execute("DELETE FROM backtest_runs WHERE strategy_hash=?", (h,)).rowcount
+        conn.execute("DELETE FROM strategies WHERE hash=?", (h,))
+        last = not db.row(conn, "SELECT hash FROM strategies WHERE sid=? LIMIT 1", (r["sid"],))
+        if last:
+            conn.execute("DELETE FROM strategy_categories WHERE sid=?", (r["sid"],))
+            conn.execute("DELETE FROM strategy_funds WHERE sid=?", (r["sid"],))
+        # Remove the file last, inside the transaction: if it fails, nothing is deleted and sync can't re-register it.
+        if p.exists() and file_hash(p.read_text()) == h:
+            p.unlink()
+        audit.log(conn, "strategy.deleted", actor, {"hash": h, "sid": r["sid"], "version": r["version"],
+                                                     "path": r["path"], "backtest_runs_deleted": runs})
+    return {"sid": r["sid"], "version": r["version"], "runs": runs, "last_version": last}
+
+
 def next_version(sid: str) -> int:
     vs = [int(m.group(1)) for p in STRATEGIES_DIR.glob(f"{sid}.v*.yaml")
           if (m := re.match(rf"{re.escape(sid)}\.v(\d+)\.yaml$", p.name))]

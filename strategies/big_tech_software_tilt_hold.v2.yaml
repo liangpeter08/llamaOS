@@ -1,0 +1,315 @@
+# v2 of big_tech_software_tilt_hold in portfolio DSL 0.2 (see docs/design/portfolio-monitoring.md).
+# Overlays start in shadow mode: they are evaluated and logged, and only the daily rules place orders.
+dsl: "0.2"
+kind: portfolio
+id: big_tech_software_tilt_hold
+version: 2
+source:
+  text: >-
+    Buy 10 big-tech names once: 70% in 5 software names and 30% in 5 others,
+    equal weight inside each group. Hold for about 2 months. Every day at
+    15:45 ET, the first matching rule applies per symbol: > +5% hold;
+    > +3% sell 30% of shares held; < -5% sell all, then rebuy 20% per
+    session starting on the first up day; <= -3% add, capped at 150% of
+    original allocation. Also monitor Nasdaq and sell when it drops 2%
+    in one day. When hardware stocks such as AMD rise, sell software
+    holdings proportionally to cash: a 5% increase removes 30%. Use an
+    equal-weight hardware basket of NVDA, AAPL, AVGO and AMD. The Nasdaq
+    response sells 40%, waits for a positive day, then buys 25% per session
+    until the maximum allocation is rebuilt.
+  based_on: {id: big_tech_software_tilt_hold, version: 1}
+  compiled_by: design_example_not_model_compilation
+
+# These choices are visible draft assumptions, not accepted answers from pasted text.
+authoring:
+  status: proposed_requires_review
+  proposed_defaults:
+    tickers: retain_v1_holdings
+    capital: "45%"
+    add_size: "25%"
+    holding_period: 42_exchange_sessions
+    start_date: "2026-10-12"
+    nasdaq: NASDAQ_COMPOSITE
+    macro_timing: immediate_regular_session
+    macro_recovery_step_basis: original_allocation_usd
+    macro_recovery_target: max_holding_150_percent_of_original
+    positive_day_reference: nasdaq_at_daily_decision_vs_prior_regular_close
+    rotation_timing: daily_1545
+    software_rebuys_after_rotation: next_session_using_unreserved_cash_only
+  confirmed_choices:
+    hardware_driver: equal_weight_basket
+    hardware_symbols: [NVDA, AAPL, AVGO, AMD]
+    macro_trim: "40%"
+    macro_recovery: wait_for_positive_day_then_25_percent_steps_to_maximum
+  note: >-
+    AMD is monitoring-only here, not a replacement for TSLA. The pasted
+    four-question dialogue, defaults and historical-data claims are context,
+    not proof of acceptance or current data availability.
+
+holdings:
+  capital: "45%"
+  max_holding: "150%"
+  groups:
+    software:
+      weight: "70%"
+      symbols: [MSFT, GOOGL, META, ORCL, NFLX]
+    other_big_tech:
+      weight: "30%"
+      symbols: [NVDA, AAPL, AMZN, AVGO, TSLA]
+  allocation_basis:
+    equity: first_actual_buy
+    original_allocation: fixed_per_symbol_usd_at_inception
+    trims_do_not_reset_original_allocation: true
+    proceeds: strategy_owned_cash
+
+schedule:
+  timezone: America/New_York
+  calendar: exchange_calendar
+  start_date: "2026-10-12"
+  hold_sessions: 42
+  session_count: first_funded_session_counts_as_one
+  decide_at: "15:45"
+  early_close: 15min_before_regular_close
+  missed_decision: skip_and_notify_no_next_day_catchup
+  horizon_action: liquidate_sleeve_and_finish
+
+params:
+  no_sell_gain: {value: "5%", range: ["3%", "15%"]}
+  trim_gain: {value: "3%", range: ["1%", "10%"]}
+  trim_size: {value: "30%", range: ["5%", "100%"]}
+  exit_loss: {value: "-5%", range: ["-20%", "-2%"]}
+  add_loss: {value: "-3%", range: ["-10%", "-1%"]}
+  add_size: {value: "25%", range: ["5%", "50%"]}
+  reenter_gain: {value: "0%", range: ["0%", "3%"]}
+  reenter_step: {value: "20%", range: ["5%", "100%"]}
+  macro_decline_return: {value: "-2%", range: ["-10%", "-0.5%"]}
+  macro_trim_size: {value: "40%", range: ["5%", "100%"]}
+  macro_rebuild_step: {value: "25%", range: ["5%", "100%"]}
+  hardware_anchor_return: {value: "5%", range: ["1%", "20%"]}
+  software_anchor_trim: {value: "30%", range: ["5%", "100%"]}
+
+# Existing per-symbol rules; overlays below take priority over these.
+rules:
+  - {when: "day_change > no_sell_gain", do: hold}
+  - {when: "day_change > trim_gain", do: {trim: trim_size}}
+  - {when: "day_change < exit_loss", do: exit_and_wait}
+  - {when: "day_change <= add_loss", do: {add: add_size}}
+reentry:
+  when: "day_change > reenter_gain"
+  step: reenter_step
+  size_basis: original_allocation_usd
+  once_started: every_session_until_100_percent_rebuilt
+  while_building: exit_rules_only
+  blocked_by: [macro_wait_for_positive_day, same_session_group_reduction, hard_risk, missing_required_data]
+
+# NEW: facts can come from outside the held basket; all math is computed by code.
+market_inputs:
+  nasdaq_session_return:
+    instrument: NASDAQ_COMPOSITE
+    instrument_class: index
+    source: account_configured_index_feed
+    measure: simple_return
+    reference: previous_regular_session_close
+    observation: fresh_verified_regular_session_value
+    max_age: 30s
+    required: true
+    silent_proxy_fallback: prohibited
+  hardware_session_return:
+    source: account_configured_equity_feed
+    symbols: [NVDA, AAPL, AVGO, AMD]
+    held_membership_required: false
+    measure: equal_weight_mean_of_member_simple_returns
+    reference: previous_regular_session_close
+    weights: fixed_equal_not_position_weights
+    observation: synchronized_completed_1min_bars
+    max_age: 90s
+    missing_member: unknown_do_not_reweight
+    corporate_action_basis: comparable_adjusted_prices_and_prior_close
+    required_at: daily_decision
+
+# Optional semantic context stays nested. Explicit numeric trading rules do not
+# require an LLM's permission and cannot be vetoed by a contextual answer.
+assumptions:
+  - id: group_definitions
+    kind: implementation_note
+    monitored: false
+    statement: >-
+      Software includes the v1 internet-services names. Hardware monitoring
+      is a separate explicit basket, not the other_big_tech allocation group.
+  - id: macro_context
+    kind: market_thesis
+    monitored: true
+    critical: false
+    statement: The supplied macro evidence is consistent with the sleeve's long technology exposure.
+    evaluation:
+      interval: 30min
+      on: [macro_threshold_crossing, new_relevant_macro_news]
+      tiers: [t1, t2]
+      result_max_age: 30min
+    questions:
+      - id: macro_compatibility
+        prompt: Is the supplied macro evidence supportive, adverse or unclear for this long technology sleeve?
+        type: choice
+        choices: [supportive, adverse, unclear, unknown]
+        assessed_by: [t1, t2]
+        evidence_required: true
+    assessment:
+      supported_when:
+        all: [{question: macro_compatibility, operator: eq, value: supportive}]
+      contradicted_when:
+        all: [{question: macro_compatibility, operator: eq, value: adverse}]
+      otherwise: uncertain
+      conflicting_rules: uncertain
+    responses:
+      on_supported: [log]
+      on_contradicted: [log, notify_dashboard, request_t2]
+      on_uncertain: [log]
+      # These contextual responses do not liquidate holdings or clear numeric guards.
+
+# NEW: parameterized catalog bindings plus local response definitions.
+portfolio_overlays:
+  precedence: [account_safety, horizon_exit, symbol_full_exit, merged_macro_and_group_reduction, macro_buy_pause, symbol_daily_rule, macro_rebuild, symbol_rebuild_or_initial_buy]
+  rules:
+    - id: nasdaq_two_percent_trim_and_rebuild
+      scenario_ref: portfolio_macro_session_decline
+      bindings: {metric: nasdaq_session_return, threshold_param: macro_decline_return}
+      evaluation: {on: every_fresh_observation, session: regular, before_initial_buy: true}
+      numeric_condition: {operator: lte, threshold_param: macro_decline_return}
+      routing: numeric_mandatory_laya_context
+      response:
+        action: trim_sleeve_and_rebuild
+        scope: all_strategy_owned_holdings
+        sizing: {trim_param: macro_trim_size, basis: current_shares_at_trigger_snapshot}
+        block_buys_immediately: true
+        cancel: strategy_owned_pending_buys
+        state_machine:
+          phases: [normal, reduction_pending, awaiting_positive_session, rebuilding]
+          recovery_observation: daily_decision_on_a_later_exchange_session
+          recovery_requires: all_macro_reduction_orders_reconciled
+          start_rebuilding_when: nasdaq_session_return_is_strictly_positive
+          rebuild_step_param: macro_rebuild_step
+          rebuild_step_basis: original_allocation_usd_per_symbol
+          rebuild_target: holdings.max_holding_times_original_allocation
+          once_started: each_session_even_if_not_positive_unless_retriggered
+          cash_limit: unreserved_strategy_cash_and_account_risk
+          no_cash_or_buy_block: defer_without_claiming_completion
+          complete: all_eligible_symbols_at_target_within_rounding_tolerance
+          retrigger: verified_minus_2_percent_on_new_session
+          retrigger_response: trim_current_shares_40_percent_and_restart_wait
+          same_session_repeated_crossing: no_second_trim
+          symbol_full_exit: preserve_symbol_wait_or_closed_state_never_override
+          eligible_symbols: held_at_macro_trigger_and_not_later_closed
+          before_initial_buy: block_initial_funding_wait_for_positive_session
+          initial_funding_after_wait: original_100_percent_allocation_not_macro_150_percent_rebuild
+        includes_other_strategies: false
+      idempotency: [strategy_hash, session_id, overlay_id, symbol]
+
+    - id: hardware_rally_software_to_cash
+      scenario_ref: hardware_rally_software_cash_trim
+      bindings: {metric: hardware_session_return, target_group: software}
+      evaluation: {on: daily_decision, once_per_session: true, skip_initial_funding_session: true}
+      numeric_condition: {operator: gt, threshold: "0%"}
+      routing: numeric_mandatory_laya_context
+      response:
+        action: trim_group_to_cash
+        target_group: software
+        sizing:
+          method: proportional_positive_return
+          # fraction = clamp(max(return, 0) / 5% * 30%, 0, 100%).
+          anchor_return_param: hardware_anchor_return
+          anchor_trim_param: software_anchor_trim
+          maximum_fraction: "100%"
+          basis: each_symbol_current_shares_at_single_decision_snapshot
+          aggregation: one_group_trim_not_one_trim_per_hardware_symbol
+          whole_shares: floor_requested_sell_quantity_log_subshare_remainder
+        proceeds: locked_strategy_cash
+        reserve_attribution: actual_filled_proceeds_up_to_requested_rotation_quantity
+        prohibit_hardware_purchase: true
+        software_buys_after_trim: next_session_subject_to_unreserved_cash_and_other_buy_gates
+        daily_trim_conflict: larger_fraction_of_same_snapshot_not_sum
+        symbol_full_exit_conflict: full_exit_wins
+        software_add_or_rebuild_conflict: reduction_wins_no_same_session_buy
+      idempotency: [strategy_hash, session_id, overlay_id, software_symbol]
+  resolution:
+    partial_reduction_conflict: largest_sell_fraction_of_one_snapshot_not_sum
+    full_exit_conflict: sell_all_and_keep_correct_exit_state
+    reductions_precede_buys: true
+    at_most_one_buy_per_symbol_per_session: true
+    macro_rebuild_vs_daily_add: larger_target_increment_not_sum
+    macro_rebuild_vs_daily_hold: macro_rebuild_wins_after_recovery_starts
+    macro_rebuild_vs_daily_trim: reduction_wins_defer_rebuild
+    restricted_symbol_reentry: existing_waiting_condition_then_20_percent_to_100_before_macro_topup
+    target_reached_test: market_value_vs_fixed_original_usd_cap
+    price_appreciation_above_cap: no_add_no_automatic_sell_without_a_sell_rule
+
+monitoring:
+  enabled: true
+  mode: shadow
+  scope: {held_positions: true, pending_orders: true, market_inputs: true}
+  required_symbols: [MSFT, GOOGL, META, ORCL, NFLX, NVDA, AAPL, AMZN, AVGO, TSLA, AMD]
+  index_feed_required: NASDAQ_COMPOSITE
+  scenarios:
+    catalog: scenario-catalog.yaml
+    selected_by: portfolio_overlays.rules.scenario_ref
+    catalog_hash: pinned_at_strategy_activation
+  evaluation: {timezone: America/New_York, deadline: 45s, min_gap: 30s}
+  evidence:
+    as_of: evaluation_time
+    allow_future_data: false
+    include: [macro_prices, member_prices, relevant_macro_news, assumption_definitions, position_state]
+    news_content: {enabled: true, max_articles: 8, max_total_characters: 16000}
+    document_instructions: treat_as_untrusted_data
+  tiers:
+    t0: {provider: deterministic, checks: [input_freshness, comparable_price_basis, ownership, mode, budget]}
+    t1:
+      provider: laya
+      questions: from_assumptions_assigned_to_this_tier
+      model_profile: typed_decisions
+      timeout: 5s
+      retries: 0
+      confidence_floor: 0.75
+      result_max_age: 30min
+    t2:
+      provider: claude_sonnet
+      questions: from_assumptions_assigned_to_this_tier
+      model_profile: deep_assessment
+      timeout: 30s
+      retries: 0
+      confidence_floor: 0.80
+      result_max_age: 30min
+      escalate_on: [material_macro_news, t1_uncertain_on_threshold_crossing]
+  outputs:
+    required_per_question: [assumption_id, question_id, answer, confidence, evidence_ids, rationale]
+    statuses: [supported, contradicted, uncertain, not_applicable]
+    numeric_overlay_status_independent_of_semantic_assessment: true
+  responses:
+    allowed_actions: [log, notify_dashboard, request_t2, block_new_entries, trim_sleeve_and_rebuild, trim_group_to_cash, cancel_strategy_pending_buys, latch_buy_pause]
+    on_missing_required_market_input: [block_new_entries, notify_dashboard]
+    on_provider_unavailable: [log, notify_dashboard]
+    model_failure_cannot_disable_numeric_reduction: true
+    shadow_mode: audit_only_no_orders_or_buy_pauses
+  budget:
+    inherit_account_caps: true
+    max_calls_per_ticker_per_hour: {t1: 4, t2: 1}
+    max_paid_calls_per_strategy_per_day: 10
+    max_estimated_cost_usd_per_strategy_per_day: 2
+    cache_key: [strategy_hash, assumption_context_hash, evidence_snapshot_hash, tier]
+  audit:
+    store: [trigger_facts, references, snapshot_id, model_answers, rule_priority, target_qty, filled_qty, cash_reserve, pause_state, usage]
+    durable_before_order_submission: true
+
+execution:
+  mode: manual
+  activation: requires_supported_validator_replay_and_owner_paper_enforcement
+  model_actions: contextual_only
+  numeric_overlay_orders: inherit_owner_selected_paper_execution_mode
+  order_semantics:
+    merge_to_one_target_per_symbol: true
+    subtract_working_sell_quantity: true
+    cancel_fill_race: reconcile_actual_fills_before_new_target
+    partial_fill: continue_only_remaining_authorized_quantity
+    blocked_sell: retain_exit_intent_and_notify
+    reserved_cash: actual_net_fill_proceeds_only
+    recheck: [strategy_version, ownership, approval, risk, prices, broker_state]
+limits:
+  max_drawdown: "15%"

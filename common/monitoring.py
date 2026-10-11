@@ -34,7 +34,7 @@ def held(c):
 
 
 def required(c,s):
-    return sorted(s.symbols) if s.kind=='portfolio' else [r['symbol'] for r in rows(c)]
+    return sorted({*s.symbols,*getattr(s,'input_symbols',[])}) if s.kind=='portfolio' else [r['symbol'] for r in rows(c)]
 
 
 def coverage(c,s):

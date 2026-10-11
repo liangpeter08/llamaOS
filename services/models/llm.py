@@ -21,6 +21,10 @@ PRICES = {
 FALLBACK_MODELS = {"claude-opus-5-5", "claude-sonnet-5-5"}
 
 _client = None
+# Set by backtest replays: calls get a "replay." task prefix and their own daily quota, so a replay can
+# never use up the calls live triage needs.
+import contextvars
+REPLAY = contextvars.ContextVar("llm_replay", default=False)
 
 
 class LLMUnavailable(RuntimeError):
@@ -78,22 +82,26 @@ def _request(model: str, system: str, messages: list, max_tokens: int, effort: s
 
 
 def call(conn, *, model: str, task: str, system: str, messages: list, max_tokens: int = 16000,
-         effort: str = "medium", schema: dict | None = None, cache: bool = False, timeout: float | None = None):
+         effort: str = "medium", schema: dict | None = None, cache: bool = False, timeout: float | None = None,
+         max_output: int = 8000, max_context_chars: int = 64000):
     """Returns (text, parsed_json_or_None, response). Raises LLMUnavailable or anthropic errors."""
     import anthropic
 
     # Reserve the daily call quota before making the external request.
     cfg=load_yaml("models.yaml")
-    cap=int(cfg.get("budgets",{}).get("total_calls_per_day",200))
+    replay=REPLAY.get()
+    if replay and not task.startswith("replay."):
+        task="replay."+task
+    cap=int(cfg.get("budgets",{}).get("replay_calls_per_day" if replay else "total_calls_per_day",2000 if replay else 200))
     day=time.strftime("%Y-%m-%d",time.gmtime())
-    key="models.call_quota."+day
+    key=("models.replay_quota." if replay else "models.call_quota.")+day
     with db.tx(conn):
         conn.execute("SELECT pg_advisory_xact_lock(?)",(0x4d4f44454c,))
         used=int(db.kv_get(conn,key) or 0)
         if used>=cap:raise LLMUnavailable("Daily model call limit reached")
         db.kv_set(conn,key,used+1)
-    if len(json.dumps(messages))>64000:raise LLMUnavailable("Model context is too large; start a new conversation")
-    max_tokens=min(max_tokens,8000)
+    if len(json.dumps(messages))>max_context_chars:raise LLMUnavailable("Model context is too large; start a new conversation")
+    max_tokens=min(max_tokens,max_output)
     t0 = time.time()
     try:
         resp = _request(model, system, messages, max_tokens, effort, schema, cache, timeout)

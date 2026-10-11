@@ -26,19 +26,18 @@ def norm_hash(headline: str) -> str:
     return hashlib.sha1(n.encode()).hexdigest()[:16]
 
 
-def t0(conn, item: dict) -> tuple[bool, str, list[str]]:
-    """Returns (keep, reason, symbols-in-universe)."""
-    uni = set(universe())
+def t0(conn, item: dict, symbols: list[str] | None = None, replay: bool = False) -> tuple[bool, str, list[str]]:
+    """Returns (keep, reason, symbols-in-universe). Replays dedupe against every earlier story, triaged or not."""
+    uni = set(symbols if symbols is not None else universe())
     syms = [s for s in item["symbols"] if s in uni]
     if not syms:
         return False, "no universe symbols", []
     if heuristic.is_roundup(item["headline"]) or len(item["symbols"]) > 3:
         return False, "recap/roundup", syms
     h = norm_hash(item["headline"])
-    for r in conn.execute(
-        "SELECT headline FROM news WHERE ts >= ? AND ts <= ? AND id != ? AND triage IN ('t1','escalated')",
-        (item["ts"] - DEDUPE_WINDOW_S, item["ts"], item["id"]),
-    ):
+    sql = ("SELECT headline FROM news WHERE ts >= ? AND ts <= ? AND id < ?" if replay else
+           "SELECT headline FROM news WHERE ts >= ? AND ts <= ? AND id != ? AND triage IN ('t1','escalated')")
+    for r in conn.execute(sql, (item["ts"] - DEDUPE_WINDOW_S, item["ts"], item["id"])):
         if norm_hash(r["headline"]) == h:
             return False, "duplicate (normalized headline within 6h)", syms
     return True, "kept", syms
@@ -99,14 +98,15 @@ def write_signals(conn, news_id: int, symbols: list[str], ans: dict, tier: str, 
     return sigs
 
 
-def triage(conn, item: dict, stamp_ts: int, allow_paid: bool = True) -> dict:
-    """Triage one news row. stamp_ts is the (simulated) time the signals become available."""
+def assess(conn, item: dict, allow_paid: bool = True, symbols: list[str] | None = None, replay: bool = False) -> dict:
+    """The triage decision for one story, without writing anything.
+
+    Returns {status: dropped|t1|escalated, reason, symbols, final, tier, detail, why}. A replay (backtest) uses no
+    notes or theses, because the current ones didn't exist when the story was published."""
     cfg = load_yaml("models.yaml")
-    keep, reason, syms = t0(conn, item)
+    keep, reason, syms = t0(conn, item, symbols, replay)
     if not keep:
-        conn.execute("UPDATE news SET triage='dropped', triage_reason=?, triaged_at=? WHERE id=?",
-                     (reason, stamp_ts, item["id"]))
-        return {"triage": "dropped", "reason": reason}
+        return {"status": "dropped", "reason": reason, "symbols": syms, "detail": {}}
 
     ql = QuickLayer(conn)
     t1_provider = None
@@ -131,7 +131,7 @@ def triage(conn, item: dict, stamp_ts: int, allow_paid: bool = True) -> dict:
                     pass
                 break
 
-    ctx = _active_context(conn, syms, t1["catalyst"]["value"])
+    ctx = {"notes": [], "theses": []} if replay else _active_context(conn, syms, t1["catalyst"]["value"])
     why = _should_escalate(t1, ctx, cfg, disagreement)
     final, tier = t1, "t1"
     detail = {"t1": {k: t1[k] for k in ("catalyst", "direction", "materiality")} | {"model": t1.get("model")}}
@@ -140,7 +140,7 @@ def triage(conn, item: dict, stamp_ts: int, allow_paid: bool = True) -> dict:
     if why:
         budget = int((cfg.get("budgets") or {}).get("t2_calls_per_day", 30))
         paid_t2 = allow_paid and llm.available()
-        if paid_t2 and llm.calls_today(conn, "t2") >= budget:
+        if paid_t2 and not replay and llm.calls_today(conn, "t2") >= budget:
             why.append(f"T2 budget exhausted ({budget}/day): using offline deep read")
             paid_t2 = False
         context = {
@@ -161,17 +161,24 @@ def triage(conn, item: dict, stamp_ts: int, allow_paid: bool = True) -> dict:
         detail["t2"] = {k: final[k] for k in ("catalyst", "direction", "materiality")} | {"model": final.get("model")}
 
     if not final["new_info"]["value"]:
-        conn.execute("UPDATE news SET triage='dropped', triage_reason=?, triaged_at=?, tier_detail=? WHERE id=?",
-                     ("no new information", stamp_ts, json.dumps(detail), item["id"]))
-        return {"triage": "dropped", "reason": "no new information"}
-
+        return {"status": "dropped", "reason": "no new information", "symbols": syms, "detail": detail, "final": final, "tier": tier}
     if final["catalyst"]["value"] == "macro":
-        conn.execute("UPDATE news SET triage='dropped', triage_reason=?, triaged_at=?, tier_detail=? WHERE id=?",
-                     ("macro story, not company-specific", stamp_ts, json.dumps(detail), item["id"]))
-        return {"triage": "dropped", "reason": "macro"}
+        return {"status": "dropped", "reason": "macro story, not company-specific", "symbols": syms, "detail": detail,
+                "final": final, "tier": tier}
+    return {"status": "escalated" if tier == "t2" else "t1", "reason": "; ".join(why) if why else "T1 confident",
+            "symbols": syms, "final": final, "tier": tier, "detail": detail, "why": why}
 
+
+def triage(conn, item: dict, stamp_ts: int, allow_paid: bool = True) -> dict:
+    """Triage one news row. stamp_ts is the (simulated) time the signals become available."""
+    a = assess(conn, item, allow_paid)
+    if a["status"] == "dropped":
+        conn.execute("UPDATE news SET triage='dropped', triage_reason=?, triaged_at=?, tier_detail=? WHERE id=?",
+                     (a["reason"], stamp_ts, json.dumps(a["detail"]) if a["detail"] else None, item["id"]))
+        return {"triage": "dropped", "reason": "macro" if a["reason"].startswith("macro") else a["reason"]}
+    final, tier, syms, why, detail = a["final"], a["tier"], a["symbols"], a["why"], a["detail"]
     sigs = write_signals(conn, item["id"], syms, final, tier, stamp_ts)
-    status = "escalated" if tier == "t2" else "t1"
+    status = a["status"]
     conn.execute("UPDATE news SET triage=?, triage_reason=?, triaged_at=?, tier_detail=? WHERE id=?",
                  (status, "; ".join(why) if why else "T1 confident", stamp_ts, json.dumps(detail), item["id"]))
     return {"triage": status, "signals": {k: v[0] for k, v in sigs.items()}, "rationale": final.get("rationale")}

@@ -1,7 +1,7 @@
 """Fund controls: cash reserve, deployed capital and per-strategy allocations. Pure functions.
 
 Every strategy line (its `id`, across versions) owns a reserved slice of the account: an
-allocation as a share of equity. Allocations add up to at most `funds.max_deployed`, so one
+allocation as a share of equity, or a fixed dollar amount (its share then moves with equity). Allocations add up to at most `funds.max_deployed`, so one
 strategy can never spend another's money. Each slice has its own drawdown stop (pauses the
 strategy) and, for intraday strategies, a daily loss stop (no new entries until tomorrow).
 """
@@ -18,7 +18,7 @@ from .risk_guard import Check
 class StrategyFund:
     sid: str
     kind: str  # intraday | portfolio
-    allocation: float  # share of equity
+    allocation: float  # share of equity (for a fixed-dollar allocation: its current share)
     source: str  # set | default
     max_drawdown: float  # share of the allocation
     daily_loss: float | None  # share of the allocation (intraday only)
@@ -30,6 +30,7 @@ class StrategyFund:
     deployed: float = 0.0  # $ in positions + working buys
     pnl: float = 0.0  # since base_ts: realized + open
     pnl_today: float = 0.0
+    fixed_usd: float | None = None  # fixed-dollar allocation; None = `allocation` of equity
 
     @property
     def drawdown(self) -> float:
@@ -37,7 +38,7 @@ class StrategyFund:
         return max(0.0, self.peak_pnl - self.pnl) / self.base_usd if self.base_usd else 0.0
 
     def cap_usd(self, equity: float) -> float:
-        return self.allocation * equity
+        return self.fixed_usd if self.fixed_usd is not None else self.allocation * equity
 
 
 @dataclass

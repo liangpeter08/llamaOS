@@ -9,17 +9,33 @@ import { LineChart } from "@/components/LineChart";
 import { Chat } from "@/components/Chat";
 import { Card, Empty, Loading, Notice, Pill, Stat, StatusPill } from "@/components/ui";
 import { isOwner, useSession } from "@/components/session";
-import { PortfolioBacktest, SleeveCard } from "@/components/Portfolio";
+import { OverlaysCard, PortfolioBacktest, SleeveCard } from "@/components/Portfolio";
+import { CategoryEditor, DeleteZone } from "@/components/Organize";
+import { AllocationInput, allocText, allocValue, type AllocMode } from "@/components/Allocation";
 
 export default function StrategyPage() {
   const { hash } = useParams<{ hash: string }>();
   const { data, error, reload } = usePoll<any>(`/api/strategies/${hash}`, 5000);
   const { me } = useSession();
+  const router = useRouter();
+  const [deleteRuns, setDeleteRuns] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "bad"; text: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   if (!data) return <Loading error={error} />;
   const { s, validation: v, backtest: bt } = data;
   const portfolio = data.kind === "portfolio";
+
+  async function remove() {
+    setBusy("delete");
+    try {
+      await post(`/api/strategies/${s.hash}/delete`, { confirm: s.sid, delete_runs: deleteRuns });
+      const next = data.versions.filter((vv: any) => vv.hash !== s.hash).slice(-1)[0];
+      router.replace(next ? `/strategies/${next.hash}` : "/strategies");
+    } catch (e) {
+      setMsg({ kind: "bad", text: (e as Error).message });
+      setBusy(null);
+    }
+  }
 
   async function act(label: string, path: string, body: object = {}) {
     if (label === "paper" && !window.confirm("Promoting this strategy will automatically enable monitoring for its required watchlist tickers. Continue?")) return;
@@ -43,6 +59,8 @@ export default function StrategyPage() {
           <h1>{s.display_name || s.sid} <span className="muted">v{s.version}</span></h1>
           <div className="row">
             <StatusPill status={s.status} />
+            {s.archived_at && <Pill kind="warn">archived {wall(s.archived_at)}</Pill>}
+            {data.category && <Link href="/strategies"><Pill>{data.category}</Pill></Link>}
             <Pill kind={portfolio ? "accent" : ""}>{portfolio ? "portfolio · held overnight" : "intraday"}</Pill>
             <Pill>mode: {s.mode}</Pill>
             {data.fund && <Link href="/funds"><Pill kind={data.fund.status === "active" ? "" : "bad"}>fund {pct(data.fund.allocation, 1)} of equity{data.fund.status !== "active" ? ` · ${data.fund.status}` : ""}</Pill></Link>}
@@ -54,7 +72,8 @@ export default function StrategyPage() {
         <div className="row">
           {data.versions.map((vv: any) => (
             <span key={vv.hash} className="row" style={{ gap: 4 }}>
-              <Link className={`btn ${vv.hash === s.hash ? "on" : ""}`} href={`/strategies/${vv.hash}`}>v{vv.version}</Link>
+              <Link className={`btn ${vv.hash === s.hash ? "on" : ""}`} href={`/strategies/${vv.hash}`} title={vv.archived_at ? "archived" : vv.status}
+                style={vv.archived_at ? { opacity: 0.55 } : undefined}>v{vv.version}</Link>
               {vv.hash !== s.hash && <Link className="muted" href={`/strategies/${s.hash}/diff?against=${vv.hash}`}>diff</Link>}
             </span>
           ))}
@@ -68,7 +87,9 @@ export default function StrategyPage() {
       </Card>
       {v.warnings.length > 0 && <Notice kind="warn">{v.warnings.map((w: string) => <div key={w}>{w}</div>)}</Notice>}
 
-      {isOwner(me) && <Lifecycle s={s} ok={v.ok} busy={busy} act={act} minPaper={data.lifecycle?.min_paper_sessions ?? 0} />}
+      {isOwner(me) && <Lifecycle s={s} ok={v.ok} busy={busy} act={act} minPaper={data.lifecycle?.min_paper_sessions ?? 0}
+        needsReview={!!data.portfolio?.overlays?.review_required} category={data.category} categories={data.categories} fund={data.fund_suggest} />}
+      {isOwner(me) && <Duplicate s={s} />}
 
       <div className="grid g2 mt">
         <Card title="Assumptions (need your OK)">
@@ -89,8 +110,10 @@ export default function StrategyPage() {
       </div>
 
       {portfolio && <SleeveCard p={data.portfolio} decideAt={data.decide_at ?? "15:45"} />}
+      {portfolio && data.portfolio?.overlays && <OverlaysCard o={data.portfolio.overlays} hash={s.hash} act={act} busy={busy} />}
 
       <Card title="Backtest" className="mt">
+        <p><Link href={`/backtests?strategy=${s.hash}`}>Configure a new experiment and review saved runs →</Link>{bt?.run_id && <> · <Link href={`/backtests?run=${bt.run_id}`}>Open run #{bt.run_id}</Link></>}</p>
         {bt && bt.kind === "portfolio" ? <PortfolioBacktest bt={bt} /> : bt ? (
           <>
             <div className="grid g4">
@@ -141,24 +164,58 @@ export default function StrategyPage() {
           intro="A new conversation, seeded with the strategy file, back-translation, backtest report and recent decision records. Claude can explain and critique, and propose changes only as a diff, which you can accept as a new draft version." />
         {isOwner(me) && <ApplyDiff hash={s.hash} />}
       </Card>
+
+      {isOwner(me) && (
+        <DeleteZone what={`version (v${s.version})`} confirmText={s.sid} blockers={data.delete_blockers} busy={!!busy} onDelete={remove}>
+          <p className="muted">
+            Removes <span className="mono">{s.path}</span>, its registry entry and its sleeve/overlay state.
+            {data.versions.length > 1 ? ` Other versions of ${s.sid} are not affected.` : " This is the only version of this strategy."}{" "}
+            Simulated trades and the audit log are kept.
+          </p>
+          {data.saved_runs > 0 && (
+            <label className="row" style={{ marginBottom: 8 }}>
+              <input type="checkbox" checked={deleteRuns} onChange={(e) => setDeleteRuns(e.target.checked)} />
+              Also delete its {data.saved_runs} saved backtest run{data.saved_runs === 1 ? "" : "s"} (otherwise they stay in Backtesting with their own copy of the file)
+            </label>
+          )}
+        </DeleteZone>
+      )}
     </>
   );
 }
 
-function Lifecycle({ s, ok, busy, act, minPaper }: { s: any; ok: boolean; busy: string | null; act: (l: string, p: string, b?: object) => void; minPaper: number }) {
+function Lifecycle({ s, ok, busy, act, minPaper, needsReview, category, categories, fund }: { s: any; ok: boolean; busy: string | null; act: (l: string, p: string, b?: object) => void; minPaper: number; needsReview: boolean; category: string | null; categories: string[]; fund: any }) {
   const [mode, setMode] = useState(s.mode);
   const [reviewed, setReviewed] = useState(false);
+  const [promoting, setPromoting] = useState(false);
   const base = `/api/strategies/${s.hash}`;
   return (
     <Card title="Lifecycle" className="mt">
       <div className="row">
-        <button disabled={!ok || !!busy} onClick={() => act("bt", `${base}/backtest`)}>{busy === "bt" ? "Backtesting…" : "Run backtest"}</button>
-        {s.status === "backtested" && <button className="primary" disabled={!!busy} onClick={() => act("paper", `${base}/promote`, { to: "paper" })}>Promote to paper</button>}
+        {ok && <Link className="btn" href={`/backtests?strategy=${s.hash}`}>Configure backtest</Link>}
+        {s.status === "backtested" && <button className="primary" disabled={!!busy || !!s.archived_at} title={s.archived_at ? "Unarchive first" : undefined}
+          onClick={() => setPromoting(!promoting)}>{promoting ? "Cancel promotion" : "Promote to paper…"}</button>}
         {s.status !== "retired" && <button disabled={!!busy} onClick={() => act("retire", `${base}/promote`, { to: "retired" })}>Retire</button>}
         <span className="row" style={{ marginLeft: 12 }}>
           <select value={mode} onChange={(e) => setMode(e.target.value)}>{["manual", "auto", "paper"].map((m) => <option key={m}>{m}</option>)}</select>
           <button disabled={!!busy || mode === s.mode} onClick={() => act("mode", `${base}/mode`, { mode })}>Set mode</button>
         </span>
+      </div>
+      {promoting && s.status === "backtested" && (
+        <PromotePanel fund={fund} busy={!!busy} onPromote={(alloc) => {
+          if (needsReview && !window.confirm("This file's authoring defaults are proposed, not confirmed (authoring.status: proposed_requires_review). Promote only if you reviewed them, the back-translation and the assumptions.")) return;
+          act("paper", `${base}/promote`, { to: "paper", ...(needsReview ? { reviewed: true } : {}), ...alloc });
+          setPromoting(false);
+        }} />
+      )}
+      <div className="row" style={{ marginTop: 10 }}>
+        <CategoryEditor key={category ?? ""} value={category} categories={categories} busy={!!busy}
+          onSave={(c) => act("category", "/api/strategies/meta", { hashes: [s.hash], category: c })} />
+        <span className="muted">applies to every version of {s.sid}</span>
+        {s.archived_at
+          ? <button disabled={!!busy} onClick={() => act("archive", "/api/strategies/meta", { hashes: [s.hash], archived: false })}>Unarchive</button>
+          : <button disabled={!!busy || ["paper", "live"].includes(s.status)} title={["paper", "live"].includes(s.status) ? "Retire it first" : "Hide this version from the strategy list"}
+              onClick={() => act("archive", "/api/strategies/meta", { hashes: [s.hash], archived: true })}>Archive version</button>}
       </div>
       {s.status === "paper" && (
         <div className="card" style={{ marginTop: 12 }}>
@@ -171,6 +228,73 @@ function Lifecycle({ s, ok, busy, act, minPaper }: { s: any; ok: boolean; busy: 
           </div>
         </div>
       )}
+    </Card>
+  );
+}
+
+function PromotePanel({ fund, busy, onPromote }: { fund: any; busy: boolean; onPromote: (alloc: object) => void }) {
+  const cur = fund?.current;
+  const [mode, setMode] = useState<AllocMode>(cur?.mode ?? "pct");
+  const [value, setValue] = useState(fund ? allocValue(cur?.mode ?? "pct", cur ? cur.allocation : fund.suggested, cur ? cur.usd : fund.suggested * fund.equity) : "");
+  if (!fund) {
+    return (
+      <div className="card" style={{ marginTop: 12 }}>
+        <p className="muted">Fund controls are off, so this strategy runs without its own allocation.</p>
+        <button className="primary" disabled={busy} onClick={() => onPromote({})}>Promote to paper</button>
+      </div>
+    );
+  }
+  return (
+    <div className="card" style={{ marginTop: 12 }}>
+      <b>Fund allocation on paper</b>
+      <p className="muted">
+        The money this strategy may use. A percent of the fund grows and shrinks with equity; a fixed amount stays put. Its rules can use up to {pct(fund.wants, 1)} of
+        equity; {pct(fund.room, 1)} (${money(fund.room * fund.equity)}) is unallocated.
+        {cur && " This strategy line already has an allocation from an earlier version; saving here replaces it."}
+        {fund.kind === "portfolio" && " A new sleeve is sized to fit this allocation."}
+      </p>
+      <div className="row">
+        <AllocationInput mode={mode} value={value} equity={fund.equity} disabled={busy}
+          onMode={(m, v) => { setMode(m); setValue(v); }} onValue={setValue} />
+        <button className="primary" disabled={busy || !value.trim()}
+          onClick={() => onPromote({ allocation: allocText(mode, value), alloc_mode: mode })}>Promote to paper</button>
+      </div>
+      <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>Turn it on or off and adjust the allocation later on the Overview page.</p>
+    </div>
+  );
+}
+
+function Duplicate({ s }: { s: any }) {
+  const router = useRouter();
+  const [name, setName] = useState(`${s.display_name || s.sid} copy`);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function duplicate(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await post<any>(`/api/strategies/${s.hash}/duplicate`, { name });
+      router.push(`/strategies/${r.hash}`);
+    } catch (err) {
+      setError((err as Error).message);
+      setBusy(false);
+    }
+  }
+  return (
+    <Card title="Duplicate" className="mt">
+      <p className="muted" style={{ marginTop: 0 }}>
+        Copy this file into a new, separate draft strategy (v1, own lifecycle and fund). The original and its versions are untouched.
+      </p>
+      {error && <Notice kind="bad">{error}</Notice>}
+      <div className="row">
+        <Link className="btn primary" href={`/strategies/new?improve=${s.hash}`}>Duplicate &amp; improve with Claude</Link>
+        <span className="muted">tell Claude what&apos;s wrong with it; it drafts a better copy you can backtest and review before saving</span>
+      </div>
+      <form className="row" style={{ marginTop: 10 }} onSubmit={duplicate}>
+        <input value={name} onChange={(e) => setName(e.target.value)} maxLength={80} required style={{ flex: 1, minWidth: 160 }} placeholder="Name of the copy" />
+        <button disabled={busy || !name.trim()}>{busy ? "Duplicating…" : "Duplicate as-is"}</button>
+      </form>
     </Card>
   );
 }

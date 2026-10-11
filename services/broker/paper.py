@@ -27,6 +27,7 @@ from core import funds as F
 
 log = logging.getLogger("paper")
 LOCK = 0x5041504552
+DAILY_FETCH_DAYS = 400  # calendar days of daily bars: enough for the DSL's 250-session daily features
 TERMINAL = {"filled", "canceled", "expired", "rejected", "replaced"}
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS paper_intents(
@@ -60,6 +61,7 @@ class PaperBroker:
         self.paused = bool(db.kv_get(self.conn, "paper.paused"))
         self.book = SignalBook()
         self.days = {}
+        self.refs = {}  # reference-only symbols read by peer(): bars kept current, never traded
         self.positions = []
         self.open_orders = []
         self.account_data = {}
@@ -78,6 +80,7 @@ class PaperBroker:
         self.day = day
         self.book = SignalBook()
         self.days = {s: DayData(s, day, MD.history(self.conn, s, day)) for s in self.syms}
+        self.refs = {}
         self.last_bar = {}
         self.runners = {}
         self.rows = {}
@@ -87,7 +90,7 @@ class PaperBroker:
             self.close_ts = int(close.timestamp())
             hard = T.ts_at(day, self.risk.flatten_by)
             self.flatten_ts = min(hard, self.close_ts - 5 * 60)
-            daily = self.api.bars(self.syms, "1Day", time.time() - 110 * 86400, T.open_ts(day)) if self.syms else {}
+            daily = self.api.bars(self.syms, "1Day", time.time() - DAILY_FETCH_DAYS * 86400, T.open_ts(day)) if self.syms else {}
             with db.tx(self.conn):
                 for sym, bars in daily.items():
                     for b in bars:
@@ -122,8 +125,10 @@ class PaperBroker:
             self.rows[h] = r
             if h not in self.runners:
                 runner = StrategyRunner(s, self.risk)
-                runner.start_day(self.days, self.book)
+                runner.start_day(self.days, self.book, self.refs)
                 self.runners[h] = runner
+        if self.day is not None:
+            self.sync_refs()
         counts = db.rows(self.conn, "SELECT strategy_hash, COUNT(*) n FROM paper_intents p JOIN intents i ON i.id=p.intent_id"
                         " WHERE p.broker_id IS NOT NULL AND i.ts>=? GROUP BY strategy_hash", (T.open_ts(self.day),))
         for r in counts:
@@ -149,7 +154,7 @@ class PaperBroker:
             if not asset.get('tradable') or asset.get('status') != 'active':
                 raise ValueError('Untradable monitoring ticker: ' + sym)
         if added:
-            for sym, bars in self.api.bars(sorted(added),'1Day',time.time()-110*86400,T.open_ts(self.day)).items():
+            for sym, bars in self.api.bars(sorted(added),'1Day',time.time()-DAILY_FETCH_DAYS*86400,T.open_ts(self.day)).items():
                 for b in bars:
                     day=T.et(epoch(b['t'])).date()
                     if day < self.day:
@@ -163,7 +168,7 @@ class PaperBroker:
         for runner in self.runners.values():
             cooldown = dict(runner.cooldown)
             trades_today = runner.trades_today
-            runner.start_day(self.days,self.book)
+            runner.start_day(self.days,self.book,self.refs)
             runner.cooldown = {s:v for s,v in cooldown.items() if s in self.days}
             runner.trades_today = trades_today
         self.reload()
@@ -172,11 +177,36 @@ class PaperBroker:
         self.last_poll=0
         db.kv_set(self.conn,'monitoring.applied',desired)
 
+    def sync_refs(self):
+        """Keep bars for symbols the running strategies read through peer() but don't trade."""
+        want = sorted({r for runner in self.runners.values() for r in runner.s.references} - set(self.syms))
+        if want == sorted(self.refs):
+            return
+        added = [s for s in want if s not in self.refs]
+        if added and self.close_ts:
+            daily = self.api.bars(added, "1Day", time.time() - DAILY_FETCH_DAYS * 86400, T.open_ts(self.day))
+            with db.tx(self.conn):
+                for sym, bars in daily.items():
+                    for b in bars:
+                        d = T.et(epoch(b["t"])).date()
+                        if d < self.day:
+                            self.conn.execute("INSERT INTO daily(symbol,day,o,h,l,c,v) VALUES (?,?,?,?,?,?,?)"
+                                              " ON CONFLICT(symbol,day) DO UPDATE SET o=excluded.o,h=excluded.h,l=excluded.l,c=excluded.c,v=excluded.v",
+                                              (sym, str(d), b["o"], b["h"], b["l"], b["c"], b["v"]))
+        self.refs = {s: self.refs.get(s) or DayData(s, self.day, MD.history(self.conn, s, self.day)) for s in want}
+        if added and self.close_ts and time.time() > T.open_ts(self.day):
+            self.store_bars(self.api.bars(added, "1Min", T.open_ts(self.day), min(time.time() - 2, self.close_ts)))
+        for runner in self.runners.values():
+            cooldown, trades_today = dict(runner.cooldown), runner.trades_today
+            runner.start_day(self.days, self.book, self.refs)
+            runner.cooldown, runner.trades_today = cooldown, trades_today
+        self.restore_runner_positions()
+
     def store_bars(self, grouped):
         for sym, bars in grouped.items():
-            if sym not in self.days:
+            if sym not in self.days and sym not in self.refs:
                 continue
-            d = self.days[sym]
+            d = self.days.get(sym) or self.refs[sym]
             for b in sorted(bars, key=lambda x: x["t"]):
                 ts = epoch(b["t"])
                 if ts < T.open_ts(self.day) or ts + 60 > min(time.time()-2, self.close_ts):
@@ -499,9 +529,9 @@ class PaperBroker:
         self.commands()
         db.kv_set(self.conn,"sim.now",now)  # existing models/dashboard consume this clock
         if time.time()-self.last_poll>=15:
-            start=min((d.ts[-1] for d in self.days.values() if d.ts),default=T.open_ts(day))
+            start=min((d.ts[-1] for d in [*self.days.values(),*self.refs.values()] if d.ts),default=T.open_ts(day))
             if self.syms and self.close_ts and time.time()>T.open_ts(day):
-                self.store_bars(self.api.bars(self.syms,"1Min",start,min(time.time()-2,self.close_ts)))
+                self.store_bars(self.api.bars(self.syms+[r for r in self.refs if r not in self.syms],"1Min",start,min(time.time()-2,self.close_ts)))
             try:
                 self.signals_and_news(now)
             except httpx.HTTPError:
@@ -572,12 +602,14 @@ class PaperBroker:
         except httpx.HTTPError:
             log.warning('Ticker search catalog unavailable; will retry on restart')
         for sym in self.syms:
-            asset=self.api.asset(sym)
+            asset=_retry(lambda:self.api.asset(sym))
             if not asset.get("tradable") or asset.get("status")!="active":raise ValueError("Untradable watchlist symbol: "+sym)
-        cfg=self.api.request("GET","/v2/account/configurations")
+        cfg=_retry(lambda:self.api.request("GET","/v2/account/configurations"))
         if float(cfg.get("max_margin_multiplier",0))!=1 or (not self.risk.allow_short and not cfg.get("no_shorting")):
             raise RuntimeError("Paper account guards are not applied; run make broker-guard")
         audit.log(self.conn,"broker.start","broker",{"source":"alpaca_paper","mode":mode(),"risk_sha256":self.risk.sha256})
+        from .history_worker import HistoryWorker
+        HistoryWorker(self.api).start()  # backtest data on demand, on its own connection
         while not self.stop:
             try:
                 self.last_error=""
@@ -587,6 +619,18 @@ class PaperBroker:
                 log.error("Paper loop failed (%s); entries remain blocked until a successful refresh",type(e).__name__)
                 db.kv_set(self.conn,"paper.error",{"type":type(e).__name__,"ts":time.time()})
             time.sleep(5)
+
+
+def _retry(call,attempts=5):
+    """Startup checks retry transient network errors (TLS resets, timeouts) instead of stopping the whole stack.
+    HTTP error responses are real answers and are raised at once."""
+    for k in range(attempts):
+        try:
+            return call()
+        except (httpx.TransportError,) as e:
+            if k==attempts-1:raise
+            log.warning("Alpaca request failed (%s); retrying in %ss",type(e).__name__,2**k)
+            time.sleep(2**k)
 
 
 def main():

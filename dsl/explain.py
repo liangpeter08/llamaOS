@@ -23,6 +23,13 @@ _FN = {
     "rvol": "relative volume vs the {0}-day average", "adv": "the {0}-day average dollar volume",
     "atr_d": "the {0}-day daily ATR", "crosses_above": "{0} crosses above {1}",
     "crosses_below": "{0} crosses below {1}", "streak": "the number of consecutive bars on which {0}",
+    # builtins@v2: completed prior sessions only
+    "ret_d": "the {0}-session return to yesterday's close", "vol_d": "the {0}-session daily volatility",
+    "vol_rank": "the share (0-1) of the previous {1} sessions whose {0}-session volatility was at or below today's",
+    "sma_d": "the {0}-session average close", "zscore_d": "the z-score of yesterday's close vs its {0}-session average",
+    "highest_d": "the highest close of the last {0} sessions", "lowest_d": "the lowest close of the last {0} sessions",
+    "up_days": "the share of the last {0} sessions that closed up", "corr_d": "the {1}-session return correlation with {0}",
+    "beta_d": "the {1}-session beta to {0}", "peer": "[for {0}, at this moment: {1}]",
 }
 
 
@@ -78,10 +85,16 @@ def back_translate(s: Strategy) -> str:
     if getattr(s, "kind", "intraday") == "portfolio":
         return back_translate_portfolio(s)
     lines = [f"{s.id} v{s.version}: a {s.side}-only intraday strategy on 1-minute bars."]
-    uni = "symbols in the watchlist"
+    uni = ", ".join(s.universe_symbols) if s.universe_symbols else "symbols in the watchlist"
     if s.universe_news_today:
         uni += " that have recorded news since yesterday's close"
     lines.append(f"Universe: {uni}" + (", where " + "; and ".join(say(f, s) for f in s.universe_filters) if s.universe_filters else "") + ".")
+    if s.references:
+        lines.append(f"Also reads (never trades): {', '.join(r for r in s.references if r not in s.universe_symbols)}; a reference "
+                     "value is missing when that symbol has no bar within 2 minutes, and missing values make conditions false."
+                     if s.input_symbols else f"Reads cross-symbol values from {', '.join(s.references)}.")
+    if s.daily_lookback:
+        lines.append(f"Daily features use the last {s.daily_lookback} completed sessions; with less history they are missing (false).")
     lines.append(f"Entries are considered at each bar close between {s.entry_window[0]:%H:%M} and {s.entry_window[1]:%H:%M} ET, only when ALL of:")
     lines += [f"  {k + 1}. {say(c, s)}" for k, c in enumerate(s.entry_when_all)]
     lines.append(f"Size: risk {s.risk_per_trade:.2%} of equity between entry and stop, capped by the position and fund limits (Risk and Funds pages).")
@@ -133,6 +146,12 @@ def _say_p(node: E.Node, s) -> str:
     if isinstance(node, E.BinOp):
         word = {"+": "plus", "-": "minus", "*": "times", "/": "divided by"}[node.op]
         return f"{_say_p(node.l, s)} {word} {_say_p(node.r, s)}"
+    if isinstance(node, E.Num):
+        return node.src
+    if isinstance(node, E.Call):
+        tmpl = _FN.get(node.fn)
+        args = [_say_p(a, s) for a in node.args]
+        return tmpl.format(*args) if tmpl else f"{node.fn}({', '.join(args)})"
     return node.src
 
 
@@ -141,6 +160,10 @@ def back_translate_portfolio(s) -> str:
     lines.append(f"Capital: {s.capital:.0%} of account equity at the first buy, split as:")
     for name, (w, syms) in s.groups.items():
         lines.append(f"  - {name}: {w:.0%} -> {', '.join(syms)} ({w / len(syms):.1%} each)")
+    if getattr(s, "references", None):
+        lines.append(f"Rules also read {', '.join(s.references)} (held or not); a missing quote makes those conditions false.")
+    if getattr(s, "daily_lookback", 0):
+        lines.append(f"Daily features use the last {s.daily_lookback} completed sessions; with less history they are missing (false).")
     lines.append("First session: buy every symbol's full allocation with market orders.")
     lines.append(f"Every session at {s.decide_at:%H:%M} ET, for each symbol, the FIRST matching rule applies:")
     for k, r in enumerate(s.rules):
@@ -165,5 +188,56 @@ def back_translate_portfolio(s) -> str:
     dd = s.limits.get("max_drawdown")
     lines.append("Sleeve stop: sell everything if the sleeve falls "
                  + (f"{dd:.0%}" if dd else "by the sleeve drawdown stop on the Risk page") + " from its peak value.")
-    lines.append("Not flattened at the close; every buy is checked against the portfolio and fund controls (Risk and Funds pages). Uses no model signals (price-only).")
+    if getattr(s, "v2", None) is not None:
+        lines += _overlays_text(s)
+    lines.append("Not flattened at the close; every buy is checked against the portfolio and fund controls (Risk and Funds pages). "
+                 + ("Monitored assumptions are model context only; numeric overlays never wait for a model." if getattr(s, "v2", None)
+                    else "Uses no model signals (price-only)."))
     return "\n".join(lines)
+
+
+_DSL_OP = {"lte": "<=", "lt": "<", "gt": ">", "gte": ">="}
+
+
+def _overlays_text(s) -> list[str]:
+    v2 = s.v2
+    p = lambda name: _fmt_num(s.params[name], name, s)  # noqa: E731
+    out = []
+    for i in v2.inputs.values():
+        if i.kind == "index":
+            out.append(f"Market input {i.name}: {i.instrument} vs its previous regular-session close, from the account's index feed "
+                       f"(fresh within {i.max_age:.0f}s; no proxy). " + ("Missing: buys are blocked." if i.required else ""))
+        else:
+            out.append(f"Market input {i.name}: equal-weight mean of {', '.join(i.symbols)} returns vs their split-adjusted prior "
+                       f"closes, at the latest completed 1-minute bar they all share (fresh within {i.max_age:.0f}s). A missing "
+                       "member makes it unknown; it is never reweighted.")
+    for o in v2.overlays:
+        if o.action == "trim_sleeve_and_rebuild":
+            when = "on every fresh observation during the regular session" if o.on == "every_fresh_observation" else "at the daily decision"
+            out.append(f"Overlay {o.id}: {when}, if {o.metric} {_OPS[_DSL_OP[o.operator]]} {p(o.threshold_param)}: sell {p(o.trim_param)} of "
+                       "every holding's current shares (at most once per session), cancel this strategy's pending buys and pause buying. "
+                       f"On a later session where {o.metric} is above 0% at the decision, buy {p(o.rebuild_step_param)} of each eligible "
+                       f"symbol's original allocation per session until it reaches {s.max_holding:.0%}, within unreserved cash. "
+                       "A new trigger restarts the wait." + (" If it triggers before the first buy, the first buy waits for a positive "
+                                                             "session and then buys 100% of the allocation." if o.before_initial_buy else ""))
+        elif o.action == "liquidate_sleeve":
+            out.append(f"Overlay {o.id}: if {o.metric} {_OPS[_DSL_OP[o.operator]]} {p(o.threshold_param)}, sell the whole sleeve and finish.")
+        else:
+            out.append(f"Overlay {o.id}: at the daily decision{' (not on the first session)' if o.skip_initial_funding_session else ''}, "
+                       f"if {o.metric} is above 0%, sell from every {o.target_group} holding min({o.metric} / {p(o.anchor_return_param)} "
+                       f"x {p(o.anchor_trim_param)}, {o.max_fraction:.0%}) of its current shares and keep the proceeds as locked cash; "
+                       f"no {o.target_group} buys that session.")
+    if v2.overlays:
+        out.append("When several reductions apply at the same moment, the largest one is sold (never the sum); a full exit wins over "
+                   "any partial reduction, and a symbol being reduced buys nothing that session. A macro rebuild and a daily add "
+                   "take the larger increment, not both.")
+        out.append("Overlay mode: " + ("SHADOW: overlay decisions are logged only; the daily rules alone place orders."
+                                       if v2.mode == "shadow" else
+                                       "ENFORCE once the owner enables it on paper; until then overlay decisions are logged only."))
+    mon = [a for a in v2.assumptions if a.monitored]
+    if mon:
+        out.append("Monitored assumptions (" + ", ".join(f"{a.id} every {a.interval / 60:.0f}min" for a in mon if a.interval)
+                   + ") are model context: they can log and notify"
+                   + (", and critical ones in enforce mode can block new buys" if any(a.critical for a in mon) else "")
+                   + "; they never sell, size or cancel numeric reductions.")
+    return out

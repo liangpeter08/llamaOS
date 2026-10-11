@@ -6,6 +6,7 @@ import { usePoll } from "@/lib/hooks";
 import { money, pct, pnlClass, wall } from "@/lib/format";
 import { Card, Empty, Loading, Meter, Notice, Pill, Stat, StatusPill } from "@/components/ui";
 import { isOwner, useSession } from "@/components/session";
+import { AllocationInput, allocText, allocValue, type AllocMode } from "@/components/Allocation";
 
 export default function Funds() {
   const { data, error, reload } = usePoll<any>("/api/funds", 5000);
@@ -19,7 +20,7 @@ export default function Funds() {
     <>
       <h1>Funds</h1>
       <p className="muted">
-        Where the money is. Each running strategy owns a reserved slice of equity (its allocation) and can&apos;t spend another&apos;s; a cash
+        Where the money is. Each running strategy owns a reserved slice of equity (its allocation, a percent of the fund or a fixed dollar amount) and can&apos;t spend another&apos;s; a cash
         reserve is never deployed. Account-wide limits live on the <Link href="/risk">Risk</Link> page.
       </p>
       {msg && <Notice kind={msg.kind}>{msg.text}</Notice>}
@@ -48,7 +49,7 @@ export default function Funds() {
           <div className="table-wrap"><table>
             <thead><tr><th>Strategy</th><th>Status</th><th className="num">Allocation</th><th>Deployed</th><th className="num">P&amp;L since set</th>
               <th className="num">Today</th><th>Drawdown</th><th className="num">Daily loss stop</th><th></th></tr></thead>
-            <tbody>{data.strategies.map((r: any) => <Row key={r.sid} r={r} owner={isOwner(me)} done={done} />)}</tbody>
+            <tbody>{data.strategies.map((r: any) => <Row key={r.sid} r={r} equity={a.equity} owner={isOwner(me)} done={done} />)}</tbody>
           </table></div>
         )}
         <p className="muted">
@@ -107,9 +108,10 @@ function Budget({ label, used, cap, fmt, note }: { label: string; used: number; 
   );
 }
 
-function Row({ r, owner, done }: { r: any; owner: boolean; done: (k: "ok" | "bad", t: string) => void }) {
+function Row({ r, equity, owner, done }: { r: any; equity: number; owner: boolean; done: (k: "ok" | "bad", t: string) => void }) {
   const [edit, setEdit] = useState(false);
-  const [alloc, setAlloc] = useState(`${+(r.allocation * 100).toFixed(2)}%`);
+  const [mode, setMode] = useState<AllocMode>(r.alloc_mode);
+  const [alloc, setAlloc] = useState(allocValue(r.alloc_mode, r.allocation, r.allocation_usd));
   const [dd, setDd] = useState(`${+(r.max_drawdown * 100).toFixed(2)}%`);
   const [dl, setDl] = useState(r.daily_loss != null ? `${+(r.daily_loss * 100).toFixed(2)}%` : "");
   const [busy, setBusy] = useState(false);
@@ -131,7 +133,9 @@ function Row({ r, owner, done }: { r: any; owner: boolean; done: (k: "ok" | "bad
         <td>{link ? <Link href={link}><b>{r.sid}</b></Link> : <b>{r.sid}</b>} <span className="muted">· {r.kind}</span>
           {r.warning && <div className="neg" style={{ fontSize: 12 }}>{r.warning}</div>}</td>
         <td><StatusPill status={r.status} />{r.reason && <div className="muted" style={{ fontSize: 12 }}>{r.reason}</div>}</td>
-        <td className="num">{pct(r.allocation, 1)}<div className="muted">${money(r.allocation_usd)}{r.source === "default" && " · default"}</div></td>
+        <td className="num">{r.alloc_mode === "usd"
+          ? <>${money(r.allocation_usd)}<div className="muted">fixed · {pct(r.allocation, 1)}</div></>
+          : <>{pct(r.allocation, 1)}<div className="muted">${money(r.allocation_usd)}{r.source === "default" && " · default"}</div></>}</td>
         <td style={{ minWidth: 140 }}>${money(r.deployed)} <span className="muted">({pct(r.used, 0)})</span><Meter frac={r.used ?? 0} danger={(r.used ?? 0) > 0.95} /></td>
         <td className={`num ${pnlClass(r.pnl)}`}>{money(r.pnl, true)}</td>
         <td className={`num ${pnlClass(r.pnl_today)}`}>{money(r.pnl_today, true)}</td>
@@ -152,11 +156,12 @@ function Row({ r, owner, done }: { r: any; owner: boolean; done: (k: "ok" | "bad
         <tr>
           <td colSpan={9}>
             <div className="row">
-              <label>Allocation <input value={alloc} onChange={(e) => setAlloc(e.target.value)} style={{ width: 80 }} /></label>
+              <label className="row">Allocation <AllocationInput mode={mode} value={alloc} equity={equity} disabled={busy}
+                onMode={(m, v) => { setMode(m); setAlloc(v); }} onValue={setAlloc} /></label>
               <label>Drawdown stop <input value={dd} onChange={(e) => setDd(e.target.value)} style={{ width: 80 }} /></label>
               {r.kind === "intraday" && <label>Daily loss stop <input value={dl} onChange={(e) => setDl(e.target.value)} style={{ width: 80 }} /></label>}
               <button className="primary" disabled={busy}
-                onClick={() => call(`/api/funds/${r.sid}`, { allocation: alloc, max_drawdown: dd, daily_loss: r.kind === "intraday" && dl ? dl : null })}>Save</button>
+                onClick={() => call(`/api/funds/${r.sid}`, { allocation: allocText(mode, alloc), alloc_mode: mode, max_drawdown: dd, daily_loss: r.kind === "intraday" && dl ? dl : null })}>Save</button>
               <Pill>{r.wants != null ? `rules can use up to ${pct(r.wants, 1)}` : ""}</Pill>
             </div>
           </td>

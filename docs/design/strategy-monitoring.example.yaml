@@ -1,0 +1,445 @@
+# DESIGN PROPOSAL ONLY. Current DSL 0.1 cannot execute this file.
+# Stored outside strategies/ so the broker will not discover or activate it.
+# Multi-day sleeve/group actions have a separate worked template:
+# portfolio-monitoring.example.yaml (market_inputs + portfolio_overlays).
+dsl: "0.2-proposal"
+id: earnings_thesis_breakout
+version: 1
+name: Earnings Thesis Breakout
+source:
+  text: >-
+    Buy confirmed opening-range breakouts after positive company earnings news,
+    while the earnings thesis remains supported by available evidence.
+
+# Existing deterministic trading rules remain separate from model assessment.
+universe:
+  from: {news_today: true}
+  filters:
+    - prior_close >= min_price
+    - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_price: {value: 10, range: [5, 50]}
+  min_adv: {value: 50_000_000, range: [10_000_000, 500_000_000]}
+  or_minutes: {value: 15, range: [5, 30]}
+  rvol_min: {value: 2.0, range: [1.2, 5.0]}
+  score_min: {value: 0.6, range: [0.3, 0.9]}
+  stop_buffer: {value: "0.1%", range: ["0%", "0.5%"]}
+  target_r: {value: 2.0, range: [1.0, 4.0]}
+signals:
+  news.score: {from: news_agent@v1, max_age: since_prior_close}
+  news.catalyst: {from: news_agent@v1, max_age: since_prior_close}
+  assessment.entry_allowed:
+    from: strategy_monitor@v1
+    type: bool
+    max_age: 5min
+    default: false
+vars:
+  range_high: or_high(or_minutes)
+  stop_level: or_low(or_minutes) * (1 - stop_buffer)
+entry:
+  side: long
+  window: "09:45-11:30"
+  when_all:
+    - crosses_above(close, range_high)
+    - rvol(20) >= rvol_min
+    - news.score >= score_min
+    - news.catalyst in [earnings, guidance]
+    - assessment.entry_allowed
+sizing:
+  risk_per_trade: "0.25%"
+exit:
+  stop: stop_level
+  target: entry_price + target_r * risk_per_share
+  flatten_at: "15:50"
+execution: {mode: manual}
+limits: {max_trades_per_day: 3}
+
+# Optional reusable questions. Most questions live inside their assumption.
+shared_questions:
+  evidence_sufficient:
+    prompt: Is there enough current, attributable evidence to answer this assumption's questions?
+    type: boolean
+    unknown_allowed: true
+    assessed_by: [t1, t2]
+    evidence_required: true
+    # Reuse the definition; cache answers only when assumption context also matches.
+
+# Read each monitored assumption from top to bottom:
+# evaluation -> questions -> assessment -> responses.
+assumptions:
+  - id: opening_range_definition
+    kind: implementation_note
+    statement: A breakout requires a completed one-minute close above the 15-minute opening range.
+    monitored: false
+    enforced_by: [entry.when_all]
+
+  - id: positive_earnings
+    kind: market_thesis
+    statement: Earnings and forward guidance support a positive company-specific thesis.
+    monitored: true
+    critical: true
+
+    evaluation:
+      # Unspecified settings inherit monitoring.evaluation.
+      interval: 3min
+      while_holding_interval: 1min
+      result_max_age: 4min
+      tiers: [t1, t2]
+
+    questions:
+      - id: earnings_direction
+        prompt: What direction does the supplied earnings evidence support for this company?
+        type: choice
+        choices: [positive, negative, mixed, unknown]
+        rubric:
+          positive: Company earnings evidence supports the stated positive thesis.
+          negative: Company earnings evidence contradicts the stated positive thesis.
+          mixed: Evidence includes meaningful positive and negative components.
+          unknown: Evidence is absent, insufficient, unrelated or cannot be resolved.
+        assessed_by: [t1, t2]
+        evidence_required: true
+
+      - id: guidance_consistency
+        prompt: Does the latest reported forward guidance support or contradict this assumption?
+        type: choice
+        choices: [supports, contradicts, mixed, not_reported, unknown]
+        assessed_by: [t1, t2]
+        evidence_required: true
+
+      - ref: shared_questions.evidence_sufficient
+
+    assessment:
+      # Code evaluates these rules against the typed LLM answers.
+      supported_when:
+        all:
+          - {question: earnings_direction, operator: eq, value: positive}
+          - {question: guidance_consistency, operator: eq, value: supports}
+          - {question: evidence_sufficient, operator: eq, value: true}
+      contradicted_when:
+        any:
+          - {question: earnings_direction, operator: eq, value: negative}
+          - {question: guidance_consistency, operator: eq, value: contradicts}
+      otherwise: uncertain
+      conflicting_rules: uncertain
+
+    responses:
+      # Local responses replace the matching monitoring.responses default.
+      # All actions remain bounded by the global allowlist and account policy.
+      on_supported: [log]
+      on_contradicted: [log, notify_dashboard, block_new_entries, propose_exit]
+      on_uncertain: [log, notify_dashboard, block_new_entries]
+      on_expired: [block_new_entries]
+      # propose_exit inherits the global manual approval/confirmation requirements.
+
+  - id: no_material_adverse_event
+    kind: risk_condition
+    statement: No newly reported material adverse company event invalidates the long thesis.
+    monitored: true
+    critical: true
+
+    evaluation:
+      interval: 5min
+      while_holding_interval: 2min
+      result_max_age: 3min
+      tiers: [t1, t2]
+
+    questions:
+      - id: adverse_event
+        prompt: Does the supplied evidence report a material company-specific adverse event?
+        type: boolean
+        unknown_allowed: true
+        criteria: >-
+          Consider guidance withdrawal/cuts, accounting issues, regulatory action,
+          terminated contracts, material recalls or dilution. Explain applicability.
+        assessed_by: [t1, t2]
+        evidence_required: true
+
+      - id: company_relevance
+        prompt: Is the event directly about this ticker rather than peers, a market recap or generic sector commentary?
+        type: choice
+        choices: [direct, indirect, unrelated, unknown]
+        assessed_by: [t1, t2]
+        evidence_required: true
+
+      - ref: shared_questions.evidence_sufficient
+
+    assessment:
+      supported_when:
+        all:
+          - {question: adverse_event, operator: eq, value: false}
+          - {question: company_relevance, operator: eq, value: direct}
+          - {question: evidence_sufficient, operator: eq, value: true}
+      contradicted_when:
+        all:
+          - {question: adverse_event, operator: eq, value: true}
+          - {question: company_relevance, operator: eq, value: direct}
+      otherwise: uncertain
+      conflicting_rules: uncertain
+      # “No event” means none in supplied admissible evidence, not proof
+      # that no adverse event exists elsewhere.
+
+    responses:
+      on_supported: [log]
+      on_contradicted: [log, notify_dashboard, block_new_entries, propose_exit]
+      on_uncertain: [log, notify_dashboard, block_new_entries]
+      on_expired: [block_new_entries]
+
+# Optional cross-assumption review, separate from question-to-status rules.
+# assessment_set returns proposed statuses for the named assumptions, with evidence.
+# It cannot silently replace rule-derived statuses or directly execute responses.
+reviews:
+  thesis_consistency:
+    prompt: >-
+      Review the monitored assumptions and their rule-derived assessments against
+      admissible evidence. Identify contradictions, ambiguity and changed facts.
+    type: assessment_set
+    assumption_ids: [positive_earnings, no_material_adverse_event]
+    assessed_by: [t2, t3]
+    evidence_required: true
+    authority: advisory_only
+    disagreement: mark_uncertain_and_request_reassessment
+
+monitoring:
+  enabled: true
+  schema_version: 1
+  mode: shadow # Observe/log only. Explicit promotion is required for enforce.
+  scenarios:
+    catalog: scenario-catalog.example.yaml
+    selection: explicit_enabled_ids
+    enabled_ids:
+      - nasdaq_five_percent_session_drop
+      - broad_market_risk_off
+      - company_positive_new_catalyst
+      - company_negative_new_catalyst
+      - unexpected_material_negative_news
+      - earnings_beat_guidance_cut
+      - corrected_or_retracted_article
+      - positive_news_price_confirmation
+      - positive_news_price_rejection
+      - positive_news_move_fades
+      - company_positive_macro_negative
+      - held_position_thesis_contradicted
+      - pending_entry_invalidated
+      - missing_required_macro_feed
+    routing_layer: laya
+    response_authority: intersection_with_monitoring_and_account_policy
+    enforcement: inherit_monitoring_mode
+    catalog_hash: pinned_at_strategy_activation
+  scope:
+    tickers: strategy_watchlist
+    include_held_positions: true
+    include_pending_entries: true
+    evaluate_unrelated_tickers: false
+    state_key: [strategy_hash, ticker, assumption_id]
+
+  evaluation:
+    timezone: America/New_York
+    interval: 5min
+    while_holding_interval: 2min
+    min_gap: 30s
+    deadline: 45s
+    session:
+      premarket: {enabled: true, window: "08:30-09:30", interval: 15min}
+      regular: {enabled: true, window: exchange_session}
+      afterhours: {enabled: false}
+      non_trading_days: {enabled: false}
+    on:
+      new_relevant_news: true
+      article_updated: true
+      correction_or_retraction: true
+      position_opened: true
+      operator_requested: true
+      price_move:
+        enabled: true
+        absolute_return: "1%"
+        lookback: 5min
+        use_completed_bars: true
+      volatility_change:
+        enabled: true
+        measure: atr_percent
+        lookback_bars: 20
+        relative_increase: "50%"
+    scheduling:
+      priority: [held_critical_news, pending_entry, held_interval, candidate_news, candidate_interval]
+      debounce_news: 5s
+      coalesce_by: [strategy_hash, ticker]
+      run_if_inputs_changed: true
+      unchanged_result: keep_original_timestamp
+      max_queue_age: 60s
+      critical_news_bypasses_min_gap: true
+      critical_news_still_obeys_budget: true
+      session_clock: broker_calendar
+
+  evidence:
+    as_of: evaluation_time
+    allow_future_data: false
+    include:
+      assumptions: monitored_only
+      question_definitions: true
+      strategy_summary: true
+      active_operator_notes: true
+      relevant_theses: true
+      previous_assessment: true
+      position: [side, quantity, entry_price, unrealized_pnl, stop, target]
+      prices:
+        timeframe: 1min
+        lookback: 60min
+        features: [return, vwap_distance, rvol, atr_percent]
+        max_age: 90s
+      news:
+        lookback: since_prior_close
+        max_articles: 12
+        include_content: true
+        max_content_characters_per_article: 8000
+        max_total_characters: 24000
+        preserve: [article_id, url, source, published_at, received_at, updated_at]
+        deduplicate_by: [provider_article_id, normalized_content_hash]
+        source_allowlist: [] # Empty means all sources admitted by the account's news-feed policy.
+        corrections_supersede_original: true
+    missing_content: use_summary_and_mark_incomplete
+    missing_price: mark_price_dependent_questions_unknown
+    missing_source: reject_evidence
+    hierarchy: [current_primary_fact, current_attributed_report, historical_report, operator_opinion]
+    document_instructions: treat_as_untrusted_data
+    distinguish_fact_from_inference: true
+
+  tiers:
+    t0:
+      provider: deterministic
+      checks: [ticker_relevance, freshness, deduplication, required_inputs, budget, monitoring_enabled]
+      on_failure: uncertain
+
+    t1:
+      provider: laya # “Leya” refers to the existing Laya integration.
+      model_profile: typed_decisions
+      questions: from_assumptions_assigned_to_this_tier
+      context: concise_evidence
+      max_context_characters: 8000
+      timeout: 5s
+      concurrency: 1
+      retries: 0
+      confidence_floor: 0.75
+      result_max_age: 3min
+      fallback: escalate_t2
+      # Laya must support the configured output types/model checkpoint.
+      # Unsupported questions fail validation, not silent coercion to a binary answer.
+
+    t2:
+      provider: claude_sonnet
+      model_profile: deep_assessment
+      questions: from_assumptions_assigned_to_this_tier
+      review_ids: [thesis_consistency]
+      context: full_evidence
+      timeout: 30s
+      retries: 1
+      confidence_floor: 0.80
+      result_max_age: 5min
+      fallback: uncertain
+      escalate_when:
+        any:
+          - {field: t1.confidence, operator: lt, value: 0.75}
+          - {field: t1.answers.no_material_adverse_event.adverse_event, operator: eq, value: true}
+          - {field: t1.answers.positive_earnings.earnings_direction, operator: in, value: [mixed, unknown]}
+          - {field: evidence.has_correction, operator: eq, value: true}
+          - {field: state.assessment_changed, operator: eq, value: true}
+          - {field: position.is_open, operator: eq, value: true}
+
+    t3:
+      provider: claude_opus
+      model_profile: thesis_review
+      review_ids: [thesis_consistency]
+      context: full_evidence_with_history
+      timeout: 60s
+      retries: 0
+      schedule: {on: operator_requested, minimum_interval: 30min}
+      escalate_when:
+        any:
+          - {field: state.repeated_tier_disagreement, operator: eq, value: true}
+      authority: review_only
+      output: [assessment, explanation, proposed_dsl_changes]
+      apply_changes: requires_owner_approval
+
+  outputs:
+    statuses: [supported, contradicted, uncertain, not_applicable]
+    required_per_question: [assumption_id, question_id, answer, confidence, evidence_ids, rationale]
+    required_per_assumption: [assumption_id, status, confidence, evidence_ids, rationale]
+    rationale_max_words: 100
+    unknown_is_not_false: true
+    evidence_ids_must_exist_in_input: true
+    confidence_is_model_reported_not_calibrated_probability: true
+    malformed_output: uncertain
+    aggregation:
+      rule: all_critical_assumptions_supported
+      not_applicable_for_critical: uncertain
+      result_max_age: 5min
+      invalidate_on: [new_relevant_news, correction_or_retraction, strategy_version_changed]
+      pending_reassessment: block_new_entries
+      higher_tier_supersedes_lower: same_input_snapshot_only
+      conflicting_current_results: uncertain_and_escalate
+
+  responses:
+    allowed_actions: [log, notify_dashboard, block_new_entries, require_entry_approval, propose_exit, pause_strategy_entries, reject_unsubmitted_entry, request_cancel_working_entry, propose_resume]
+    on_supported: [log]
+    on_contradicted: [log, notify_dashboard, block_new_entries, propose_exit]
+    on_uncertain: [log, notify_dashboard, block_new_entries]
+    on_expired: [block_new_entries]
+    on_provider_unavailable: [log, block_new_entries]
+    on_budget_exhausted: [log, block_new_entries]
+    exit_proposal:
+      minimum_tier: t2
+      minimum_confidence: 0.85
+      require_attributable_evidence: true
+      confirmation_count: 2
+      confirmation_spacing: 30s
+      same_evidence_counts_as_independent_confirmation: false
+      execution: manual_approval
+      expires_after: 90s
+      risk_checks: always
+    recovery:
+      require_fresh_supported_assessment: true
+      cooldown_after_contradiction: 5min
+      minimum_tier: t2
+      resume_after_kill: owner_host_action
+    escalation_alerts:
+      destinations: [dashboard]
+      rate_limit: 1_per_ticker_per_5min
+      repeat_only_on_material_change: true
+
+  budget:
+    inherit_account_caps: true
+    max_calls_per_ticker_per_hour: {t1: 30, t2: 6, t3: 1}
+    max_paid_calls_per_strategy_per_day: 30
+    max_estimated_cost_usd_per_strategy_per_day: 5
+    max_concurrent_paid_calls: 2
+    reserve_paid_calls_for_held_positions: 5
+    cache:
+      key: [strategy_hash, question_set_hash, assumption_context_hash, ticker, evidence_snapshot_hash, tier, model_profile]
+      max_age: 3min
+      invalidate_on_article_revision: true
+    circuit_breaker:
+      consecutive_failures: 3
+      cooldown: 5min
+      probe_after_cooldown: true
+
+  audit:
+    store: [trigger, evidence_snapshot_ids, prompt_version, model_id, input_hash, answers, assumptions, confidence, action, latency, usage, cost]
+    assessment_id: required
+    retain_previous_revisions: true
+    log_skipped_evaluations: true
+    decision_links_to_assessment_id: true
+    operator_override:
+      allowed: true
+      reason_required: true
+      expires_after: 15min
+      cannot_override: [kill_switch, broker_permissions, account_risk, deterministic_exit]
+
+  validation:
+    unique_question_and_assumption_ids: true
+    references_must_resolve: true
+    reject_unsupported_fields: true
+    interval_and_deadline_must_fit_account_limits: true
+    model_capabilities_must_match_question_types: true
+    budget_estimate_required_before_activation: true
+    monitored_critical_assumptions_require_question_and_response: true
+    enforce_mode_requires_replay_and_shadow_review: true

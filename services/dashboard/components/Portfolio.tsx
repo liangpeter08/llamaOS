@@ -44,6 +44,14 @@ export function PortfolioBacktest({ bt }: { bt: any }) {
           ))}</tbody>
         </table></div>
       </details>
+      {bt.overlay_events?.length > 0 && (
+        <details>
+          <summary>Overlay events ({bt.overlay_events.length}) · locked rotation cash at the end {money(bt.locked_cash)}</summary>
+          <table><tbody>{bt.overlay_events.map((e: any, i: number) => (
+            <tr key={i}><td>{e.day}</td><td>{EVENT_TEXT[e.kind] ?? e.kind}</td><td className="mono muted">{e.overlay}</td><td>{eventDetail({ kind: e.kind, payload: e })}</td></tr>
+          ))}</tbody></table>
+        </details>
+      )}
       {bt.rejected?.length > 0 && (
         <details>
           <summary>Rejected by portfolio limits ({bt.rejected.length})</summary>
@@ -161,6 +169,98 @@ export function SleeveApprovals({ pending, recent, onDone }: { pending: any[]; r
               <td className="muted">{r.decided_by ?? "broker"}</td><td className="muted">{r.note}</td></tr>
           ))}</tbody></table>
         </details>
+      )}
+    </Card>
+  );
+}
+
+const EVENT_TEXT: Record<string, string> = {
+  macro_trigger: "macro trigger", macro_repeat: "repeat crossing (no second trim)", macro_reduced: "reduction filled",
+  macro_recovery: "recovery started", macro_rebuilt: "rebuild complete", rotation: "rotation trim", rotation_skipped: "rotation skipped",
+  input_missing: "input missing", missed_decision: "missed decision", reduction_blocked: "reduction blocked", shadow: "shadow decisions",
+  assumption: "assumption",
+};
+
+function eventDetail(e: any): string {
+  const p = e.payload ?? {};
+  if (e.kind === "shadow") return (p.orders ?? []).map((o: any) => `${o.symbol}: would ${o.would} (${o.reason}; actual ${o.actual ?? "—"})`).join(" · ");
+  if (e.kind === "assumption") return `${p.assumption}: ${p.status}${p.tier ? ` (${p.tier})` : ""}${p.error ? ` · ${p.error}` : ""}`;
+  const parts = [];
+  if (p.value !== undefined) parts.push(`${p.input ?? "value"} ${pct(p.value, 2, true)}`);
+  if (p.fraction !== undefined) parts.push(`sell ${pct(p.fraction, 1)} of ${p.group}`);
+  if (p.effect) parts.push(p.effect);
+  if (p.why) parts.push(p.why);
+  if (p.symbol) parts.push(`${p.symbol} ${p.qty} blocked: ${(p.failed ?? []).join(", ")}`);
+  return parts.join(" · ");
+}
+
+/** DSL 0.2 overlays: mode, phases, market inputs, locked cash, events and monitored assumptions. */
+export function OverlaysCard({ o, hash, act, busy }: { o: any; hash: string; act: (l: string, p: string, b?: object) => void; busy: string | null }) {
+  const { me } = useSession();
+  const owner = isOwner(me);
+  const inputs = o.observed && (!o.inputs || o.observed.ts > o.inputs.ts) ? o.observed : o.inputs;
+  return (
+    <Card title="Portfolio overlays (DSL 0.2)" className="mt">
+      <div className="row">
+        <Pill kind={o.enforced ? "bad" : "accent"}>{o.enforced ? "enforced: overlays place orders" : "shadow: decisions logged only"}</Pill>
+        <Pill>file mode {o.file_mode}</Pill>
+        {o.review_required && <Pill kind="warn">defaults proposed, need review</Pill>}
+        <Pill kind={o.catalog_pinned ? "good" : "warn"}>{o.catalog_pinned ? "scenario catalog pinned" : "catalog not pinned (promote to pin)"}</Pill>
+        {o.missing_feeds.length > 0 && <Pill kind="bad">no feed: {o.missing_feeds.join(", ")}</Pill>}
+        {o.input_symbols.length > 0 && <Pill>monitored only: {o.input_symbols.join(", ")}</Pill>}
+        <Pill kind={o.locked_effective > 0 ? "warn" : ""}>locked cash {money(o.locked_effective)}</Pill>
+        {o.assumption_block && o.assumption_block.until > Date.now() / 1000 && <Pill kind="bad">buys blocked: {o.assumption_block.reasons.join("; ")}</Pill>}
+      </div>
+      {owner && (
+        <div className="row" style={{ marginTop: 8 }}>
+          {o.file_mode === "enforce" && !o.owner_enabled && (
+            <button className="primary" disabled={!!busy}
+              onClick={() => window.confirm("Overlays will trim, pause buys and rebuild on paper through the strategy's approval mode. Enable?") &&
+                act("overlays", `/api/strategies/${hash}/overlays`, { enforce: true })}>Enforce overlays on paper</button>
+          )}
+          {o.owner_enabled && <button disabled={!!busy} onClick={() => act("overlays", `/api/strategies/${hash}/overlays`, { enforce: false })}>Back to shadow</button>}
+          {o.locked_effective > 0.01 && (
+            <button disabled={!!busy} onClick={() => window.confirm(`Release ${money(o.locked_effective)} of locked rotation proceeds so the sleeve can buy with it?`) &&
+              act("release", `/api/strategies/${hash}/release-cash`)}>Release locked cash</button>
+          )}
+          {o.file_mode === "shadow" && <span className="muted">This version runs overlays in shadow mode; save a version with monitoring.mode: enforce to let them trade.</span>}
+        </div>
+      )}
+      <div className="table-wrap"><table>
+        <thead><tr><th>Overlay</th><th>Scenario</th><th>Response</th><th>Evaluated</th><th>Phase</th><th>Last trigger</th></tr></thead>
+        <tbody>{o.rules.map((r: any) => (
+          <tr key={r.id}><td className="mono">{r.id}</td><td className="muted">{r.scenario}</td><td>{r.action}</td><td>{r.on.replaceAll("_", " ")}</td>
+            <td><Pill kind={r.phase === "normal" ? "" : "warn"}>{r.phase.replaceAll("_", " ")}</Pill></td>
+            <td>{r.state.trigger_day ? `${r.state.trigger_day} (${pct(r.state.trigger_value, 2, true)})` : r.state.last_value !== undefined ? `${pct(r.state.last_value, 2, true)} → sell ${pct(r.state.last_fraction, 1)}` : "—"}</td></tr>
+        ))}</tbody>
+      </table></div>
+      <h3>Market inputs</h3>
+      {inputs ? (
+        <table><tbody>{Object.entries(inputs.values ?? {}).map(([k, v]: [string, any]) => (
+          <tr key={k}><td className="mono">{k}</td><td className={`num ${pnlClass(v)}`}>{v === null ? "unknown" : pct(v, 2, true)}</td><td className="muted">{inputs.notes?.[k]}</td></tr>
+        ))}<tr><td colSpan={3} className="muted">as of {wall(inputs.ts)}</td></tr></tbody></table>
+      ) : <Empty>Not read yet: inputs are read during the session (index every observation, baskets at the daily decision).</Empty>}
+      <h3>Events</h3>
+      <div className="table-wrap"><table>
+        <thead><tr><th>When</th><th>Event</th><th>Mode</th><th>Details</th><th>Model context (never changes the numeric response)</th></tr></thead>
+        <tbody>
+          {o.events.map((e: any) => (
+            <tr key={e.id}><td>{wall(e.ts)}</td><td>{EVENT_TEXT[e.kind] ?? e.kind}{e.overlay ? <div className="muted mono">{e.overlay}</div> : null}</td>
+              <td><Pill kind={e.mode === "enforce" ? "bad" : ""}>{e.mode}</Pill></td><td>{eventDetail(e)}</td>
+              <td className="muted">{e.context ? (e.context.error ?? `${e.context.driver} (${pct(e.context.confidence, 0)})`) : ""}</td></tr>
+          ))}
+          {!o.events.length && <tr><td colSpan={5} className="muted">None yet.</td></tr>}
+        </tbody>
+      </table></div>
+      {o.assumptions.length > 0 && (
+        <>
+          <h3>Assumptions</h3>
+          <table><tbody>{o.assumptions.map((a: any) => (
+            <tr key={a.id}><td className="mono">{a.id}</td><td>{a.statement}</td>
+              <td>{a.monitored ? (a.latest ? <><StatusPill status={a.latest.status} /> <span className="muted">{a.latest.tier ?? "no tier"} · {wall(a.latest.ts)}{a.latest.error ? ` · ${a.latest.error}` : ""}</span></> : <span className="muted">monitored, not checked yet</span>) : <span className="muted">not monitored</span>}
+                {a.critical && <Pill kind="warn">critical</Pill>}</td></tr>
+          ))}</tbody></table>
+        </>
       )}
     </Card>
   );

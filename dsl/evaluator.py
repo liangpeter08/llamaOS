@@ -6,6 +6,9 @@ Semantics:
     and comparisons, and a condition that ends up None is false (fail closed), unless the
     signal declares a default.
   * Signals are looked up point-in-time: only signals stamped at or before the bar's close.
+  * Daily-history functions (ret_d, vol_d, ...) read completed prior sessions only.
+  * peer(SYM, x) evaluates x for SYM on SYM's latest bar that closed at or before this bar's close;
+    a peer bar more than PEER_MAX_LAG seconds older than this bar is stale, and the value is missing.
 """
 from __future__ import annotations
 
@@ -17,8 +20,11 @@ from datetime import date
 from common import timeutil as T
 
 from . import expr as E
+from . import features as F
 from .builtins import POSITION, SIGNALS
 from .validator import Strategy
+
+PEER_MAX_LAG = 120  # seconds: a peer's latest bar may be at most this much older than the bar being decided
 
 
 # ---------------------------------------------------------------- volume profile
@@ -92,6 +98,16 @@ class DayData:
     def prior_close(self) -> float | None:
         return self.history[-1].c if self.history else None
 
+    def closes(self) -> list[tuple[str, float]]:
+        """Completed prior sessions as (day, close), for the daily-history features."""
+        if getattr(self, "_closes", None) is None or len(self._closes) != len(self.history):
+            self._closes = [(h.date, h.c) for h in self.history]
+        return self._closes
+
+    def asof(self, ts: int) -> int:
+        """Index of the latest bar starting at or before ts (-1 if none)."""
+        return bisect.bisect_right(self.ts, ts) - 1
+
 
 # ---------------------------------------------------------------- signals
 class SignalBook:
@@ -144,15 +160,28 @@ class Position:
 class Evaluator:
     """Evaluate one strategy over one symbol's session."""
 
-    def __init__(self, strat: Strategy, day: DayData, signals: SignalBook):
+    def __init__(self, strat: Strategy, day: DayData, signals: SignalBook, peers: dict[str, DayData] | None = None):
         self.s = strat
         self.d = day
-        self.signals = signals
+        self._signals = signals
+        self.peers = peers or {}
+        self._peer_evals: dict[str, Evaluator] = {}
         self.memo: dict[tuple[int, int], object] = {}
         self.position: Position | None = None
-        self._pos_nodes: set[int] = set()
+        self._pos_nodes: set[int] = set()  # values that must be recomputed every time (position, peers)
         for node in self._all_nodes():
             self._mark_position(node)
+
+    @property
+    def signals(self) -> SignalBook:
+        return self._signals
+
+    @signals.setter
+    def signals(self, book: SignalBook):
+        self._signals = book
+        for ev in self._peer_evals.values():
+            ev.signals = book
+            ev.memo.clear()
 
     def _all_nodes(self):
         s = self.s
@@ -161,7 +190,9 @@ class Evaluator:
         return out
 
     def _mark_position(self, node: E.Node) -> bool:
-        dep = False
+        # A peer's bar for this moment can arrive after this bar (live polling), so peer values aren't memoized here;
+        # the peer's own evaluator memoizes per peer bar, which never changes once stored.
+        dep = isinstance(node, E.Call) and node.fn == "peer"
         if isinstance(node, E.Name):
             dep = node.id in POSITION or (node.id in self.s.vars and self._mark_position(self.s.vars[node.id]))
         for ch in E.children(node):
@@ -333,8 +364,37 @@ class Evaluator:
         vals = [self.value(x, j) for j in range(i - n + 1, i + 1)]
         return None if any(v is None for v in vals) else vals
 
+    def peer_eval(self, sym: str) -> Evaluator | None:
+        d = self.peers.get(sym)
+        if d is None:
+            return None
+        ev = self._peer_evals.get(sym)
+        if ev is None or ev.d is not d:
+            ev = self._peer_evals[sym] = Evaluator(self.s, d, self._signals)
+        return ev
+
+    def _peer_index(self, ev: Evaluator, i: int) -> int | None:
+        j = ev.d.asof(self.d.ts[i])
+        if j < 0 or self.d.ts[i] - ev.d.ts[j] > PEER_MAX_LAG:
+            return None
+        return j
+
     def _call(self, node: E.Call, i: int):
         fn, a, d = node.fn, node.args, self.d
+        if fn == "peer":
+            ev = self.peer_eval(a[0].id)
+            j = self._peer_index(ev, i) if ev is not None else None
+            return None if j is None else ev.value(a[1], j)
+        if fn in F.DAILY_FUNCTIONS:
+            takes_symbol = F.DAILY_FUNCTIONS[fn][1]
+            other = None
+            if takes_symbol:
+                od = self.peers.get(a[0].id)
+                if od is None:
+                    return None
+                other = od.closes()
+            args = [self._int_arg(x, i) for x in (a[1:] if takes_symbol else a)]
+            return F.compute(fn, d.closes(), args, other)
         if fn in ("or_high", "or_low"):
             n = self._int_arg(a[0], i)
             if n is None or d.minute_index(i) < n - 1 or len(d) < n:

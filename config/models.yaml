@@ -19,6 +19,7 @@ escalation:
   on_active_note: true
 budgets:
   total_calls_per_day: 200
+  replay_calls_per_day: 2000    # backtests with model replay; separate so they never starve live triage
   t2_calls_per_day: 30
   idealab_runs_per_day: 4
 timeouts_s:

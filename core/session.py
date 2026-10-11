@@ -31,14 +31,17 @@ class Event:
 class TradingSession:
     def __init__(self, risk: RiskConfig, strategies: list[Strategy], days: dict[str, DayData],
                  signals: SignalBook, cash: float, slippage: float = 0.0002,
-                 gate: Callable[[Strategy, Intent, list[G.Check]], str] | None = None):
+                 gate: Callable[[Strategy, Intent, list[G.Check]], str] | None = None,
+                 refs: dict[str, DayData] | None = None):
+        """refs: reference-only symbols the rules read through peer(); the caller appends their bars, nothing trades them."""
         self.risk = risk
         self.days = days
+        self.refs = refs or {}
         self.signals = signals
         self.strategies = {s.hash: s for s in strategies}
         self.runners = {s.hash: StrategyRunner(s, risk) for s in strategies}
         for r in self.runners.values():
-            r.start_day(days, signals)
+            r.start_day(days, signals, self.refs)
         self.exchange = SimExchange(cash=cash, slippage=slippage,
                                     cancel_after_bars=max(1, int(risk.cancel_unfilled_after // 60)))
         self.start_equity = cash
@@ -61,7 +64,7 @@ class TradingSession:
         if s.hash in self.runners:
             return
         r = StrategyRunner(s, self.risk)
-        r.start_day(self.days, self.signals)
+        r.start_day(self.days, self.signals, self.refs)
         self.labels[s.hash] = label(s)
         self.strategies[s.hash] = s
         self.runners[s.hash] = r

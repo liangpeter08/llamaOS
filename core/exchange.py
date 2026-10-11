@@ -46,6 +46,7 @@ class Pos:
     entry_index: int
     intent_ref: object = None
     last: float = 0.0
+    entry_fee: float = 0.0
 
     @property
     def signed(self) -> int:
@@ -62,6 +63,10 @@ class Fill:
     kind: str  # entry | stop | target | exit | flatten | kill
     order: Order | None = None
     trade: dict | None = None
+    # Account right after this fill was booked (fills in one bar are reported together, so read them here).
+    cash_after: float | None = None
+    exposure_after: float | None = None
+    equity_after: float | None = None
 
 
 @dataclass
@@ -72,6 +77,17 @@ class SimExchange:
     orders: list[Order] = field(default_factory=list)
     positions: dict[str, Pos] = field(default_factory=dict)
     _ids: count = field(default_factory=lambda: count(1))
+    commission_per_share: float = 0.0
+    commission_per_order: float = 0.0
+    latency_bars: int = 0
+    limit_trade_through: bool = False
+    total_fees: float = 0.0
+
+    def fee(self, qty: int) -> float:
+        fee = qty * self.commission_per_share + self.commission_per_order
+        self.total_fees += fee
+        self.cash -= fee
+        return fee
 
     # ---------------------------------------------------------------- orders
     def submit_entry(self, symbol: str, side: str, qty: int, limit: float, stop: float, target: float,
@@ -105,7 +121,7 @@ class SimExchange:
         """Process bar `index` for `symbol`; returns fills that happened during it."""
         fills: list[Fill] = []
         for od in [x for x in self.orders if x.symbol == symbol and x.status == "working"]:
-            if od.submitted_index >= index:
+            if od.submitted_index + self.latency_bars >= index:
                 continue  # decided at this bar's close or later: works from the next bar
             if od.kind == "exit":
                 px = o * (1 - self.slippage) if od.side == "sell" else o * (1 + self.slippage)
@@ -115,22 +131,23 @@ class SimExchange:
             if od.side == "buy":
                 if o * (1 + self.slippage) <= od.limit:
                     px = o * (1 + self.slippage)
-                elif l <= od.limit:
+                elif l < od.limit or (l == od.limit and not self.limit_trade_through):
                     px = od.limit
             else:
                 if o * (1 - self.slippage) >= od.limit:
                     px = o * (1 - self.slippage)
-                elif h >= od.limit:
+                elif h > od.limit or (h == od.limit and not self.limit_trade_through):
                     px = od.limit
             if px is None:
-                if index - od.submitted_index >= self.cancel_after_bars:
+                if index - od.submitted_index - self.latency_bars >= self.cancel_after_bars:
                     od.status = "cancelled"
                 continue
             od.status, od.fill_price, od.fill_ts = "filled", px, ts
             side = "long" if od.side == "buy" else "short"
             self.cash -= px * od.qty if side == "long" else -px * od.qty
             self.positions[symbol] = Pos(symbol, side, od.qty, px, od.stop, od.target, ts, index, od.intent_ref, c)
-            fills.append(Fill(symbol, od.side, od.qty, px, ts, "entry", od))
+            self.positions[symbol].entry_fee = self.fee(od.qty)
+            fills.append(self._booked(Fill(symbol, od.side, od.qty, px, ts, "entry", od)))
 
         p = self.positions.get(symbol)
         if p:
@@ -169,14 +186,22 @@ class SimExchange:
                 od.status, od.fill_price, od.fill_ts = "filled", px, ts
         self.cash += px * p.qty if p.side == "long" else -px * p.qty
         pnl = (px - p.entry_price) * p.signed
+        fees = p.entry_fee + self.fee(p.qty)
+        gross_pnl = pnl
+        pnl -= fees
         rps = abs(p.entry_price - p.stop)
         trade = {
             "symbol": symbol, "side": p.side, "qty": p.qty, "entry_ts": p.entry_ts, "entry_price": p.entry_price,
             "exit_ts": ts, "exit_price": px, "exit_kind": kind, "pnl": pnl,
             "r_multiple": (pnl / (rps * p.qty)) if rps > 0 else None, "intent_ref": p.intent_ref,
             "stop": p.stop, "target": p.target,
+            "fees": fees, "gross_pnl": gross_pnl,
         }
-        return Fill(symbol, "sell" if p.side == "long" else "buy", p.qty, px, ts, kind, order, trade)
+        return self._booked(Fill(symbol, "sell" if p.side == "long" else "buy", p.qty, px, ts, kind, order, trade))
+
+    def _booked(self, f: Fill) -> Fill:
+        f.cash_after, f.exposure_after, f.equity_after = self.cash, self.gross_exposure(), self.equity()
+        return f
 
     # ---------------------------------------------------------------- account
     def mark(self, symbol: str, price: float):

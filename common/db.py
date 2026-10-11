@@ -67,6 +67,27 @@ CREATE TABLE IF NOT EXISTS strategies(
   validation TEXT, backtest TEXT, back_translation TEXT,
   approved_by TEXT, approved_at DOUBLE PRECISION, paper_started_at DOUBLE PRECISION);
 ALTER TABLE strategies ADD COLUMN IF NOT EXISTS display_name TEXT;
+-- Archived versions are hidden from lists by default; only draft/backtested/retired versions can be archived.
+ALTER TABLE strategies ADD COLUMN IF NOT EXISTS archived_at DOUBLE PRECISION;
+-- Owner-assigned category per strategy line (sid), shared by every version.
+CREATE TABLE IF NOT EXISTS strategy_categories(sid TEXT PRIMARY KEY, category TEXT NOT NULL, updated_at DOUBLE PRECISION);
+
+CREATE TABLE IF NOT EXISTS backtest_runs(
+ id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, strategy_hash TEXT NOT NULL,
+ sid TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL,
+ created_at DOUBLE PRECISION NOT NULL, finished_at DOUBLE PRECISION,
+ created_by TEXT NOT NULL, config TEXT NOT NULL, strategy_text TEXT NOT NULL,
+ risk_snapshot TEXT NOT NULL, report TEXT, error TEXT, progress DOUBLE PRECISION NOT NULL DEFAULT 0,
+ cancel_requested BOOLEAN NOT NULL DEFAULT FALSE, heartbeat DOUBLE PRECISION,
+ parent_id BIGINT);
+CREATE INDEX IF NOT EXISTS backtest_runs_created ON backtest_runs(created_at DESC);
+ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS metrics TEXT;
+ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS sessions INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS category TEXT;
+ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS archived_at DOUBLE PRECISION;
+CREATE TABLE IF NOT EXISTS backtest_presets(
+ id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, config TEXT NOT NULL,
+ created_at DOUBLE PRECISION NOT NULL, created_by TEXT NOT NULL);
 
 CREATE TABLE IF NOT EXISTS intents(
   id BIGSERIAL PRIMARY KEY, ts BIGINT, strategy_hash TEXT, sid TEXT, symbol TEXT, side TEXT,
@@ -132,6 +153,17 @@ CREATE TABLE IF NOT EXISTS ideas(
   status TEXT, anecdotal INTEGER, thesis_ids TEXT, model TEXT, holdout TEXT,
   spec TEXT, strategy_hash TEXT, note TEXT);
 
+CREATE TABLE IF NOT EXISTS discovery_runs(
+  id BIGSERIAL PRIMARY KEY, created_at DOUBLE PRECISION NOT NULL, created_by TEXT NOT NULL, ticker TEXT NOT NULL,
+  config TEXT NOT NULL, status TEXT NOT NULL, stage TEXT, progress DOUBLE PRECISION NOT NULL DEFAULT 0,
+  profile TEXT, report TEXT, error TEXT, finished_at DOUBLE PRECISION);
+CREATE TABLE IF NOT EXISTS discovery_trials(
+  id BIGSERIAL PRIMARY KEY, run_id BIGINT NOT NULL, created_at DOUBLE PRECISION NOT NULL, kind TEXT NOT NULL,
+  generation INTEGER NOT NULL, parent_id BIGINT, origin TEXT NOT NULL, family TEXT, title TEXT, hypothesis TEXT,
+  change TEXT, yaml TEXT NOT NULL, hash TEXT, status TEXT NOT NULL, score DOUBLE PRECISION, evaluation TEXT,
+  holdout TEXT, strategy_hash TEXT);
+CREATE INDEX IF NOT EXISTS discovery_trials_run ON discovery_trials(run_id, kind);
+
 CREATE TABLE IF NOT EXISTS chats(
   id BIGSERIAL PRIMARY KEY, ts DOUBLE PRECISION, thread TEXT, role TEXT, content TEXT, model TEXT);
 CREATE INDEX IF NOT EXISTS chats_thread ON chats(thread, id);
@@ -150,12 +182,49 @@ CREATE INDEX IF NOT EXISTS portfolio_orders_strategy ON portfolio_orders(strateg
 CREATE TABLE IF NOT EXISTS portfolio_days(
   strategy_hash TEXT NOT NULL, day TEXT NOT NULL, records TEXT NOT NULL, event TEXT, PRIMARY KEY(strategy_hash, day));
 
+-- DSL 0.2 portfolio overlays: index history and quotes (from the account-configured index feed),
+-- overlay/assumption events shown on the dashboard, and model assessments of monitored assumptions.
+ALTER TABLE portfolio_orders ADD COLUMN IF NOT EXISTS reserve_qty INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE portfolio_orders ADD COLUMN IF NOT EXISTS overlay TEXT;
+CREATE TABLE IF NOT EXISTS index_daily(
+  instrument TEXT NOT NULL, day TEXT NOT NULL, o DOUBLE PRECISION, h DOUBLE PRECISION, l DOUBLE PRECISION,
+  c DOUBLE PRECISION NOT NULL, source TEXT, PRIMARY KEY(instrument, day));
+CREATE TABLE IF NOT EXISTS portfolio_events(
+  id BIGSERIAL PRIMARY KEY, strategy_hash TEXT NOT NULL, sid TEXT NOT NULL, day TEXT NOT NULL, ts DOUBLE PRECISION NOT NULL,
+  kind TEXT NOT NULL, overlay TEXT, mode TEXT, payload TEXT, context TEXT);
+CREATE INDEX IF NOT EXISTS portfolio_events_strategy ON portfolio_events(strategy_hash, id);
+CREATE TABLE IF NOT EXISTS assumption_checks(
+  id BIGSERIAL PRIMARY KEY, strategy_hash TEXT NOT NULL, assumption_id TEXT NOT NULL, ts DOUBLE PRECISION NOT NULL,
+  trigger TEXT, tier TEXT, status TEXT NOT NULL, answers TEXT, evidence TEXT, evidence_hash TEXT, context_hash TEXT,
+  actions TEXT, mode TEXT, cost_usd DOUBLE PRECISION DEFAULT 0, error TEXT);
+CREATE INDEX IF NOT EXISTS assumption_checks_strategy ON assumption_checks(strategy_hash, assumption_id, id);
+
+-- Backtest data fetched on demand: the api asks, the paper broker (the only holder of Alpaca keys) downloads.
+CREATE TABLE IF NOT EXISTS data_requests(
+  id BIGSERIAL PRIMARY KEY, ts DOUBLE PRECISION NOT NULL, spec TEXT NOT NULL, spec_hash TEXT NOT NULL, requested_by TEXT,
+  status TEXT NOT NULL DEFAULT 'pending', progress DOUBLE PRECISION DEFAULT 0, note TEXT, result TEXT, error TEXT,
+  started_at DOUBLE PRECISION, finished_at DOUBLE PRECISION);
+CREATE INDEX IF NOT EXISTS data_requests_status ON data_requests(status, id);
+ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS stage TEXT;
+ALTER TABLE data_requests ADD COLUMN IF NOT EXISTS worker TEXT NOT NULL DEFAULT 'broker';
+-- Model replay for backtests: one cached triage decision per story and replay mode (never written to live signals).
+CREATE TABLE IF NOT EXISTS news_assessments(
+  news_id BIGINT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL, reason TEXT, symbols TEXT, tier TEXT,
+  answers TEXT, model TEXT, cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0, ts DOUBLE PRECISION NOT NULL,
+  PRIMARY KEY(news_id, mode));
+CREATE TABLE IF NOT EXISTS assumption_replays(
+  strategy_hash TEXT NOT NULL, assumption_id TEXT NOT NULL, day TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL,
+  tier TEXT, answers TEXT, cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0, error TEXT, ts DOUBLE PRECISION NOT NULL,
+  PRIMARY KEY(strategy_hash, assumption_id, day, mode));
+
 -- Fund allocation per strategy line (sid, across versions). Set on the dashboard within risk.yaml funds.
 CREATE TABLE IF NOT EXISTS strategy_funds(
   sid TEXT PRIMARY KEY, allocation DOUBLE PRECISION NOT NULL, max_drawdown DOUBLE PRECISION NOT NULL,
   daily_loss DOUBLE PRECISION, status TEXT NOT NULL DEFAULT 'active', reason TEXT, paused_day TEXT,
   base_usd DOUBLE PRECISION NOT NULL, base_ts DOUBLE PRECISION NOT NULL, peak_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
   source TEXT, updated_by TEXT, updated_at DOUBLE PRECISION);
+-- Fixed-dollar allocation; NULL means `allocation` (share of equity) applies.
+ALTER TABLE strategy_funds ADD COLUMN IF NOT EXISTS alloc_usd DOUBLE PRECISION;
 
 -- Owner-set risk controls (dashboard Risk page) over the factory defaults in config/risk.yaml.
 CREATE TABLE IF NOT EXISTS risk_settings(
@@ -163,6 +232,12 @@ CREATE TABLE IF NOT EXISTS risk_settings(
 CREATE TABLE IF NOT EXISTS risk_settings_history(
   id BIGSERIAL PRIMARY KEY, ts DOUBLE PRECISION NOT NULL, key TEXT NOT NULL, old_value TEXT, new_value TEXT,
   actor TEXT, reason TEXT);
+
+-- Four-agent review panel results for design-chat drafts.
+CREATE TABLE IF NOT EXISTS design_reviews(
+  id BIGSERIAL PRIMARY KEY, thread TEXT NOT NULL, draft_hash TEXT NOT NULL, ts DOUBLE PRECISION NOT NULL,
+  role TEXT NOT NULL, model TEXT, result TEXT NOT NULL, actor TEXT);
+CREATE INDEX IF NOT EXISTS design_reviews_thread ON design_reviews(thread, draft_hash);
 
 CREATE TABLE IF NOT EXISTS audit(
   id BIGSERIAL PRIMARY KEY, ts DOUBLE PRECISION NOT NULL, kind TEXT NOT NULL, actor TEXT,

@@ -1,0 +1,331 @@
+# v1 of a fully-invested copy of big_tech_software_tilt_hold v2 (portfolio DSL 0.2).
+# Overlays start in shadow mode: they are evaluated and logged, and only the daily rules place orders.
+dsl: "0.2"
+kind: portfolio
+id: test_better_sol
+version: 1
+source:
+  text: >-
+    Buy 10 big-tech names once: 70% in 5 software names and 30% in 5 others,
+    equal weight inside each group. Hold for about 2 months. Every day at
+    15:45 ET, the first matching rule applies per symbol: > +5% hold;
+    > +3% sell 30% of shares held; < -5% sell all, then rebuy 20% per
+    session starting on the first up day; <= -3% add, capped at 150% of
+    original allocation. Also monitor Nasdaq and sell when it drops 2%
+    in one day. When hardware stocks such as AMD rise, sell software
+    holdings proportionally to cash: a 5% increase removes 30%. Use an
+    equal-weight hardware basket of NVDA, AAPL, AVGO and AMD. The Nasdaq
+    response sells 40%, waits for a positive day, then buys 25% per session
+    until the maximum allocation is rebuilt.
+    this trading strategy have way too much cash reserve at a given point, we should aim to have 100% in stock, unless it is trigger sell criterias
+  based_on: {id: big_tech_software_tilt_hold, version: 2}
+  compiled_by: claude-opus-5-5
+  prompt: architect@v1
+
+authoring:
+  status: proposed_requires_review
+  proposed_defaults:
+    tickers: retain_v1_holdings
+    add_size: "25%"
+    holding_period: 42_exchange_sessions
+    start_date: "2026-10-12"
+    nasdaq: NASDAQ_COMPOSITE
+    macro_timing: immediate_regular_session
+    macro_recovery_step_basis: original_allocation_usd
+    macro_recovery_target: max_holding_100_percent_of_original
+    positive_day_reference: nasdaq_at_daily_decision_vs_prior_regular_close
+    refill_parameters: "below 90% of original allocation and in profit, add 15% per session"
+    hardware_rotation: removed
+  confirmed_choices:
+    capital: "80%"
+    max_holding: "100%"
+    refill_after_trim: "yes"
+    cash_policy: fully_invested_unless_a_sell_rule_triggers
+    day_one: full_capital_not_100_percent_of_account
+    macro_trim: "40%"
+    macro_recovery: wait_for_positive_day_then_25_percent_steps_to_maximum
+  note: >-
+    Copy of big_tech_software_tilt_hold v2 aimed at staying fully invested.
+    The hardware rotation overlay is removed because its proceeds are
+    locked cash by engine design. Capital 80% and max_holding 100% were
+    confirmed by the trader.
+
+holdings:
+  capital: "80%"
+  max_holding: "100%"
+  groups:
+    software:
+      weight: "70%"
+      symbols: [MSFT, GOOGL, META, ORCL, NFLX]
+    other_big_tech:
+      weight: "30%"
+      symbols: [NVDA, AAPL, AMZN, AVGO, TSLA]
+  allocation_basis:
+    equity: first_actual_buy
+    original_allocation: fixed_per_symbol_usd_at_inception
+    trims_do_not_reset_original_allocation: true
+    proceeds: strategy_owned_cash
+
+schedule:
+  timezone: America/New_York
+  calendar: exchange_calendar
+  start_date: "2026-10-12"
+  hold_sessions: 42
+  session_count: first_funded_session_counts_as_one
+  decide_at: "15:45"
+  early_close: 15min_before_regular_close
+  missed_decision: skip_and_notify_no_next_day_catchup
+  horizon_action: liquidate_sleeve_and_finish
+
+params:
+  no_sell_gain: {value: "5%", range: ["3%", "15%"]}
+  trim_gain: {value: "3%", range: ["1%", "10%"]}
+  trim_size: {value: "30%", range: ["5%", "100%"]}
+  exit_loss: {value: "-5%", range: ["-20%", "-2%"]}
+  add_loss: {value: "-3%", range: ["-10%", "-1%"]}
+  add_size: {value: "25%", range: ["5%", "50%"]}
+  refill_floor: {value: "90%", range: ["70%", "100%"]}
+  refill_min_gain: {value: "0%", range: ["0%", "5%"]}
+  refill_step: {value: "15%", range: ["5%", "50%"]}
+  reenter_gain: {value: "0%", range: ["0%", "3%"]}
+  reenter_step: {value: "20%", range: ["5%", "100%"]}
+  macro_decline_return: {value: "-2%", range: ["-10%", "-0.5%"]}
+  macro_trim_size: {value: "40%", range: ["5%", "100%"]}
+  macro_rebuild_step: {value: "25%", range: ["5%", "100%"]}
+
+# Per-symbol rules; the Nasdaq overlay below takes priority over these.
+rules:
+  - {when: "day_change > no_sell_gain", do: hold}
+  - {when: "day_change > trim_gain", do: {trim: trim_size}}
+  - {when: "day_change < exit_loss", do: exit_and_wait}
+  - {when: "day_change <= add_loss", do: {add: add_size}}
+  - {when: "holding < refill_floor and gain > refill_min_gain", do: {add: refill_step}}
+reentry:
+  when: "day_change > reenter_gain"
+  step: reenter_step
+  size_basis: original_allocation_usd
+  once_started: every_session_until_100_percent_rebuilt
+  while_building: exit_rules_only
+  blocked_by: [macro_wait_for_positive_day, same_session_group_reduction, hard_risk, missing_required_data]
+
+market_inputs:
+  nasdaq_session_return:
+    instrument: NASDAQ_COMPOSITE
+    instrument_class: index
+    source: account_configured_index_feed
+    measure: simple_return
+    reference: previous_regular_session_close
+    observation: fresh_verified_regular_session_value
+    max_age: 30s
+    required: true
+    silent_proxy_fallback: prohibited
+
+assumptions:
+  - id: group_definitions
+    kind: implementation_note
+    monitored: false
+    statement: >-
+      Software = MSFT, GOOGL, META, ORCL, NFLX (70%, 14% of the sleeve each);
+      other big tech = NVDA, AAPL, AMZN, AVGO, TSLA (30%, 6% each), as in v2.
+  - id: changed_capital
+    kind: implementation_note
+    monitored: false
+    statement: >-
+      CHANGED: capital raised from 45% (v2) to 80% of equity at the first buy,
+      as the trader chose. The first session buys the full 80%; 100% of the
+      account is not possible because the sleeve cap is 90%. Per-symbol worst
+      case = 80% x 14% x 100% = 11.2% (cap 15%).
+  - id: changed_max_holding
+    kind: implementation_note
+    monitored: false
+    statement: >-
+      CHANGED: max_holding lowered from 150% to 100%, as the trader chose.
+      The -3% add now only tops a position back up to its original allocation,
+      and the Nasdaq rebuild stops at 100% of the original allocation instead of 150%.
+  - id: changed_initial_funding_text
+    kind: implementation_note
+    monitored: false
+    statement: >-
+      CHANGED: initial_funding_after_wait now reads
+      original_100_percent_allocation_not_macro_rebuild_target, so it agrees
+      with max_holding 100% (fix requested by the validator).
+  - id: changed_rotation_removed
+    kind: implementation_note
+    monitored: false
+    statement: >-
+      CHANGED: the hardware_rally_software_to_cash overlay, the hardware basket
+      market input (NVDA, AAPL, AVGO, AMD) and its params are removed. In the v2
+      backtest it caused 813 of 2,005 sells, and its proceeds stay as locked cash
+      that is never reinvested. AMD is no longer monitored. This drops the
+      original hardware-rotation requirement.
+  - id: changed_refill_rule
+    kind: implementation_note
+    monitored: false
+    statement: >-
+      CHANGED: new last daily rule, confirmed by the trader. If no other rule
+      matches, a symbol's market value is below 90% of its original allocation
+      and its price is above the average cost of shares held, buy 15% of the
+      original allocation (capped at 100%). It refills trimmed winners without
+      averaging down losers. Cost: more turnover; refills happen at higher prices.
+  - id: kept_rules
+    kind: implementation_note
+    monitored: false
+    statement: >-
+      Unchanged from v2: the +5% hold, +3% trim of 30%, -5% exit with 20%
+      re-entry steps, -3% add of 25%, Nasdaq -2% trim of 40% with 25% rebuild
+      steps, 42 sessions then sell all, 15% sleeve drawdown stop, shadow-mode overlays.
+  - id: risk_note
+    kind: implementation_note
+    monitored: false
+    statement: >-
+      At 80% invested, the 15% sleeve stop equals about 12% of account equity,
+      and dollar drawdowns will be larger than v2's -8.9%. No fund allocation is
+      set; the other paper strategies share the remaining ~20% of buying power.
+  - id: macro_context
+    kind: market_thesis
+    monitored: true
+    critical: false
+    statement: The supplied macro evidence is consistent with the sleeve's long technology exposure.
+    evaluation:
+      interval: 30min
+      on: [macro_threshold_crossing, new_relevant_macro_news]
+      tiers: [t1, t2]
+      result_max_age: 30min
+    questions:
+      - id: macro_compatibility
+        prompt: Is the supplied macro evidence supportive, adverse or unclear for this long technology sleeve?
+        type: choice
+        choices: [supportive, adverse, unclear, unknown]
+        assessed_by: [t1, t2]
+        evidence_required: true
+    assessment:
+      supported_when:
+        all: [{question: macro_compatibility, operator: eq, value: supportive}]
+      contradicted_when:
+        all: [{question: macro_compatibility, operator: eq, value: adverse}]
+      otherwise: uncertain
+      conflicting_rules: uncertain
+    responses:
+      on_supported: [log]
+      on_contradicted: [log, notify_dashboard, request_t2]
+      on_uncertain: [log]
+
+portfolio_overlays:
+  precedence: [account_safety, horizon_exit, symbol_full_exit, merged_macro_and_group_reduction, macro_buy_pause, symbol_daily_rule, macro_rebuild, symbol_rebuild_or_initial_buy]
+  rules:
+    - id: nasdaq_two_percent_trim_and_rebuild
+      scenario_ref: portfolio_macro_session_decline
+      bindings: {metric: nasdaq_session_return, threshold_param: macro_decline_return}
+      evaluation: {on: every_fresh_observation, session: regular, before_initial_buy: true}
+      numeric_condition: {operator: lte, threshold_param: macro_decline_return}
+      routing: numeric_mandatory_laya_context
+      response:
+        action: trim_sleeve_and_rebuild
+        scope: all_strategy_owned_holdings
+        sizing: {trim_param: macro_trim_size, basis: current_shares_at_trigger_snapshot}
+        block_buys_immediately: true
+        cancel: strategy_owned_pending_buys
+        state_machine:
+          phases: [normal, reduction_pending, awaiting_positive_session, rebuilding]
+          recovery_observation: daily_decision_on_a_later_exchange_session
+          recovery_requires: all_macro_reduction_orders_reconciled
+          start_rebuilding_when: nasdaq_session_return_is_strictly_positive
+          rebuild_step_param: macro_rebuild_step
+          rebuild_step_basis: original_allocation_usd_per_symbol
+          rebuild_target: holdings.max_holding_times_original_allocation
+          once_started: each_session_even_if_not_positive_unless_retriggered
+          cash_limit: unreserved_strategy_cash_and_account_risk
+          no_cash_or_buy_block: defer_without_claiming_completion
+          complete: all_eligible_symbols_at_target_within_rounding_tolerance
+          retrigger: verified_minus_2_percent_on_new_session
+          retrigger_response: trim_current_shares_40_percent_and_restart_wait
+          same_session_repeated_crossing: no_second_trim
+          symbol_full_exit: preserve_symbol_wait_or_closed_state_never_override
+          eligible_symbols: held_at_macro_trigger_and_not_later_closed
+          before_initial_buy: block_initial_funding_wait_for_positive_session
+          initial_funding_after_wait: original_100_percent_allocation_not_macro_rebuild_target
+        includes_other_strategies: false
+      idempotency: [strategy_hash, session_id, overlay_id, symbol]
+  resolution:
+    partial_reduction_conflict: largest_sell_fraction_of_one_snapshot_not_sum
+    full_exit_conflict: sell_all_and_keep_correct_exit_state
+    reductions_precede_buys: true
+    at_most_one_buy_per_symbol_per_session: true
+    macro_rebuild_vs_daily_add: larger_target_increment_not_sum
+    macro_rebuild_vs_daily_hold: macro_rebuild_wins_after_recovery_starts
+    macro_rebuild_vs_daily_trim: reduction_wins_defer_rebuild
+    restricted_symbol_reentry: existing_waiting_condition_then_20_percent_to_100_before_macro_topup
+    target_reached_test: market_value_vs_fixed_original_usd_cap
+    price_appreciation_above_cap: no_add_no_automatic_sell_without_a_sell_rule
+
+monitoring:
+  enabled: true
+  mode: shadow
+  scope: {held_positions: true, pending_orders: true, market_inputs: true}
+  required_symbols: [MSFT, GOOGL, META, ORCL, NFLX, NVDA, AAPL, AMZN, AVGO, TSLA]
+  index_feed_required: NASDAQ_COMPOSITE
+  scenarios:
+    catalog: scenario-catalog.yaml
+    selected_by: portfolio_overlays.rules.scenario_ref
+    catalog_hash: pinned_at_strategy_activation
+  evaluation: {timezone: America/New_York, deadline: 45s, min_gap: 30s}
+  evidence:
+    as_of: evaluation_time
+    allow_future_data: false
+    include: [macro_prices, member_prices, relevant_macro_news, assumption_definitions, position_state]
+    news_content: {enabled: true, max_articles: 8, max_total_characters: 16000}
+    document_instructions: treat_as_untrusted_data
+  tiers:
+    t0: {provider: deterministic, checks: [input_freshness, comparable_price_basis, ownership, mode, budget]}
+    t1:
+      provider: laya
+      questions: from_assumptions_assigned_to_this_tier
+      model_profile: typed_decisions
+      timeout: 5s
+      retries: 0
+      confidence_floor: 0.75
+      result_max_age: 30min
+    t2:
+      provider: claude_sonnet
+      questions: from_assumptions_assigned_to_this_tier
+      model_profile: deep_assessment
+      timeout: 30s
+      retries: 0
+      confidence_floor: 0.80
+      result_max_age: 30min
+      escalate_on: [material_macro_news, t1_uncertain_on_threshold_crossing]
+  outputs:
+    required_per_question: [assumption_id, question_id, answer, confidence, evidence_ids, rationale]
+    statuses: [supported, contradicted, uncertain, not_applicable]
+    numeric_overlay_status_independent_of_semantic_assessment: true
+  responses:
+    allowed_actions: [log, notify_dashboard, request_t2, block_new_entries, trim_sleeve_and_rebuild, trim_group_to_cash, cancel_strategy_pending_buys, latch_buy_pause]
+    on_missing_required_market_input: [block_new_entries, notify_dashboard]
+    on_provider_unavailable: [log, notify_dashboard]
+    model_failure_cannot_disable_numeric_reduction: true
+    shadow_mode: audit_only_no_orders_or_buy_pauses
+  budget:
+    inherit_account_caps: true
+    max_calls_per_ticker_per_hour: {t1: 4, t2: 1}
+    max_paid_calls_per_strategy_per_day: 10
+    max_estimated_cost_usd_per_strategy_per_day: 2
+    cache_key: [strategy_hash, assumption_context_hash, evidence_snapshot_hash, tier]
+  audit:
+    store: [trigger_facts, references, snapshot_id, model_answers, rule_priority, target_qty, filled_qty, cash_reserve, pause_state, usage]
+    durable_before_order_submission: true
+
+execution:
+  mode: manual
+  activation: requires_supported_validator_replay_and_owner_paper_enforcement
+  model_actions: contextual_only
+  numeric_overlay_orders: inherit_owner_selected_paper_execution_mode
+  order_semantics:
+    merge_to_one_target_per_symbol: true
+    subtract_working_sell_quantity: true
+    cancel_fill_race: reconcile_actual_fills_before_new_target
+    partial_fill: continue_only_remaining_authorized_quantity
+    blocked_sell: retain_exit_intent_and_notify
+    reserved_cash: actual_net_fill_proceeds_only
+    recheck: [strategy_version, ownership, approval, risk, prices, broker_state]
+limits:
+  max_drawdown: "15%"

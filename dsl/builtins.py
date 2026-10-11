@@ -6,7 +6,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-BUILTINS_VERSION = "builtins@v1"
+from .features import DAILY_FUNCTIONS
+
+BUILTINS_VERSION = "builtins@v2"  # v2: daily-history features and peer() cross-symbol reads
 
 # Bar series: indexable with x[n] (n bars back).
 SERIES = {"open", "high", "low", "close", "volume"}
@@ -18,7 +20,7 @@ POSITION = {"entry_price", "risk_per_share", "bars_held"}
 
 @dataclass(frozen=True)
 class FnSig:
-    args: tuple[str, ...]  # "expr" = any numeric/bool expression, "const" = int literal or param
+    args: tuple[str, ...]  # "expr" = any numeric/bool expression, "const" = int literal or param, "symbol" = declared ticker
     returns: str  # "num" | "bool"
     doc: str
 
@@ -38,7 +40,14 @@ FUNCTIONS: dict[str, FnSig] = {
     "crosses_above": FnSig(("expr", "expr"), "bool", "a > b on this bar and a <= b on the previous bar"),
     "crosses_below": FnSig(("expr", "expr"), "bool", "a < b on this bar and a >= b on the previous bar"),
     "streak": FnSig(("expr",), "num", "Number of consecutive bars, ending now, on which cond is true"),
+    # builtins@v2: cross-symbol reads and daily-history features (dsl/features.py)
+    "peer": FnSig(("symbol", "expr"), "?", "Evaluate expr for another symbol (listed under references) as of the same moment"),
 }
+for _fn, (_n, _sym, _doc) in DAILY_FUNCTIONS.items():
+    FUNCTIONS[_fn] = FnSig((("symbol",) if _sym else ()) + ("const",) * _n, "num", _doc)
+
+# Functions usable in portfolio rules (decided once a day from completed sessions plus day_change).
+PORTFOLIO_FUNCTIONS = set(DAILY_FUNCTIONS) | {"peer"}
 
 
 @dataclass(frozen=True)

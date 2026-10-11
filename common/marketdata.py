@@ -5,6 +5,7 @@ import json
 from datetime import date
 
 from dsl.evaluator import Daily, DayData, SignalBook
+from dsl.features import HISTORY_SESSIONS
 
 from . import db
 from . import timeutil as T
@@ -33,7 +34,7 @@ def store_news(conn, sd: SimDay, session: str):
     )
 
 
-def history(conn, symbol: str, before: date, n: int = 60) -> list[Daily]:
+def history(conn, symbol: str, before: date, n: int = HISTORY_SESSIONS) -> list[Daily]:
     rs = db.rows(conn, "SELECT * FROM daily WHERE symbol=? AND day<? ORDER BY day DESC LIMIT ?",
                  (symbol, before.isoformat(), n))
     return [Daily(r["day"], r["o"], r["h"], r["l"], r["c"], r["v"]) for r in reversed(rs)]
@@ -49,12 +50,8 @@ def load_day(conn, symbol: str, day: date) -> DayData:
 
 def bar_days(conn) -> list[date]:
     """Sessions that have intraday bars stored, oldest first."""
-    out = set()
-    for r in conn.execute("SELECT DISTINCT day FROM daily ORDER BY day"):
-        d = date.fromisoformat(r["day"])
-        if conn.execute("SELECT 1 FROM bars WHERE ts>=? AND ts<? LIMIT 1", (T.open_ts(d), T.close_ts(d))).fetchone():
-            out.add(d)
-    return sorted(out)
+    return [date.fromisoformat(r['day']) for r in conn.execute(
+        "SELECT DISTINCT (to_timestamp(ts) AT TIME ZONE 'America/New_York')::date::text AS day FROM bars ORDER BY day")]
 
 
 def signal_book(conn, start_ts: int, end_ts: int) -> SignalBook:

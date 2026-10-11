@@ -24,6 +24,21 @@ def parse_pct(v) -> float:
     return float(m.group(1)) / 100.0
 
 
+_USD = re.compile(r"^\s*\$?\s*(\d+(?:\.\d+)?)\s*([kKmM]?)\s*$")
+
+
+def parse_usd(v) -> float:
+    """'$25,000' -> 25000, '25k' -> 25000, '1.5m' -> 1500000. Plain numbers are returned unchanged."""
+    if isinstance(v, bool):
+        raise ValueError(f"expected a dollar amount, got {v!r}")
+    if isinstance(v, (int, float)):
+        return float(v)
+    m = _USD.match(str(v).replace(",", "").replace("_", ""))
+    if not m:
+        raise ValueError(f"expected a dollar amount like '$25,000' or '25k', got {v!r}")
+    return float(m.group(1)) * {"": 1, "k": 1e3, "m": 1e6}[m.group(2).lower()]
+
+
 def parse_number(v) -> float:
     if isinstance(v, bool):
         raise ValueError(f"expected a number, got {v!r}")
