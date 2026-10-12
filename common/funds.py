@@ -33,6 +33,11 @@ def share(r: dict, equity: float) -> float:
     return r["allocation"]
 
 
+def reserved_share(r: dict, equity: float) -> float:
+    """The part of a fund row held for it while idle, as a share of equity."""
+    return share(r, equity) * (r["reserved"] if r.get("reserved") is not None else 1.0)
+
+
 def base_usd(r: dict, equity: float) -> float:
     return r["alloc_usd"] if r.get("alloc_usd") is not None else r["allocation"] * equity
 
@@ -114,7 +119,7 @@ def account(conn, risk: RiskConfig, strategies: dict | None = None) -> F.Account
             sid=sid, kind=s.kind, allocation=share(r, eq), fixed_usd=r["alloc_usd"], source=r["source"], max_drawdown=r["max_drawdown"],
             daily_loss=r["daily_loss"], status=r["status"], reason=r["reason"] or "", base_usd=r["base_usd"],
             base_ts=r["base_ts"], peak_pnl=max(r["peak_pnl"], realized + unreal), deployed=deployed_by.get(sid, 0.0),
-            pnl=realized + unreal, pnl_today=realized_today + unreal)
+            pnl=realized + unreal, pnl_today=realized_today + unreal, reserved=r["reserved"] if r.get("reserved") is not None else 1.0)
     intraday = sum(f.deployed for f in out.values() if f.kind == "intraday")
     peak = max(float(db.kv_get(conn, "funds.peak_equity") or 0.0), eq)
     return F.Account(equity=eq, cash=cash, deployed=sum(deployed_by.values()), intraday_deployed=intraday,
@@ -155,8 +160,9 @@ def status(conn, sid: str) -> tuple[str, str]:
 
 
 def set_allocation(conn, risk: RiskConfig, s, allocation: float | None, max_drawdown: float, daily_loss: float | None, actor: str,
-                   alloc_usd: float | None = None) -> list[str]:
-    """Owner sets a strategy line's slice, as a share of equity or (alloc_usd) a fixed dollar amount.
+                   alloc_usd: float | None = None, reserved: float | None = None) -> list[str]:
+    """Owner sets a strategy line's ceiling, as a share of equity or (alloc_usd) a fixed dollar amount, and
+    `reserved`, the part of it held while idle (None keeps the current one; 100% for a new line).
 
     A fixed amount is checked against the limits at today's equity. The drawdown base restarts from now."""
     cfg = risk.funds
@@ -167,10 +173,13 @@ def set_allocation(conn, risk: RiskConfig, s, allocation: float | None, max_draw
         if alloc_usd <= 0:
             return ["allocation must be more than $0"]
         allocation = alloc_usd / eq
+    if reserved is None:
+        cur = db.row(conn, "SELECT reserved FROM strategy_funds WHERE sid=?", (s.id,))
+        reserved = cur["reserved"] if cur else 1.0
     run = running(conn, risk)
-    others = {r["sid"]: share(r, eq) for r in db.rows(conn, "SELECT sid, allocation, alloc_usd FROM strategy_funds")
+    others = {r["sid"]: reserved_share(r, eq) for r in db.rows(conn, "SELECT sid, allocation, alloc_usd, reserved FROM strategy_funds")
               if r["sid"] != s.id and r["sid"] in run}
-    errs = F.validate_allocation(s.id, allocation, max_drawdown, daily_loss if s.kind == "intraday" else None, others, cfg)
+    errs = F.validate_allocation(s.id, allocation, max_drawdown, daily_loss if s.kind == "intraday" else None, others, cfg, reserved)
     if errs:
         if alloc_usd is not None:
             errs = [f"${alloc_usd:,.0f} is {allocation:.1%} of equity ${eq:,.0f}: {e}" for e in errs]
@@ -178,21 +187,38 @@ def set_allocation(conn, risk: RiskConfig, s, allocation: float | None, max_draw
     ensure(conn, risk, s, actor, allocation, alloc_usd)
     acct = account(conn, risk, {s.id: s})
     pnl = acct.strategies[s.id].pnl
-    conn.execute("UPDATE strategy_funds SET allocation=?, alloc_usd=?, max_drawdown=?, daily_loss=?, base_usd=?, base_ts=?, peak_pnl=0,"
-                 " source='set', updated_by=?, updated_at=? WHERE sid=?",
-                 (allocation, alloc_usd, max_drawdown, daily_loss if s.kind == "intraday" else None,
+    conn.execute("UPDATE strategy_funds SET allocation=?, alloc_usd=?, reserved=?, max_drawdown=?, daily_loss=?, base_usd=?, base_ts=?,"
+                 " peak_pnl=0, source='set', updated_by=?, updated_at=? WHERE sid=?",
+                 (allocation, alloc_usd, reserved, max_drawdown, daily_loss if s.kind == "intraday" else None,
                   alloc_usd if alloc_usd is not None else allocation * eq, time.time(), actor, time.time(), s.id))
-    audit.log(conn, "funds.allocated", actor, {"sid": s.id, "allocation": allocation, "alloc_usd": alloc_usd, "max_drawdown": max_drawdown,
+    audit.log(conn, "funds.allocated", actor, {"sid": s.id, "allocation": allocation, "alloc_usd": alloc_usd, "reserved": reserved,
+                                                "max_drawdown": max_drawdown,
                                                 "daily_loss": daily_loss, "pnl_before_rebase": pnl})
     return []
 
 
 def unallocated(conn, risk: RiskConfig, exclude: str | None = None) -> float:
+    """Share of equity not reserved by any running strategy (new reserves must fit in it; bursts draw on it)."""
     run = running(conn, risk)
     eq, _ = equity_now(conn)
-    used = sum(share(r, eq) for r in db.rows(conn, "SELECT sid, allocation, alloc_usd FROM strategy_funds")
+    used = sum(reserved_share(r, eq) for r in db.rows(conn, "SELECT sid, allocation, alloc_usd, reserved FROM strategy_funds")
                if r["sid"] in run and r["sid"] != exclude)
     return risk.funds.max_deployed - used
+
+
+def activity(conn, sid: str, days: int = 30) -> dict:
+    """How often a line actually uses its money: sessions with an entry over the last `days`, and its busiest day."""
+    since = time.time() - days * 86400
+    rows = db.rows(conn, "SELECT entry_ts, qty, entry_price FROM trades WHERE sid=? AND entry_ts>=?", (sid, int(since)))
+    by_day: dict[str, float] = {}
+    for r in rows:
+        d = str(T.et(r["entry_ts"]).date())
+        by_day[d] = by_day.get(d, 0.0) + abs((r["qty"] or 0) * (r["entry_price"] or 0))
+    for r in db.rows(conn, "SELECT day, filled_qty, avg_price FROM portfolio_orders WHERE sid=? AND side='buy' AND filled_qty>0 AND ts>=?",
+                     (sid, since)):
+        by_day[r["day"]] = by_day.get(r["day"], 0.0) + r["filled_qty"] * (r["avg_price"] or 0)
+    sessions = sum(1 for i in range(days) if T.et(since + i * 86400).weekday() < 5)
+    return {"days": days, "sessions": sessions, "active_sessions": len(by_day), "busiest_usd": max(by_day.values(), default=0.0)}
 
 
 def pause(conn, sid: str, reason: str, actor: str):

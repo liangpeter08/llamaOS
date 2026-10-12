@@ -1,0 +1,71 @@
+dsl: 0.1
+id: oil_rsi_test2
+version: 2
+source:
+  text: >-
+    generate a strategy on oilU and oilD we are capture the reversal per day. Also
+    track UUP, if uup goes up, we should have cut position on oilU, and load up on
+    oilD. We should keep 100% allocation at entire trading session and do not hold
+    overnight. We are looking for swing trades by rsi indication and moment signals.
+    Limit trades per day to under 20.
+    [Improvement request on oil_simple_rsi v1] oilD isn't traded at all. draw down
+    is a bit much, see if you can optimize the win, increase bigger position
+  compiled_by: claude-opus-5-5
+  prompt: architect@v1
+assumptions:
+  - "v2: liquidity filter lowered to $2M average daily dollar volume (was $5M). OILU's 20-day ADV fell to about $3.8M (daily range $1.0M-$7.7M in the last 20 sessions), so $5M blocked every entry."
+  - "Copy of oil_simple_rsi v1 as a new strategy. This file trades OILU only; OILD needs a separate mirror file (UUP conditions reversed), to be drafted next."
+  - "OILD DATA GAP: no 1-minute bars are stored for OILD (daily bars only, from 2025-09-08). The OILD mirror will backtest 0 trades until OILD 1-min bars are backfilled. The v1 mirror file (oil_bear_uup_gate) was never created, which is why OILD never traded."
+  - "OILU / OILD = MicroSectors 3x long / 3x inverse oil ETNs. Bearish oil is expressed by buying OILD, never by shorting OILU."
+  - "Always-in regime from v1 kept: the only reasons to be out of OILU are the UUP exit, stop, the momentum filter on re-entry, and the flatten."
+  - "UUP move = UUP's latest 1-min close vs its prior close, read via peer(); a UUP bar older than 2 minutes makes the value missing: no entry and no UUP exit (stop, target and flatten still apply)."
+  - "CHANGED: hysteresis on the UUP gate. Enter OILU only while UUP move < +0.15% (uup_enter, range 0.05%-0.2%); exit only when UUP move >= +0.30% (uup_exit, range 0.25%-0.6%). Reason: v1 used one level for both, giving 45 of 95 exits on the UUP rule and 12-trade whipsaw days (2026-02-19: -$1,021)."
+  - "CHANGED: entry also requires the 1-min close above VWAP (momentum filter). Reason: v1 re-bought right after stops in falling tapes (02-12 two stops -$2,065; 03-31 -$2,323; 04-01 -$1,919). Cost: later entries, missed V-bottoms."
+  - "CHANGED: risk per trade 1.0% -> 1.5% at trader's request for bigger positions; about 60-65% of equity notional at a ~2.3% stop (v1 peak exposure was 41%). Drawdown scales with size; the two filters above are meant to offset it."
+  - "CHANGED: max_open_positions 2 -> 1, so OILU exposure is never doubled."
+  - "CHANGED: max_trades_per_day 20 -> 9, so this file plus the OILD mirror (also 9) stays under the original 20-a-day total. Worst case of 9 consecutive stops x 1.5% = about -13.5% of equity in a day (v1: about -20%)."
+  - "Stop kept = entry minus 0.5 x 14-day daily ATR (range 0.25-1.5); a 1-min ATR stop is too tight for a 3x ETN."
+  - "Target kept = 3R (range 2-8). It never fired in v1 (0 of 95 exits); winners came from holding to the flatten, so it is left wide on purpose."
+  - "Entries 09:35-15:15 ET, flat by 15:50 ET, nothing held overnight."
+  - "Liquidity filter kept: 20-day average dollar volume >= $5M (range $1M-$50M)."
+  - "Hypothesis still being tested: a stronger dollar on the day means weaker oil intraday. v1 made +2.5% over 62 sessions vs +15.1% for the OILU benchmark (which includes overnight holds, so not like-for-like)."
+  - "NOT SUPPORTED: staying 100% allocated regardless of limits. Size is set by risk per trade, capped at 100% of equity and by the Funds-page allocation (must be raised to ~65% or more for this size to take effect)."
+  - "NOT SUPPORTED: partially cutting OILU and loading OILD in one file. Exits are all-or-nothing, and OILD is bought by the mirror file."
+  - "NOT SUPPORTED: a cooldown after a stop. The VWAP filter is the closest substitute."
+suggestions:
+  - "Set a daily loss limit on the account Risk page (for example -4%) before paper."
+  - "Backfill OILD 1-minute bars so the mirror file can be backtested."
+  - "If the VWAP filter costs more than it saves, test removing it alone to isolate the hysteresis effect."
+references: [UUP]
+universe:
+  symbols: [OILU]
+  filters:
+    - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_adv:     {value: 2_000_000, range: [1_000_000, 50_000_000]}
+  uup_enter:   {value: 0.15%,     range: [0.05%, 0.2%]}
+  uup_exit:    {value: 0.30%,     range: [0.25%, 0.6%]}
+  stop_d_mult: {value: 0.5,       range: [0.25, 1.5]}
+  target_r:    {value: 3.0,       range: [2.0, 8.0]}
+vars:
+  uup_move: peer(UUP, close / prior_close - 1)
+entry:
+  side: long
+  window: "09:35-15:15"
+  when_all:
+    - uup_move < uup_enter
+    - close > vwap
+sizing:
+  risk_per_trade: 1.5%
+exit:
+  stop: entry_price - stop_d_mult * atr_d(14)
+  target: entry_price + target_r * risk_per_share
+  flatten_at: "15:50"
+  when_any:
+    - uup_move >= uup_exit
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 9
+  max_open_positions: 1

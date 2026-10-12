@@ -86,7 +86,7 @@ class PortfolioDesk:
         latest = {r["symbol"]: r["d"] for r in db.rows(self.conn, "SELECT symbol, MAX(day) d FROM daily GROUP BY symbol")}
         stale = [s for s in syms if latest.get(s) is None or latest[s] < prev]
         if stale:
-            bars = self.api.bars(stale, "1Day", time.time() - HISTORY_DAYS * 86400, T.open_ts(day), adjustment="split")
+            bars = self.api.history_bars(stale, "1Day", time.time() - HISTORY_DAYS * 86400, T.open_ts(day))
             with db.tx(self.conn):
                 for sym, rows in bars.items():
                     for b in rows:
@@ -222,7 +222,7 @@ class PortfolioDesk:
                                                           "orders": len(dp.orders), "event": dp.event, "status": sl.status})
 
     def insert_orders(self, h, row, s, day, orders, account, positions, intraday_symbols, cutoff):
-        status = "pending" if row["mode"] == "manual" else "approved"
+        status = "approved" if registry.is_auto(row["mode"]) else "pending"
         for o in orders:
             checks = self.checks(h, o, account, positions, intraday_symbols, day)
             ok = all(c.ok for c in checks)
@@ -361,7 +361,7 @@ class PortfolioDesk:
             return None, f"stale: latest common bar ended {now - epoch(t) - 60:.0f}s ago"
         missing = [sym for sym in inp.symbols if (str(day), sym) not in self.basket_prior]
         if missing:
-            daily = self.api.bars(missing, "1Day", T.open_ts(day) - 15 * 86400, T.open_ts(day), adjustment="split")
+            daily = self.api.history_bars(missing, "1Day", T.open_ts(day) - 15 * 86400, T.open_ts(day))
             for sym in missing:
                 prior = [b for b in daily.get(sym, []) if T.et(epoch(b["t"])).date() < day]
                 if prior:

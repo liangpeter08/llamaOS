@@ -1,0 +1,51 @@
+dsl: 0.1
+kind: portfolio
+id: intra_big_tech
+version: 1
+source:
+  text: >-
+    create a strategy that buys top 8 big tech everyday during the initial market open given
+    assumptions that would work (open to ideas here). now use momentum and trends to monitor
+    and nasdaq 100 to give ideas. Trade for small gains and continuous find opportunities
+    across the day. we should target trading every 30 minutes if the condition allows. Trade
+    opening range and look for peek as well. Check news for positive signals and continuous
+    up, we hold.
+  compiled_by: claude-opus-5-5
+  prompt: architect@v1
+assumptions:
+  - "Companion to big_tech_30m_breakout. It implements the follow-up request 'do not flatten_at 15:50 if there is a good moment day, huge positve day', which intraday files cannot do. The two strategies own separate shares; this one cannot take over an intraday position."
+  - "Symbols = AAPL, AMD, AMZN, GOOGL, META, MSFT, NVDA, TSLA, one group, equal weight (12.5% each)."
+  - "Capital = 40% of equity at the first buy (trader confirmed), so 5% of equity per symbol. No adds, so max_holding = 100%."
+  - "The first session buys all 8 names at full allocation, unconditionally."
+  - "Decision once a day at 15:45 ET per symbol, using day_change (price at 15:45 vs yesterday's close)."
+  - "Weak day = day_change below -2% (trader confirmed): sell the whole position and wait."
+  - "Huge positive day = day_change above +3% (trader confirmed): buy back the full allocation in one step (re-entry step 100%)."
+  - "Any other day: hold, no trades."
+  - "Hold up to 130 sessions, then everything is sold (trader confirmed)."
+  - "NOT SUPPORTED: news and the Nasdaq 100 in this file. Portfolio 0.1 rules cannot read news, and no Nasdaq rule was requested here. Rules use only the symbol's own daily move."
+  - "Sleeve drawdown stop = the account default of 15%."
+suggestions:
+  - "Try exit_loss near -0.5% to -1%. That carries a name only while momentum holds, closer to 'hold after huge days'. Cost: more round trips."
+  - "Add a loss stop on cost, e.g. gain < -8% -> exit_and_wait, so slow bleeds without a single -2% day still get cut."
+  - "Tighten limits.max_drawdown to 10% if this runs alongside the intraday strategy at 5% risk."
+holdings:
+  capital: 40%
+  max_holding: 100%
+  groups:
+    big_tech:
+      weight: 100%
+      symbols: [AAPL, AMD, AMZN, GOOGL, META, MSFT, NVDA, TSLA]
+schedule:
+  hold_sessions: 130
+  decide_at: "15:45"
+params:
+  exit_loss:    {value: -2%,  range: [-8%, -0.5%]}
+  strong_day:   {value: 3%,   range: [1%, 8%]}
+  reenter_step: {value: 100%, range: [25%, 100%]}
+rules:
+  - {when: "day_change < exit_loss", do: exit_and_wait}
+reentry:
+  when: "day_change > strong_day"
+  step: reenter_step
+execution:
+  mode: manual

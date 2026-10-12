@@ -24,6 +24,8 @@ def alpaca(monkeypatch):
     monkeypatch.setenv('ALPACA_PAPER','true')
     monkeypatch.setenv('ALPACA_BASE_URL','https://paper-api.alpaca.markets')
     monkeypatch.setenv('MODE','paper')
+    monkeypatch.delenv('ALPACA_DATA_FEED',raising=False)
+    monkeypatch.delenv('ALPACA_HISTORY_FEED',raising=False)
 
 
 def test_live_endpoint_refused(alpaca,monkeypatch):
@@ -68,6 +70,48 @@ def test_pagination_preserves_all_symbols(alpaca):
     api=Alpaca(httpx.Client(transport=httpx.MockTransport(handle)))
     rows=api.bars(['AAPL','MSFT'],'1Min',1,2)
     assert len(rows['AAPL'])==len(rows['MSFT'])==1
+
+
+def test_history_bars_read_sip_and_skip_the_last_15_minutes(alpaca):
+    seen=[]
+    def handle(r):
+        seen.append(dict(r.url.params))
+        return httpx.Response(200,json={'bars':{'OILU':[{'t':'one'}]},'next_page_token':None})
+    api=Alpaca(httpx.Client(transport=httpx.MockTransport(handle)))
+    assert api.history_bars(['OILU'],'1Day',1,time.time())['OILU']
+    p=seen[-1]
+    assert p['feed']=='sip' and p['adjustment']=='split'
+    from datetime import datetime
+    assert datetime.fromisoformat(p['end']).timestamp()<=time.time()-15*60
+    assert api.history_bars(['OILU'],'1Min',time.time()-60,time.time())=={'OILU':[]}  # all inside the delay: no request
+    assert len(seen)==1
+
+
+def test_history_falls_back_to_live_feed_without_sip_access(alpaca):
+    def handle(r):
+        if r.url.params['feed']=='sip':
+            return httpx.Response(403,json={'message':'subscription does not permit querying recent SIP data'})
+        return httpx.Response(200,json={'bars':{'OILU':[{'t':'one'}]},'next_page_token':None})
+    api=Alpaca(httpx.Client(transport=httpx.MockTransport(handle)))
+    assert api.history_bars(['OILU'],'1Day',1,2)['OILU'] and api.history_feed=='iex'
+
+
+def test_stuck_pool_is_replaced(alpaca,monkeypatch):
+    api=Alpaca()
+    calls=[]
+    class Stuck:
+        def request(self,*a,**k):raise httpx.PoolTimeout('')
+        def close(self):calls.append('closed')
+    class Fresh:
+        def request(self,*a,**k):return httpx.Response(200,json={'is_open':False},request=httpx.Request('GET','https://x'))
+    api.http=Stuck()
+    monkeypatch.setattr(api,'_new_client',lambda:Fresh())
+    assert api.clock()=={'is_open':False} and calls==['closed'] and isinstance(api.http,Fresh)
+    api.http=Stuck()
+    with pytest.raises(httpx.PoolTimeout):  # orders are never resent blindly
+        api.request('POST','/v2/orders',json={})
+    other=api.clone()
+    assert other.http is not api.http and other.feed==api.feed
 
 
 class Fake:
@@ -118,7 +162,7 @@ def test_startup_preserves_trade_records(broker,conn):
 def test_early_close_flatten(broker,monkeypatch):
     from common import timeutil as T
     broker.api.calendar=lambda a,b:[{'date':str(a),'close':'13:00'}]
-    broker.api.bars=lambda *a,**k:{}
+    broker.api.bars=broker.api.history_bars=lambda *a,**k:{}
     broker.reload=lambda:'none'
     monkeypatch.setattr(time,'time',lambda:T.open_ts(date(2026,11,27))-3600)
     broker.setup_day(date(2026,11,27))
@@ -307,3 +351,40 @@ def test_compile_saves_custom_display_name_and_new_versions(conn,orb_text,tmp_pa
     assert first['hash']!=second['hash']
     row=db.row(conn,'SELECT display_name,sid,version FROM strategies WHERE hash=?',(second['hash'],))
     assert row=={'display_name':'My Earnings Strategy','sid':'my_earnings_strategy','version':2}
+
+
+def test_news_to_claude_switch_keeps_news_away_from_claude(conn, monkeypatch):
+    from common import db
+    from services.models import quicklayer as Q
+    monkeypatch.setattr(Q, "provider_available", lambda p: True)
+    monkeypatch.setattr(Q, "tier_providers", lambda tier: ["claude_haiku", "heuristic"] if tier == "t1" else ["claude_sonnet", "heuristic"])
+    sent = []
+    monkeypatch.setattr(Q.llm, "call", lambda *a, **k: sent.append(k["task"]) or (_ for _ in ()).throw(RuntimeError("no network")))
+    item = {"symbols": ["AAPL"], "headline": "Apple beats earnings", "summary": ""}
+    ql = Q.QuickLayer(conn)
+    assert Q.news_to_claude(conn)  # default on
+    db.kv_set(conn, Q.NEWS_CLAUDE_KEY, False)
+    assert ql.decide(item)["provider"] == "heuristic"
+    assert ql.decide(item, provider="claude_haiku")["provider"] == "heuristic"  # explicit Claude requests are refused too
+    ql.deep(item, {"notes": [], "theses": []})
+    assert sent == []
+
+
+def test_news_to_claude_active_hours(conn):
+    from datetime import datetime
+    from common import db, news_claude as NC
+    from common.timeutil import ET
+    ts = lambda *a: datetime(*a, tzinfo=ET).timestamp()
+    mon_10, mon_18, sat_10 = ts(2026, 10, 12, 10, 0), ts(2026, 10, 12, 18, 0), ts(2026, 10, 10, 10, 0)
+    assert NC.allowed(conn, mon_18)  # no window set: any time
+    db.kv_set(conn, NC.HOURS_KEY, {"enabled": True, "start": "09:00", "end": "17:00", "weekdays_only": True})
+    assert NC.allowed(conn, mon_10)
+    assert not NC.allowed(conn, mon_18)
+    assert not NC.allowed(conn, sat_10)
+    assert not NC.allowed(conn, ts(2026, 10, 12, 17, 0))  # end is exclusive
+    db.kv_set(conn, NC.HOURS_KEY, {"enabled": True, "start": "22:00", "end": "06:00", "weekdays_only": False})
+    assert NC.allowed(conn, ts(2026, 10, 12, 23, 30)) and NC.allowed(conn, ts(2026, 10, 12, 5, 0))
+    assert not NC.allowed(conn, mon_10)
+    db.kv_set(conn, NC.ON_KEY, False)
+    assert not NC.allowed(conn, ts(2026, 10, 12, 23, 30))  # the off switch wins over the window
+    assert NC.status(conn, mon_10) == NC.settings(conn) | {"active_now": False}

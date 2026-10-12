@@ -1,0 +1,66 @@
+dsl: '0.1'
+id: disc_googl_orb_trend_t31
+version: 1
+source:
+  text: GOOGL opening-range breakout in the direction of its daily trend. Breakouts above the opening range follow through more often when the multi-day trend already points up.
+  compiled_by: templates@v1
+  prompt: discovery@v1
+assumptions:
+- 'single-ticker discovery candidate for GOOGL (family: orb_trend)'
+- Breakouts above the opening range follow through more often when the multi-day trend already points up.
+- 'discovery run #2, trial #31 (evaluated), saved by paper-owner; discovery Sharpe 2.29 over 9 trades; failed gates: enough_trades; never scored on the holdout'
+suggestions:
+- backtest and paper trade before relying on it
+universe:
+  symbols:
+  - GOOGL
+  filters:
+  - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_adv:
+    value: 5000000
+    range:
+    - 1000000
+    - 10000000000
+  or_minutes:
+    value: 15
+    range:
+    - 5
+    - 30
+  trend_n:
+    value: 20
+    range:
+    - 5
+    - 60
+  trend_min:
+    value: 0%
+    range:
+    - -10%
+    - 10%
+  atr_mult:
+    value: 1.5
+    range:
+    - 0.5
+    - 4.0
+  target_r:
+    value: 2.0
+    range:
+    - 1.0
+    - 4.0
+entry:
+  side: long
+  window: 09:45-14:30
+  when_all:
+  - crosses_above(close, or_high(or_minutes))
+  - ret_d(trend_n) >= trend_min
+sizing:
+  risk_per_trade: 0.25%
+exit:
+  stop: entry_price - atr_mult * atr(14)
+  target: entry_price + target_r * risk_per_share
+  flatten_at: '15:50'
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 2

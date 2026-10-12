@@ -86,6 +86,9 @@ class HistoryWorker(threading.Thread):
                 note(f"1-minute bars for {sym}")
                 counts["minute"] += self.minute(c, sym, date.fromisoformat(spec["start"]), end)
                 done += 1
+            counts["feed"] = feed = getattr(self.api, "history_feed", "")
+            for sym in {*spec["daily"], *spec["minute"]}:  # which tape each symbol's stored bars came from, for reports
+                db.kv_set(c, f"history.feed.{sym}", {"feed": feed, "ts": time.time()})
             c.execute("UPDATE data_requests SET status='done', progress=1, note=?, result=?, finished_at=? WHERE id=?",
                       ("done", json.dumps(counts), time.time(), r["id"]))
             log.info("data request %s done: %s", r["id"], counts)
@@ -116,7 +119,7 @@ class HistoryWorker(threading.Thread):
         # Rewrite each symbol's whole stored series so every row shares today's split adjustment.
         first = db.row(c, f"SELECT MIN(day) d FROM daily WHERE symbol IN ({','.join('?' * len(syms))})", tuple(syms))["d"]
         frm = min(start, date.fromisoformat(first)) if first else start
-        bars = self.api.bars(syms, "1Day", T.open_ts(frm) - 6 * 3600, T.close_ts(end) + 3600, adjustment="split")
+        bars = self.api.history_bars(syms, "1Day", T.open_ts(frm) - 6 * 3600, T.close_ts(end) + 3600)
         n = 0
         with db.tx(c):
             for sym, rows in bars.items():
@@ -128,6 +131,10 @@ class HistoryWorker(threading.Thread):
                               " SET o=excluded.o,h=excluded.h,l=excluded.l,c=excluded.c,v=excluded.v",
                               (sym, d.isoformat(), b["o"], b["h"], b["l"], b["c"], b["v"]))
                     n += 1
+        for sym, rows in bars.items():  # a recent listing: remember where its history starts so plans stop re-asking
+            days = [T.et(epoch(b["t"])).date() for b in rows]
+            if days and min(days) > frm + timedelta(days=5):
+                db.kv_set(c, f"history.first.{sym}", {"day": min(days).isoformat(), "ts": time.time()})
         missing = [s for s in syms if not bars.get(s)]
         if missing:
             raise ValueError(f"the feed returned no daily bars for {', '.join(missing)}")
@@ -137,7 +144,7 @@ class HistoryWorker(threading.Thread):
         n, d = 0, start
         while d <= end:
             stop = min(end, d + timedelta(days=MINUTE_CHUNK_DAYS - 1))
-            bars = self.api.bars([sym], "1Min", T.open_ts(d), T.close_ts(stop), adjustment="split").get(sym, [])
+            bars = self.api.history_bars([sym], "1Min", T.open_ts(d), T.close_ts(stop)).get(sym, [])
             with db.tx(c):
                 for b in bars:
                     ts = epoch(b["t"])

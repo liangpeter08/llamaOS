@@ -1,0 +1,70 @@
+dsl: '0.1'
+id: disc_tsla_orb_trend_t19
+version: 1
+source:
+  text: TSLA opening-range breakout in the direction of its daily trend. Breakouts above the opening range follow through more often when the multi-day trend already points up.
+  compiled_by: claude-opus-5-5
+  prompt: discovery@v1
+assumptions:
+- 'single-ticker discovery candidate for TSLA (family: orb_trend)'
+- Breakouts above the opening range follow through more often when the multi-day trend already points up.
+- 'discovery revision: removed `crosses_above(close, or_high(or_minutes))` (entry.when_all) because it did not earn its place'
+- 'discovery revision: trend_n 6 (was 20) to sit in the middle of a stable neighbourhood'
+- With the breakout trigger removed, the file trades early-session drift on days when TSLA's recent 6-session trend is not clearly down. The ATR bracket defines the payoff. The opening-range breakout itself is no longer tested.
+- 'trend gate: meant to filter out days after a sharp multi-day selloff, when TSLA tends to keep being sold intraday. -2.5% over 6 sessions is about 0.3 standard deviations of TSLA 6-day returns, so a mild drift is allowed but a real downtrend is not.'
+- 'discovery revision: trend_min -2.5% (was 0%), the round midpoint of the stable region between -5% and 0%, moving it off the cliff where +5% collapses Sharpe'
+- 'discovery run #1, trial #19 (improved), saved by paper-owner; discovery Sharpe 3.03 over 81 trades; never scored on the holdout'
+suggestions:
+- backtest and paper trade before relying on it
+universe:
+  symbols:
+  - TSLA
+  filters:
+  - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_adv:
+    value: 5000000
+    range:
+    - 1000000
+    - 10000000000
+  or_minutes:
+    value: 15
+    range:
+    - 5
+    - 30
+  trend_n:
+    value: 6
+    range:
+    - 5
+    - 60
+  trend_min:
+    value: -2.5%
+    range:
+    - -10%
+    - 10%
+  atr_mult:
+    value: 1.5
+    range:
+    - 0.5
+    - 4.0
+  target_r:
+    value: 2.0
+    range:
+    - 1.0
+    - 4.0
+entry:
+  side: long
+  window: 09:45-14:30
+  when_all:
+  - ret_d(trend_n) >= trend_min
+sizing:
+  risk_per_trade: 0.25%
+exit:
+  stop: entry_price - atr_mult * atr(14)
+  target: entry_price + target_r * risk_per_share
+  flatten_at: '15:50'
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 2

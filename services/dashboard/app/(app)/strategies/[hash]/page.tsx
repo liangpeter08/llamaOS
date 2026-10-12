@@ -11,7 +11,7 @@ import { Card, Empty, Loading, Notice, Pill, Stat, StatusPill } from "@/componen
 import { isOwner, useSession } from "@/components/session";
 import { OverlaysCard, PortfolioBacktest, SleeveCard } from "@/components/Portfolio";
 import { CategoryEditor, DeleteZone } from "@/components/Organize";
-import { AllocationInput, allocText, allocValue, type AllocMode } from "@/components/Allocation";
+import { AllocationInput, ReservedInput, allocText, allocValue, ceilingUsd, type AllocMode } from "@/components/Allocation";
 import { IterateCard } from "@/components/Discovery";
 
 export default function StrategyPage() {
@@ -63,7 +63,7 @@ export default function StrategyPage() {
             {s.archived_at && <Pill kind="warn">archived {wall(s.archived_at)}</Pill>}
             {data.category && <Link href="/strategies"><Pill>{data.category}</Pill></Link>}
             <Pill kind={portfolio ? "accent" : ""}>{portfolio ? "portfolio · held overnight" : "intraday"}</Pill>
-            <Pill>mode: {s.mode}</Pill>
+            <Pill kind={s.mode === "live_auto" ? "bad" : s.mode?.startsWith("live") ? "warn" : ""}>{modeLabel(s.mode)}</Pill>
             {data.fund && <Link href="/funds"><Pill kind={data.fund.status === "active" ? "" : "bad"}>fund {pct(data.fund.allocation, 1)} of equity{data.fund.status !== "active" ? ` · ${data.fund.status}` : ""}</Pill></Link>}
             <Pill title={s.hash}><span className="mono">sha256 {short(s.hash)}…</span></Pill>
             {!data.integrity && <Pill kind="bad">file changed on disk: hash mismatch</Pill>}
@@ -158,7 +158,7 @@ export default function StrategyPage() {
             {!data.trades.length && <tr><td className="muted">None.</td></tr>}
           </tbody></table>
         </Card>}
-        <Card title="Strategy file"><pre style={{ maxHeight: 480 }}>{data.text}</pre></Card>
+        <StrategyFile key={s.hash} hash={s.hash} text={data.text} owner={isOwner(me)} />
       </div>
 
       <Card title="Ask Claude" className="mt" id="chat">
@@ -193,25 +193,40 @@ function asText(a: unknown): string {
   return String(a);
 }
 
+const MODES = ["paper_manual", "paper_auto", "live_manual", "live_auto"];
+// manual = every trade waits for your approval; auto = trades submit on their own
+const modeLabel = (m: string) => ({ paper_manual: "paper · manual", paper_auto: "paper · auto", live_manual: "live · manual", live_auto: "live · auto",
+  manual: "paper · manual", auto: "paper · auto", paper: "paper · auto" } as Record<string, string>)[m] ?? m;
+
 function Lifecycle({ s, ok, busy, act, minPaper, needsReview, category, categories, fund }: { s: any; ok: boolean; busy: string | null; act: (l: string, p: string, b?: object) => void; minPaper: number; needsReview: boolean; category: string | null; categories: string[]; fund: any }) {
   const [mode, setMode] = useState(s.mode);
   const [reviewed, setReviewed] = useState(false);
   const [promoting, setPromoting] = useState(false);
   const base = `/api/strategies/${s.hash}`;
+  const canPromote = ok && (s.status === "draft" || s.status === "backtested");
   return (
     <Card title="Lifecycle" className="mt">
       <div className="row">
         {ok && <Link className="btn" href={`/backtests?strategy=${s.hash}`}>Configure backtest</Link>}
-        {s.status === "backtested" && <button className="primary" disabled={!!busy || !!s.archived_at} title={s.archived_at ? "Unarchive first" : undefined}
+        {canPromote && <button className={s.status === "backtested" ? "primary" : ""} disabled={!!busy || !!s.archived_at} title={s.archived_at ? "Unarchive first" : undefined}
           onClick={() => setPromoting(!promoting)}>{promoting ? "Cancel promotion" : "Promote to paper…"}</button>}
         {s.status !== "retired" && <button disabled={!!busy} onClick={() => act("retire", `${base}/promote`, { to: "retired" })}>Retire</button>}
         <span className="row" style={{ marginLeft: 12 }}>
-          <select value={mode} onChange={(e) => setMode(e.target.value)}>{["manual", "auto", "paper"].map((m) => <option key={m}>{m}</option>)}</select>
-          <button disabled={!!busy || mode === s.mode} onClick={() => act("mode", `${base}/mode`, { mode })}>Set mode</button>
+          <select value={mode} onChange={(e) => setMode(e.target.value)} aria-label="Execution mode">
+            {MODES.map((m) => <option key={m} value={m} disabled={m.startsWith("live") && s.status !== "live"}>
+              {modeLabel(m)}{m.startsWith("live") && s.status !== "live" ? " (needs live approval)" : ""}</option>)}</select>
+          <button disabled={!!busy || mode === s.mode} onClick={() => {
+            let confirm = "";
+            if (mode === "live_auto") {
+              confirm = window.prompt(`Live auto submits every trade without your approval. A kill-switch trip drops it back to live manual.\n\nType the strategy id (${s.sid}) to confirm:`) ?? "";
+              if (!confirm) return;
+            }
+            act("mode", `${base}/mode`, { mode, confirm });
+          }}>Set mode</button>
         </span>
       </div>
-      {promoting && s.status === "backtested" && (
-        <PromotePanel fund={fund} busy={!!busy} onPromote={(alloc) => {
+      {promoting && canPromote && (
+        <PromotePanel fund={fund} busy={!!busy} untested={s.status === "draft"} onPromote={(alloc) => {
           if (needsReview && !window.confirm("This file's authoring defaults are proposed, not confirmed (authoring.status: proposed_requires_review). Promote only if you reviewed them, the back-translation and the assumptions.")) return;
           act("paper", `${base}/promote`, { to: "paper", ...(needsReview ? { reviewed: true } : {}), ...alloc });
           setPromoting(false);
@@ -241,13 +256,16 @@ function Lifecycle({ s, ok, busy, act, minPaper, needsReview, category, categori
   );
 }
 
-function PromotePanel({ fund, busy, onPromote }: { fund: any; busy: boolean; onPromote: (alloc: object) => void }) {
+function PromotePanel({ fund, busy, untested, onPromote }: { fund: any; busy: boolean; untested: boolean; onPromote: (alloc: object) => void }) {
   const cur = fund?.current;
   const [mode, setMode] = useState<AllocMode>(cur?.mode ?? "pct");
   const [value, setValue] = useState(fund ? allocValue(cur?.mode ?? "pct", cur ? cur.allocation : fund.suggested, cur ? cur.usd : fund.suggested * fund.equity) : "");
+  const [reserved, setReserved] = useState(fund ? `${+(((cur ? cur.reserved : fund.suggested_reserved) ?? 1) * 100).toFixed(1)}` : "100");
+  const warn = untested && <Notice kind="warn">This version hasn&apos;t been backtested. It runs on paper with only the validator and risk controls checking it.</Notice>;
   if (!fund) {
     return (
       <div className="card" style={{ marginTop: 12 }}>
+        {warn}
         <p className="muted">Fund controls are off, so this strategy runs without its own allocation.</p>
         <button className="primary" disabled={busy} onClick={() => onPromote({})}>Promote to paper</button>
       </div>
@@ -255,18 +273,21 @@ function PromotePanel({ fund, busy, onPromote }: { fund: any; busy: boolean; onP
   }
   return (
     <div className="card" style={{ marginTop: 12 }}>
+      {warn}
       <b>Fund allocation on paper</b>
       <p className="muted">
         The money this strategy may use. A percent of the fund grows and shrinks with equity; a fixed amount stays put. Its rules can use up to {pct(fund.wants, 1)} of
-        equity; {pct(fund.room, 1)} (${money(fund.room * fund.equity)}) is unallocated.
+        equity; {pct(fund.room, 1)} (${money(fund.room * fund.equity)}) is unreserved. Reserved money is held for it even while idle; the rest
+        of the allocation is drawn from the shared pool only when it trades, so a strategy that seldom trades can get a large allocation with a small reserve.
         {cur && " This strategy line already has an allocation from an earlier version; saving here replaces it."}
         {fund.kind === "portfolio" && " A new sleeve is sized to fit this allocation."}
       </p>
       <div className="row">
         <AllocationInput mode={mode} value={value} equity={fund.equity} disabled={busy}
           onMode={(m, v) => { setMode(m); setValue(v); }} onValue={setValue} />
+        <ReservedInput value={reserved} onValue={setReserved} ceilingUsd={ceilingUsd(mode, value, fund.equity)} disabled={busy} />
         <button className="primary" disabled={busy || !value.trim()}
-          onClick={() => onPromote({ allocation: allocText(mode, value), alloc_mode: mode })}>Promote to paper</button>
+          onClick={() => onPromote({ allocation: allocText(mode, value), alloc_mode: mode, reserved: reserved.trim() || undefined })}>Promote to paper</button>
       </div>
       <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>Turn it on or off and adjust the allocation later on the Overview page.</p>
     </div>
@@ -304,6 +325,43 @@ function Duplicate({ s }: { s: any }) {
         <input value={name} onChange={(e) => setName(e.target.value)} maxLength={80} required style={{ flex: 1, minWidth: 160 }} placeholder="Name of the copy" />
         <button disabled={busy || !name.trim()}>{busy ? "Duplicating…" : "Duplicate as-is"}</button>
       </form>
+    </Card>
+  );
+}
+
+// View the file, or edit it: saving writes the next version as a new draft (this version is never changed).
+function StrategyFile({ hash, text, owner }: { hash: string; text: string; owner: boolean }) {
+  const router = useRouter();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(text);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function save() {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await post<any>(`/api/strategies/${hash}/edit`, { text: draft });
+      router.push(`/strategies/${r.hash}`);
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  }
+  return (
+    <Card title={<span className="row between" style={{ width: "100%" }}>Strategy file
+      {owner && !editing && <button type="button" onClick={() => { setDraft(text); setEditing(true); }}>Edit</button>}</span>}>
+      {!editing ? <pre style={{ maxHeight: 480 }}>{text}</pre> : (
+        <>
+          <p className="muted" style={{ marginTop: 0 }}>Saving creates the next version as a new draft. This version, its backtests and approvals stay unchanged.</p>
+          {error && <Notice kind="bad">{error}</Notice>}
+          <textarea className="mono" value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false}
+            style={{ width: "100%", minHeight: 420, fontSize: 12 }} />
+          <div className="row" style={{ marginTop: 8 }}>
+            <button className="primary" disabled={busy || draft === text} onClick={save}>{busy ? "Saving…" : "Save as new version"}</button>
+            <button type="button" disabled={busy} onClick={() => { setEditing(false); setError(null); }}>Cancel</button>
+          </div>
+        </>
+      )}
     </Card>
   );
 }

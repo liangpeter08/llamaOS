@@ -34,7 +34,7 @@ Signals, all `from: news_agent@v1` except note.stance, which is `from: notes@v1`
 - note.stance: bullish, bearish, neutral or avoid.
 Each signal takes `max_age`: since_prior_close, session, or a duration such as 30min.
 
-Top-level keys: dsl, id, version, source, assumptions, suggestions, universe {from: {news_today: bool}, filters: [...]}, timeframe: 1min, params {name: {value, range: [lo, hi]}}, signals, vars, entry {side, window, when_all}, sizing {risk_per_trade}, exit {stop, target, flatten_at, when_any}, execution {mode: manual}, limits {max_trades_per_day, max_open_positions, max_position}.
+Top-level keys: dsl, id, version, source, assumptions, suggestions, universe {from: {news_today: bool}, filters: [...]}, timeframe: 1min, params {name: {value, range: [lo, hi]}}, signals, vars, entry {side, window, when_all}, sizing {risk_per_trade}, exit {stop, target, flatten_at, when_any}, execution {mode: manual}, limits {max_trades_per_day, max_open_positions}.
 
 Intraday reference example:
 ```yaml

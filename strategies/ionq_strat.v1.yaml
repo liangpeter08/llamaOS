@@ -1,0 +1,49 @@
+dsl: 0.1
+kind: portfolio
+id: ionq_strat
+version: 1
+source:
+  text: "IONQ and QUBT, I want long hold these two holds, when daily gains of 5% trim 33%, when lost -3% add back 10% positions"
+  compiled_by: claude-opus-5-5
+  prompt: architect@v1
+assumptions:
+  - "Holdings = IONQ and QUBT, one group, 50/50 equal weight (15% of equity each)."
+  - "Capital = 30% of equity at the first buy (trader confirmed option A)."
+  - "max_holding = 100%: adds only refill toward each symbol's original dollar allocation, never above it (trader confirmed option A)."
+  - "Because the cap is measured on market value, adds can also refill after a price drop with no prior trim, still capped at the original allocation."
+  - "Long hold = 130 sessions (~6 months, the maximum), then everything is sold (trader confirmed)."
+  - "Decide once a day at 15:45 ET, the latest allowed time."
+  - "Daily gain of 5% = day_change (15:45 price vs prior close) at or above +5%: sell 33% of the shares held."
+  - "Lost -3% = the day's move at or below -3%, not the loss vs cost (trader confirmed): buy 10% of the original allocation."
+  - "Add brake: adds only while the 20-session return is above -15%. This avoids averaging down into a sustained collapse (trader confirmed). If the brake blocks, nothing happens that day."
+  - "Rule order: the trim is checked first, then the add. The two cannot both match on one day."
+  - "No per-symbol stop. The only downside control is the 15% sleeve drawdown stop, which is the account limit and equals about 4.5% of equity at 30% capital."
+  - "Data: about 275 daily sessions per symbol (2025-09-08 to 2026-10-09) and no stored 1-minute bars for either symbol. The 15:45 decision price may be approximated in backtest."
+suggestions:
+  - "Compare against a plain buy-and-hold of the same two names. On this account, trim/add variants (big_tech_software_tilt_hold v2, test_better_sol) lagged their benchmark."
+  - "Consider a per-symbol cost stop, e.g. gain below -25% leads to exit_and_wait, so one name's collapse doesn't trip the whole-sleeve stop."
+  - "Consider a smaller trim (20-25%) so repeated +5% days in a rally don't strip the position too quickly."
+holdings:
+  capital: 30%
+  max_holding: 100%
+  groups:
+    quantum:
+      weight: 100%
+      symbols: [IONQ, QUBT]
+schedule:
+  hold_sessions: 130
+  decide_at: "15:45"
+params:
+  trim_gain:   {value: 5%,   range: [3%, 10%]}
+  trim_size:   {value: 33%,  range: [10%, 50%]}
+  add_loss:    {value: -3%,  range: [-8%, -1%]}
+  add_size:    {value: 10%,  range: [5%, 25%]}
+  trend_n:     {value: 20,   range: [10, 60]}
+  trend_floor: {value: -15%, range: [-30%, -5%]}
+rules:
+  - {when: "day_change >= trim_gain", do: {trim: trim_size}}
+  - {when: "day_change <= add_loss and ret_d(trend_n) > trend_floor", do: {add: add_size}}
+execution:
+  mode: manual
+limits:
+  max_drawdown: 15%

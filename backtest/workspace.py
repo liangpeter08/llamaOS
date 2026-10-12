@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from common import audit, db, history, marketdata as MD, registry, replay as RP, timeutil as T
 from common.config import RiskConfig, PortfolioRisk, FundsRisk, load_risk, universe
+from dsl.portfolio_v2 import INDEXES
 from dsl.validator import validate
 from . import engine
 
@@ -47,7 +48,8 @@ class RunConfig(BaseModel):
     min_history_sessions: int = Field(default=20, ge=20, le=60)
     missing_data: Literal['skip_symbol', 'strict'] = 'skip_symbol'
     max_volume_participation: float = Field(default=1, gt=0, le=1)
-    benchmark: str = Field(default='', max_length=16)
+    benchmark: str = Field(default='', max_length=24)  # primary benchmark: excess return is measured against it
+    benchmarks: list[str] = Field(default_factory=list, max_length=6)  # every benchmark drawn; the primary is first
     risk_free_rate: float = Field(default=0, ge=0, le=0.5)
     holdout_pct: float = Field(default=0, ge=0, le=0.5)
     rolling_window: int = Field(default=0, ge=0, le=252)
@@ -59,6 +61,7 @@ class RunConfig(BaseModel):
     model_replay: Literal['recorded', 'offline', 'models'] = 'recorded'  # where news/assumption answers come from (common/replay.py)
     model_budget_usd: float = Field(default=5, ge=0, le=200)  # paid model spend cap for one run
     confirm_model_cost: bool = False  # owner accepted an estimate at or above replay.HIGH_COST_USD
+    replay_note: str = Field(default='', max_length=500)  # set by create_run when it switches replay mode
     parent_id: int | None = Field(default=None, gt=0)
 
     @model_validator(mode='after')
@@ -69,7 +72,9 @@ class RunConfig(BaseModel):
             raise ValueError('Rolling windows require at least five sessions.')
         self.symbols = list(dict.fromkeys(s.strip().upper() for s in self.symbols if s.strip()))
         self.benchmark = self.benchmark.strip().upper()
-        if any(len(s) > 16 or not all(c.isalnum() or c in '.-' for c in s) for s in self.symbols + ([self.benchmark] if self.benchmark else [])):
+        self.benchmarks = list(dict.fromkeys(([self.benchmark] if self.benchmark else []) + [b.strip().upper() for b in self.benchmarks if b.strip()]))[:6]
+        self.benchmark = self.benchmarks[0] if self.benchmarks else ''
+        if any(len(s) > 16 or not all(c.isalnum() or c in '.-' for c in s) for s in self.symbols + [b for b in self.benchmarks if b not in INDEXES]):
             raise ValueError('Invalid ticker symbol.')
         if any(len(t) > 40 for t in self.tags):
             raise ValueError('Tags must be at most 40 characters.')
@@ -108,7 +113,69 @@ def session_days(c, kind, config, strat=None):
     return [d for d in days if start <= d <= end]
 
 
+def history_gaps(c, symbols, config, days=None) -> list[str]:
+    """Why sessions in the window can't be replayed for lack of prior daily history, with the first start date that works."""
+    start, end = history.window('intraday', config)
+    out = []
+    for sym in symbols:
+        daily = [r['day'] for r in db.rows(c, 'SELECT day FROM daily WHERE symbol=? AND day<=? ORDER BY day', (sym, end.isoformat()))]
+        first = days[0].isoformat() if days else start.isoformat()
+        prior = sum(d < first for d in daily)
+        if prior >= config.min_history_sessions:
+            continue
+        if not daily:
+            out.append(f'{sym}: no daily bars up to {end}.')
+            continue
+        stored = [r['day'] for r in db.rows(c, 'SELECT day FROM daily WHERE symbol=? ORDER BY day', (sym,))]
+        ok = stored[config.min_history_sessions] if len(stored) > config.min_history_sessions else None
+        since = f'{sym}: daily history starts {daily[0]} (it may have started trading then), so it has {prior} of the {config.min_history_sessions} prior sessions a backtest needs'
+        if ok and ok > end.isoformat():
+            out.append(since + f'. The first testable session is {ok}, after this window: move the dates to start on {ok} or later.')
+        elif ok:
+            out.append(since + f'. The first testable session is {ok}: move the start date to {ok} or later.')
+        else:
+            out.append(since + f'. Only {len(stored)} sessions are stored; wait until it has {config.min_history_sessions + 1}.')
+    return out
+
+
+RECORDED_MIN_COVERAGE = 0.1  # below this share of sessions with recorded signals, 'recorded' replay can't test a news strategy
+
+
+def recorded_coverage(c, symbols, days) -> tuple[int, int]:
+    """Sessions in `days` with at least one live-recorded signal for any of `symbols` (prior close to close), and the total."""
+    if not days or not symbols:
+        return 0, len(days)
+    ts = [r['ts'] for r in db.rows(c, 'SELECT ts FROM signals WHERE symbol = ANY(?) AND ts>=? AND ts<=? ORDER BY ts',
+                                     (list(symbols), T.prior_close_ts(days[0]), T.close_ts(days[-1])))]
+    covered = sum(1 for d in days if any(T.prior_close_ts(d) <= t <= T.close_ts(d) for t in ts))
+    return covered, len(days)
+
+
+def signal_gap(c, strat, config, symbols, days) -> str | None:
+    """Warn when a news-gated intraday strategy would replay recorded signals that barely cover the window."""
+    if config.model_replay != 'recorded' or getattr(strat, 'kind', 'intraday') != 'intraday' or not getattr(strat, 'uses_signals', False):
+        return None
+    covered, total = recorded_coverage(c, symbols, days)
+    if not total or covered >= RECORDED_MIN_COVERAGE * total:
+        return None
+    return (f"Recorded news signals cover {covered} of {total} sessions for {', '.join(symbols)} (signals are recorded only while "
+            "the system runs live), so news-gated rules stay false on the rest. Use model replay 'offline' (free) or 'models'.")
+
+
 def preflight(c, config, strat=None, risk=None):
+    risk = risk or load_risk(conn=c)
+    if strat is None:
+        strat, why = registry.load(c, config.strategy_hash, risk)
+        if not strat:
+            raise ValueError(why)
+    info = _preflight(c, config, strat, risk)
+    gap = signal_gap(c, strat, config, info['symbols'], session_days(c, info['kind'], config, strat))
+    if gap:
+        info['warnings'] = [*info['warnings'], gap + (" The run switches to 'offline' automatically." if RP.providers(c)['available'] else '')]
+    return info
+
+
+def _preflight(c, config, strat=None, risk=None):
     risk = risk or load_risk(conn=c)
     if strat is None:
         strat, why = registry.load(c, config.strategy_hash, risk)
@@ -124,8 +191,8 @@ def preflight(c, config, strat=None, risk=None):
     input_symbols = list(getattr(strat, 'input_symbols', []))
     index_instruments = list(getattr(getattr(strat, 'v2', None), 'index_instruments', []))
     start, end = history.window(kind, config)
-    fetch = history.plan(c, kind, list(dict.fromkeys(symbols + input_symbols + ([config.benchmark] if config.benchmark else []))),
-                         index_instruments, config, getattr(strat, 'daily_lookback', 0))
+    fetch = history.plan(c, kind, list(dict.fromkeys(symbols + input_symbols + bench_symbols(config))),
+                         list(dict.fromkeys(index_instruments + bench_indexes(config))), config, getattr(strat, 'daily_lookback', 0))
     fetcher = history.available(c)
     days = session_days(c, kind, config, strat)
     rows, warnings = [], []
@@ -133,7 +200,8 @@ def preflight(c, config, strat=None, risk=None):
         if fetcher:
             # Coverage below describes what is stored now; the run downloads the rest first.
             return {'kind': kind, 'symbols': symbols, 'input_symbols': input_symbols, 'index_instruments': index_instruments,
-                    'sessions': len(days), 'first': str(start), 'last': str(end), 'coverage': [], 'warnings': [],
+                    'sessions': len(days), 'first': str(start), 'last': str(end), 'coverage': [],
+                    'warnings': history_gaps(c, [x for x in symbols if history.first_available(c, x)], config),
                     'fetch': {**fetch, 'note': history.describe(fetch)}, 'can_run': True,
                     'replay': replay_estimate(c, strat, config, symbols, start, end, len(days))}
         if history.live_data():
@@ -173,10 +241,11 @@ def preflight(c, config, strat=None, risk=None):
         if getattr(strat, 'uses_signals', False) and not signal_count:
             warnings.append(f'{sym}: no recorded signals; news-gated conditions may stay false.')
     if config.benchmark and days:
-        count = db.row(c, 'SELECT COUNT(*) n FROM daily WHERE symbol=? AND day>=? AND day<=?',
-                       (config.benchmark, days[0].isoformat(), days[-1].isoformat()))['n']
-        if count < len(days):
-            warnings.append('Benchmark does not cover every requested session; comparison may be unavailable.')
+        for name in config.benchmarks:
+            count = db.row(c, f'SELECT COUNT(*) n FROM {bench_from(name)} AND day>=? AND day<=?',
+                           (name, days[0].isoformat(), days[-1].isoformat()))['n']
+            if count < len(days):
+                warnings.append(f'Benchmark {name} does not cover every requested session; comparison may be unavailable.')
     for inst in index_instruments:
         count = db.row(c, 'SELECT COUNT(*) n FROM index_daily WHERE instrument=?', (inst,))['n']
         if not count:
@@ -218,21 +287,49 @@ def options(config, multiplier=1):
             'keep_records': config.keep_records, 'symbols': config.symbols, 'repeat_cycles': config.repeat_cycles}
 
 
+def bench_symbols(config) -> list[str]:
+    return [b for b in config.benchmarks if b not in INDEXES]
+
+
+def bench_indexes(config) -> list[str]:
+    return [b for b in config.benchmarks if b in INDEXES]
+
+
+def bench_from(name: str) -> str:
+    """FROM clause for benchmark closes, filtered by the benchmark (the first query parameter):
+    a market index from index_daily, or a stored ticker from daily."""
+    return 'index_daily WHERE instrument=?' if name in INDEXES else 'daily WHERE symbol=?'
+
+
+def bench_curve(c, name: str, curve: list[dict], equity: float) -> list[dict] | None:
+    """Buy-and-hold equity for one benchmark over the evaluated sessions; None when closes don't cover every session."""
+    values = {r['day']: r['c'] for r in db.rows(c, f'SELECT day,c FROM {bench_from(name)} AND day>=? AND day<=?', (name, curve[0]['day'], curve[-1]['day']))}
+    if not all(p['day'] in values and values[p['day']] > 0 for p in curve):
+        return None
+    # Intraday starts before the first open; use that open as buy-and-hold entry (some index sources publish closes only).
+    base = db.row(c, f'SELECT o, c FROM {bench_from(name)} AND day=?', (name, curve[0]['day']))
+    start_px = (base['o'] or base['c']) if base else None
+    if not start_px or start_px <= 0:
+        return None
+    return [{'day': p['day'], 'equity': equity * values[p['day']] / start_px} for p in curve]
+
+
 def enrich(c, report, config):
     curve = report['equity_curve']
-    benchmark = []
+    benchmark, curves = [], []
     if curve:
-        values = {r['day']: r['c'] for r in db.rows(c, 'SELECT day,c FROM daily WHERE symbol=? AND day>=? AND day<=?',
-                                                 (config.benchmark, curve[0]['day'], curve[-1]['day']))} if config.benchmark else {}
-        if not config.benchmark or all(p['day'] in values and values[p['day']] > 0 for p in curve):
-            # Intraday starts before the first open; use that open as buy-and-hold entry.
-            base = db.row(c, 'SELECT o FROM daily WHERE symbol=? AND day=?', (config.benchmark, curve[0]['day'])) if config.benchmark else None
-            start_px = base['o'] if base else 1
-            if start_px and start_px > 0:
-                benchmark = [{'day': p['day'], 'equity': config.starting_equity * (values[p['day']] / start_px if config.benchmark else 1)} for p in curve]
-        else:
-            report.setdefault('warnings', []).append('Benchmark unavailable: daily closes must cover every evaluated session.')
+        if not config.benchmarks:
+            benchmark = [{'day': p['day'], 'equity': config.starting_equity} for p in curve]  # cash
+        for name in config.benchmarks:
+            bc = bench_curve(c, name, curve, config.starting_equity)
+            if bc is None:
+                report.setdefault('warnings', []).append(f'Benchmark {name} unavailable: daily closes must cover every evaluated session.')
+                continue
+            curves.append({'name': name, 'curve': bc, 'return_pct': bc[-1]['equity'] / config.starting_equity - 1})
+            if name == config.benchmark:
+                benchmark = bc
     report['benchmark_curve'] = benchmark
+    report['benchmark_curves'] = curves
     br = benchmark[-1]['equity'] / config.starting_equity - 1 if benchmark else None
     report['metrics']['benchmark_return_pct'] = br
     report['metrics']['excess_return_pct'] = report['metrics']['return_pct'] - br if br is not None else None
@@ -325,6 +422,12 @@ def create_run(c, config, actor, submit=True):
     if not strat:
         raise ValueError(why)
     info = preflight(c, config, strat, risk)
+    gap = signal_gap(c, strat, config, info['symbols'], session_days(c, info['kind'], config, strat))
+    if gap and RP.providers(c)['available']:
+        # Replaying near-empty recorded signals can only produce zero trades: re-triage the window's news offline instead.
+        config = config.model_copy(update={'model_replay': 'offline', 'replay_note': gap.split(' Use model replay')[0]
+                                           + " This run re-triaged the window's news with the offline keyword model instead."})
+        info = preflight(c, config, strat, risk)
     if not info['can_run']:
         raise ValueError('No daily bars stored for the portfolio basket.' if info['kind'] == 'portfolio' else 'No usable stored data. Inspect data coverage before running.')
     est = info.get('replay') or {}
@@ -384,8 +487,8 @@ def execute(dsn, rid):
             raise ValueError('Saved strategy snapshot does not match the requested hash.')
         strat = v.strategy
         inputs = list(getattr(strat, 'input_symbols', []))
-        fetch = history.plan(c, row['kind'], list(dict.fromkeys(config.symbols + inputs + ([config.benchmark] if config.benchmark else []))),
-                             list(getattr(getattr(strat, 'v2', None), 'index_instruments', [])), config,
+        fetch = history.plan(c, row['kind'], list(dict.fromkeys(config.symbols + inputs + bench_symbols(config))),
+                             list(dict.fromkeys(list(getattr(getattr(strat, 'v2', None), 'index_instruments', [])) + bench_indexes(config))), config,
                              getattr(strat, 'daily_lookback', 0))
         fetched = None
         if fetch and not history.available(c) and history.live_data():
@@ -420,7 +523,8 @@ def execute(dsn, rid):
             report = enrich(data_conn, replay(days), config)
             stage += 1
             if not report['days']:
-                raise ValueError('All sessions were excluded by missing bars or prior-history requirements.')
+                gaps = history_gaps(data_conn, list(dict.fromkeys(config.symbols or getattr(strat, 'universe_symbols', None) or getattr(strat, 'symbols', []))), config)
+                raise ValueError(' '.join(gaps) if gaps else 'All sessions were excluded by missing bars or prior-history requirements.')
             report['validation'] = {}
             if replay_info is not None:
                 report['model_replay'] = replay_info
@@ -452,8 +556,8 @@ def execute(dsn, rid):
             root = Path(__file__).resolve().parent.parent
             files = sorted(p for folder in ('backtest', 'core', 'dsl', 'common') for p in (root / folder).glob('*.py'))
             report['manifest'] = {'engine': 'llamaOS-backtest-v1', 'engine_hash': hashlib.sha256(b''.join(p.read_bytes() for p in files)).hexdigest(),
-                                  'data_hash': fingerprint(data_conn, config.symbols + list(getattr(strat, 'input_symbols', [])) + ([config.benchmark] if config.benchmark else []), days,
-                                                           getattr(getattr(strat, 'v2', None), 'index_instruments', [])),
+                                  'data_hash': fingerprint(data_conn, config.symbols + list(getattr(strat, 'input_symbols', [])) + bench_symbols(config), days,
+                                                           list(getattr(getattr(strat, 'v2', None), 'index_instruments', [])) + bench_indexes(config)),
                                   'config_hash': hashlib.sha256(row['config'].encode()).hexdigest(), 'risk_hash': risk.sha256,
                                   'strategy_hash': config.strategy_hash, 'resolution': '1 minute' if row['kind'] == 'intraday' else 'daily',
                                   'timezone': 'America/New_York', 'currency': 'USD',
@@ -461,6 +565,17 @@ def execute(dsn, rid):
                                                   if fetch and fetched is not None else 'stored database'),
                                   'fill_model': 'next-bar marketable limit; stop first' if row['kind'] == 'intraday' else 'same daily close approximation',
                                   'annualization_sessions': 252, 'risk_free_rate': config.risk_free_rate}
+            feeds = {s: (db.kv_get(c, f'history.feed.{s}') or {}).get('feed') or 'unknown'
+                     for s in dict.fromkeys(config.symbols + inputs + list(getattr(strat, 'references', [])))}
+            report['manifest']['data_feed'] = feeds
+            if config.replay_note:
+                report.setdefault('warnings', []).insert(0, config.replay_note)
+            thin = [s for s, f in feeds.items() if f != 'sip']
+            if thin and history.live_data():
+                report.setdefault('warnings', []).append(
+                    f"Bars for {', '.join(thin)} were stored from the IEX feed (or before feeds were recorded). IEX carries about 2% "
+                    "of volume, so volume filters understate liquidity and thin symbols skip minutes. Re-download with "
+                    "`python scripts/refetch_history.py " + ' '.join(thin) + "`.")
         check_cancel()
         report.update(ran_at=time.time(), ran_by=row['created_by'], seconds=round(time.time() - t0, 2), run_id=rid)
         with db.tx(c):

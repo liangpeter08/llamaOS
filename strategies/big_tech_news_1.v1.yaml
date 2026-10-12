@@ -1,0 +1,56 @@
+dsl: 0.1
+kind: portfolio
+id: big_tech_news_1
+version: 1
+source:
+  text: >-
+    create a strategy that buys top 8 big tech everyday during the initial market open given
+    assumptions that would work (open to ideas here). now use momentum and trends to monitor
+    and nasdaq 100 to give ideas. Trade for small gains and continuous find opportunities
+    across the day. we should target trading every 30 minutes if the condition allows. Trade
+    opening range and look for peek as well. Check news for positive signals and continuous
+    up, we hold.
+
+    Improvement request: hold less in cash and more in open position and size
+  compiled_by: claude-opus-5-5
+  prompt: architect@v1
+assumptions:
+  - "New copy of intra_big_tech v1 (retired). The companion-strategy note from v1 is dropped: big_tech_30m_breakout is not on this account."
+  - "Symbols = AAPL, AMD, AMZN, GOOGL, META, MSFT, NVDA, TSLA, one group, equal weight (12.5% each)."
+  - "CHANGED: capital 40% -> 80% of equity at the first buy, so 10% of equity per symbol (cap 15%). The sleeve fits the 90% cap with max_holding 100%. Reason: v1 peaked at 38.3% exposure and left about 60% of equity idle."
+  - "No adds, so max_holding = 100% (any higher would break the 90% sleeve cap at 80% capital)."
+  - "The first session buys all 8 names at full allocation, unconditionally."
+  - "Decision once a day at 15:45 ET per symbol, using day_change (price at 15:45 vs yesterday's close)."
+  - "Weak day = day_change below -2%: sell the whole position and wait (unchanged; this kept v1's max drawdown at 2.67%)."
+  - "CHANGED: buy back on the first session with day_change above 0% (was above +3%). Param renamed strong_day -> reenter_gain. Reason: in v1 the +3% bar left exited names in cash for long stretches, and the whole sleeve was in cash on 03-27, 03-30, 06-24 and 06-25."
+  - "Re-entry buys back 100% of the original allocation in one step (unchanged)."
+  - "Any other day: hold, no trades."
+  - "Hold up to 130 sessions, then everything is sold (unchanged)."
+  - "NOT SUPPORTED: news and the Nasdaq 100 in this file. Portfolio 0.1 rules cannot read news; rules use only the symbol's own daily move."
+  - "Sleeve drawdown stop = the account default of 15% (now about 12% of equity at 80% capital)."
+  - "Overlaps intra_tech_v2 (paper, 65% in the same 8 names); running both is not intended."
+suggestions:
+  - "Tighten limits.max_drawdown to 10%. At 80% capital that still allows about 3x v1's worst drawdown."
+  - "Backtest reenter_gain at 0% and 1%. If 0% adds many small losing round trips, 1% is the middle ground."
+  - "Add a cost stop (gain < -8% -> exit_and_wait) to catch slow bleeds that never print a -2% day."
+holdings:
+  capital: 80%
+  max_holding: 100%
+  groups:
+    big_tech:
+      weight: 100%
+      symbols: [AAPL, AMD, AMZN, GOOGL, META, MSFT, NVDA, TSLA]
+schedule:
+  hold_sessions: 130
+  decide_at: "15:45"
+params:
+  exit_loss:    {value: -2%,  range: [-8%, -0.5%]}
+  reenter_gain: {value: 0%,   range: [0%, 3%]}
+  reenter_step: {value: 100%, range: [25%, 100%]}
+rules:
+  - {when: "day_change < exit_loss", do: exit_and_wait}
+reentry:
+  when: "day_change > reenter_gain"
+  step: reenter_step
+execution:
+  mode: manual

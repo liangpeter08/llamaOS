@@ -1,0 +1,77 @@
+dsl: 0.1
+kind: portfolio
+id: intra_tech_v4
+version: 1
+source:
+  text: >-
+    create a strategy that buys top 8 big tech everyday during the initial market open given
+    assumptions that would work (open to ideas here). now use momentum and trends to monitor
+    and nasdaq 100 to give ideas. Trade for small gains and continuous find opportunities
+    across the day. we should target trading every 30 minutes if the condition allows. Trade
+    opening range and look for peek as well. Check news for positive signals and continuous
+    up, we hold.
+    It trade too little and not often enough. It also utilize too little of the portfolio,
+    utilize 3x more of the portfolio
+    this traded worse than nasdaq 100, see what can be improved, see how it can get better
+    the up and down amount is too little. It should buy and sell at larger position sizes,
+    initial position build up was too high. Make large sells and adds
+    yea this is a lot of worse, can you see how to improve it! Sharpe is 0.87
+  based_on: {id: intra_tech_v3, version: 1}
+  compiled_by: claude-opus-5-5
+  prompt: architect@v1
+assumptions:
+  - "Copy of intra_tech_v3 v1 (backtest: 36 trades in 111 sessions, +3.82%, max DD -7.22%, Sharpe 0.87; benchmark +12.64%, basket buy-and-hold +9.04%; exits: 19 exit_and_wait, 11 trim, 6 sleeve drawdown stop on 2026-07-23, which ended the run)."
+  - "Diagnosis: 4 AMD trims made +$5,002 vs total P&L +$3,815; most exit_and_wait trades were losses from momentum adds followed by tight exits and quick buy-backs (whipsaw)."
+  - "Trader feedback: Sharpe 0.87 is too low; improve risk-adjusted results."
+  - "Symbols unchanged: AAPL, AMD, AMZN, GOOGL, META, MSFT, NVDA, TSLA, one group, equal weight (12.5% each)."
+  - "Capital unchanged at 40% of equity at the first buy (5.0% per name)."
+  - "CHANGED: max_holding 200% -> 160%; worst case 64% of equity (8.0% per name), inside the 65% unallocated, so no Funds change is needed."
+  - "CHANGED: cost stop loss_stop -8% -> -12%, kept as a catastrophe stop only; worst exit is about 1% of equity per name."
+  - "CHANGED: one-day trend exit (day below -3% AND 20-session return below 0%) replaced by a trend-break exit: sell all and wait when yesterday's close is more than trend_exit_z (0.75) standard deviations below its trend_n (50)-session average. Meant to cut slow bleeds like 05-28 to 07-23 before the sleeve stop fires."
+  - "CHANGED: momentum add (+1.5% day in an uptrend, 50%) replaced by a dip add: add 30% of the original allocation when the day is -2% or worse AND yesterday's close is above its 50-session average (zscore_d(50) > 0). Meant to stop buying strength right before exits. This reverses the earlier momentum-add idea and needs the trader's confirmation."
+  - "CHANGED: trim_above 150% -> 140% and take_size 50% -> 40%, so trims still fire under the 160% cap; the trim rule itself (day above +5% on an enlarged position) is kept because it produced most of v3's profit."
+  - "CHANGED: re-entry now requires an up day AND yesterday's close back above its 50-session average (was: 20-session return above 0%); step stays 50%. The gap between -0.75 and 0 standard deviations is there to stop churn."
+  - "CHANGED: trend window trend_n 20 -> 50 sessions; one window drives exit, add and re-entry, which keeps free parameters down."
+  - "Kept: spike-day hold above +5%, decision once a day at 15:45 ET, hold up to 130 sessions, sleeve drawdown stop = account default 15%."
+  - "Rule order (first match wins): catastrophe stop, trend-break exit, trim of enlarged position on a +5% day, spike-day hold, dip add in an uptrend."
+  - "Known gap: the first session buys every name regardless of trend; a name already below its 50-day trend is bought and then sold at the next decision (one round trip)."
+  - "Expectation: fewer, larger-conviction trades and shallower drawdowns; may trail buy-and-hold in sharp V-shaped rebounds because re-entry waits for the trend to recover."
+  - "Backtest caveat: about 166 sessions of one mostly rising big-tech regime and few trades; results are decided close-to-close and filled at the close (live decides at 15:45 ET)."
+  - "NOT SUPPORTED: Nasdaq 100 as a direct input (no QQQ/NDX bars stored), trading every 30 minutes, opening range and news. Portfolio files decide once a day per symbol."
+suggestions:
+  - "Backtest trend_n at 30 and 80 and trend_exit_z at -0.5 and -1.0 to check the result is not tuned to one value."
+  - "If the trader raises this strategy's allocation to 80%, test capital 50% (worst case 80%)."
+  - "Compare against intra_big_tech v1 (Sharpe 2.39) on the same window before choosing which goes to paper."
+holdings:
+  capital: 40%
+  max_holding: 160%
+  groups:
+    big_tech:
+      weight: 100%
+      symbols: [AAPL, AMD, AMZN, GOOGL, META, MSFT, NVDA, TSLA]
+schedule:
+  hold_sessions: 130
+  decide_at: "15:45"
+params:
+  loss_stop:    {value: -12%,  range: [-20%, -5%]}
+  trend_n:      {value: 50,    range: [20, 100]}
+  trend_exit_z: {value: -0.75, range: [-2.0, -0.25]}
+  trend_up_z:   {value: 0,     range: [-0.5, 1.0]}
+  take_gain:    {value: 5%,    range: [3%, 10%]}
+  take_size:    {value: 40%,   range: [10%, 75%]}
+  trim_above:   {value: 140%,  range: [110%, 200%]}
+  add_dip:      {value: -2%,   range: [-6%, -0.5%]}
+  add_size:     {value: 30%,   range: [10%, 60%]}
+  reenter_gain: {value: 0%,    range: [0%, 3%]}
+  reenter_step: {value: 50%,   range: [25%, 100%]}
+rules:
+  - {when: "gain < loss_stop", do: exit_and_wait}
+  - {when: "zscore_d(trend_n) < trend_exit_z", do: exit_and_wait}
+  - {when: "day_change > take_gain and holding > trim_above", do: {trim: take_size}}
+  - {when: "day_change > take_gain", do: hold}
+  - {when: "day_change <= add_dip and zscore_d(trend_n) > trend_up_z", do: {add: add_size}}
+reentry:
+  when: "day_change > reenter_gain and zscore_d(trend_n) > trend_up_z"
+  step: reenter_step
+execution:
+  mode: manual

@@ -69,7 +69,7 @@ make test        # pytest against the llamaos_test database
 2. **The live loop has no LLM.** Bars → rule engine → risk guard → (optional) your approval → executor. If every model is down, signals go stale, gated entries stop, and exits and broker-side stops keep working.
 3. **Hard rules sit outside every model's reach.** Risk controls are Postgres values only the owner can change, on the dashboard Risk page, with a reason; every change is validated, kept in a history table and audited. No model, chat or strategy file can change them, and key limits are mirrored in Alpaca's account settings.
 4. **Credentials follow trust.**
-   - Only `broker` holds Alpaca keys.
+   - Only `broker` holds Alpaca keys. Paper accounts added on the dashboard (System page) are stored in Postgres sealed to the broker's `BROKER_VAULT_KEY`: the API can save keys but never read them back. Each account has its own Postgres schema (`acct_<id>`) for its book: trades, positions, equity history, fund allocations, risk controls and which strategy versions are deployed (`db.ACCOUNT_TABLES`); strategy files, backtests, market data and audit are shared.
    - Only `models` holds model API keys.
    - `api` and `dashboard` hold neither.
 5. **Everything is replayable and logged.** Model outputs are recorded once and never recomputed. Every news item, signal, idea, strategy version, chat, approval, order and fill is written to a hash-chained audit log.
@@ -309,7 +309,7 @@ The live risk controls are rows in `risk_settings`, edited by the owner on the *
 
 ### Fund allocations (Funds page)
 
-Each running strategy line (its `id`, across versions) has an allocation: a reserved share of equity, or a fixed dollar amount (whose share then moves with equity; it is checked against the limits at the equity of the day it is set). Allocations add up to at most max deployed, so strategies are isolated. Every buy is checked against the strategy's allocation, the cash reserve, max deployed and (intraday) the intraday budget; intraday entries are sized down to fit what is left in the allocation. Each strategy has its own drawdown stop (measured from its best P&L since the allocation was set, as a share of the allocation) that pauses it, and intraday strategies have a daily loss stop that blocks entries until the next session. A paused portfolio sleeve is sold at its next decision time. Promoting to paper asks for the allocation (percent of the fund or fixed dollars, defaulting to what the rules can use within the unallocated room); a new portfolio sleeve is sized so its peak fits the allocation. The Overview page lists running strategies with an on/off switch (pause/resume) and an allocation editor. The Funds page shows equity, cash, reserve, deployed and available capital, budget meters and each strategy's slice, and lets the owner edit allocations, pause and resume.
+Each running strategy line (its `id`, across versions) has an allocation: a ceiling as a share of equity, or a fixed dollar amount (whose share then moves with equity; it is checked against the limits at the equity of the day it is set), plus a reserved part of that ceiling (0-100%, default 100%). Reserves add up to at most max deployed, so every strategy can always spend its reserve. Above its reserve a strategy borrows from the shared pool: the part of max deployed that no other strategy has reserved or is using. A strategy that seldom trades can therefore get a large ceiling with a small reserve without parking cash, and it never eats into another strategy's reserve when it fires. The Funds page shows each line's recent activity (sessions traded, busiest day) to help pick the reserve. Every buy is checked against the strategy's allocation, the shared pool, the cash reserve, max deployed and (intraday) the intraday budget; intraday entries are sized down to fit what is left in the allocation. Each strategy has its own drawdown stop (measured from its best P&L since the allocation was set, as a share of the allocation) that pauses it, and intraday strategies have a daily loss stop that blocks entries until the next session. A paused portfolio sleeve is sold at its next decision time. Promoting to paper asks for the allocation (percent of the fund or fixed dollars, defaulting to what the rules can use within the unallocated room); a new portfolio sleeve is sized so its peak fits the allocation. The Overview page lists running strategies with an on/off switch (pause/resume) and an allocation editor. The Funds page shows equity, cash, reserve, deployed and available capital, budget meters and each strategy's slice, and lets the owner edit allocations, pause and resume.
 
 Factory defaults in `config/risk.yaml`:
 
@@ -521,8 +521,10 @@ Key environment variables:
 
 | Variable | Service | Notes |
 |---|---|---|
-| `ALPACA_KEY_ID`, `ALPACA_SECRET_KEY`, `ALPACA_PAPER=true` | broker | Paper by default |
-| `ALPACA_DATA_FEED=iex` | broker | Switch to `sip` with Algo Trader Plus before volume-based rules go live |
+| `ALPACA_KEY_ID`, `ALPACA_SECRET_KEY`, `ALPACA_PAPER=true` | broker | Paper by default; fallback when no dashboard account is active |
+| `BROKER_VAULT_KEY` | broker, watchdog | Decrypts dashboard-managed Alpaca accounts; generated on first host start |
+| `ALPACA_DATA_FEED=iex` | broker | Live 1-minute bars. Switch to `sip` with Algo Trader Plus before volume-based rules go live |
+| `ALPACA_HISTORY_FEED=sip` | broker | Daily bars and backtest downloads. The free plan serves SIP older than 15 minutes; falls back to `ALPACA_DATA_FEED` if refused. Re-download older IEX bars with `python scripts/refetch_history.py` |
 | `ANTHROPIC_API_KEY` | models | |
 | `LAYA_URL`, `LAYA_MODEL` | models | |
 | `GEMINI_API_KEY`, `GEMINI_MODEL` | models | A lightweight Gemini model ID |

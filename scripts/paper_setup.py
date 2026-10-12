@@ -64,7 +64,7 @@ def main():
         report.update(ran_at=time.time(),ran_by='paper-setup',data_source='alpaca:'+api.feed)
         c.execute('UPDATE strategies SET backtest=? WHERE hash=?',(json.dumps(report,default=str),row['hash']))
         registry.set_status(c,row['hash'],'paper','host:paper-setup',paper_started_at=time.time())
-        c.execute("UPDATE strategies SET mode='paper' WHERE hash=?",(row['hash'],))
+        c.execute("UPDATE strategies SET mode='paper_auto' WHERE hash=?",(row['hash'],))
         print(row['sid']+': validated, real-data backtest saved, paper automation enabled')
     if not db.row(c,'SELECT id FROM users LIMIT 1'):
         password=secrets.token_urlsafe(24)

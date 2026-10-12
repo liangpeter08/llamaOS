@@ -124,8 +124,7 @@ class StrategyRunner:
         if rps <= 0 or (side == "long" and not stop < entry < target) or (side == "short" and not target < entry < stop):
             return blocked('invalid_bracket')
         qty = math.floor(equity * s.risk_per_trade / rps)
-        max_pos = min(self.risk.max_position, s.limits.get("max_position", self.risk.max_position))
-        qty = min(qty, math.floor(max_pos * equity / entry))
+        qty = min(qty, math.floor(self.risk.max_position * equity / entry))
         if max_notional is not None:
             qty = min(qty, math.floor(max_notional / (entry * (1 + self.risk.max_slippage))))
         if qty < 1:

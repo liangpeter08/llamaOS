@@ -14,7 +14,7 @@ type Config = {
   strategy_hash: string; name: string; notes: string; tags: string[]; start_date: string | null; end_date: string | null;
   symbols: string[]; starting_equity: number; slippage_bps: number; spread_bps: number; commission_per_share: number;
   commission_per_order: number; latency_bars: number; cancel_after_bars: number; limit_fill: string; warmup_bars: number;
-  min_history_sessions: number; missing_data: string; max_volume_participation: number; benchmark: string; risk_free_rate: number;
+  min_history_sessions: number; missing_data: string; max_volume_participation: number; benchmark: string; benchmarks?: string[]; risk_free_rate: number;
   holdout_pct: number; rolling_window: number; cost_stress: boolean; repeat_cycles: boolean;
   model_replay: "recorded" | "offline" | "models"; model_budget_usd: number; confirm_model_cost: boolean; bootstrap_samples: number; seed: number;
   keep_records: number; parent_id: number | null;
@@ -123,8 +123,10 @@ export default function BacktestsPage() {
             {numberInput("starting_equity", "Starting equity · USD", 100, 1e9, 100)}
             <Field label="Missing data policy"><select value={config.missing_data} onChange={e => update("missing_data", e.target.value)}>
               <option value="skip_symbol">Exclude unavailable symbols / unmatched bars</option><option value="strict">Fail on missing or misaligned data</option></select></Field>
-            <Field label="Benchmark" hint="Buy at the first evaluated session open; compare daily closes. No execution costs."><select value={config.benchmark} onChange={e => update("benchmark", e.target.value)}>
-              <option value="">Cash · 0% return</option>{catalog.data.symbols.map((s: any) => <option key={s.symbol} value={s.symbol}>{s.symbol} · stored buy-and-hold</option>)}</select></Field>
+            <Field label="Benchmarks · up to 6" hint="Buy-and-hold from the first evaluated session; compare daily closes. No execution costs. The first one is used for excess return; none = cash.">
+              <BenchmarkPicker value={config.benchmarks?.length ? config.benchmarks : config.benchmark ? [config.benchmark] : []}
+                indexes={catalog.data.indexes || []} symbols={catalog.data.symbols}
+                onChange={v => { update("benchmarks", v); update("benchmark", v[0] || ""); }} /></Field>
             {numberInput("min_history_sessions", "Required prior daily sessions", 20, 60, 1, "Used for ADV and indicator readiness.", portfolio)}
             {numberInput("warmup_bars", "Intraday entry warm-up · bars", 0, 389, 1, "Indicators observe these bars; entries stay disabled.", portfolio)}
           </div>
@@ -313,7 +315,10 @@ function RunDetail({ run, owner, restore, cancel }: { run: any; owner: boolean; 
           <Stat label="Max daily drawdown" value={pct(m.max_drawdown)} sub={`${m.max_drawdown_sessions} sessions underwater`} />
           <Stat label="Daily Sharpe" value={num(m.sharpe_daily)} sub={`Sortino ${num(m.sortino)}`} />
           <Stat label="Completed trades" value={m.trades} sub={`Win rate ${pct(m.win_rate, 1)} · profit factor ${num(m.profit_factor)}`} /></div>
-        <h3>Equity · strategy vs {run.config.benchmark || "cash"}</h3><EquityChart curve={report.equity_curve} benchmark={report.benchmark_curve || []} start={report.starting_equity} />
+        <h3>Equity · strategy vs {benchNames(run.config, report)}</h3><EquityChart curve={report.equity_curve}
+          benchmarks={report.benchmark_curves?.length ? report.benchmark_curves : report.benchmark_curve?.length ? [{ name: run.config.benchmark || "cash", curve: report.benchmark_curve }] : []} start={report.starting_equity} />
+        {(report.benchmark_curves?.length || 0) > 1 && <p className="muted" style={{ fontSize: 12 }}>
+          {report.benchmark_curves.map((b: any) => `${benchLabel(b.name)} ${pct(b.return_pct, 2, true)}`).join(" · ")} · strategy {pct(m.return_pct, 2, true)}</p>}
         <div className="row between muted"><span>{report.days[0]}</span><span>{report.days.at(-1)}</span></div>
         {report.equity_curve[0]?.cash != null && <><h3>Allocation · stock vs cash</h3><AllocationChart curve={report.equity_curve} intraday={report.kind === "intraday"} /></>}
         {report.signal_note && <p className="muted">{report.signal_note}</p>}
@@ -325,7 +330,7 @@ function RunDetail({ run, owner, restore, cancel }: { run: any; owner: boolean; 
         </table></details>}
         <h3>Daily drawdown</h3><LineChart values={m.drawdown_curve?.map((p: any) => p.drawdown * 100) || []} baseline={0} height={120} width={1000} />
         <p className="muted">Daily closing equity. Intraday worst marked drawdown: {pct(m.max_intrabar_drawdown)}. Same-bar price paths are unavailable.</p>
-        <div className="grid g4 mt"><Stat label="Final equity · USD" value={money(m.final_equity)} /><Stat label="Gross P&L before commissions" value={money(m.gross_pnl)} /><Stat label="Total commissions" value={money(m.total_fees)} /><Stat label="Excess return vs benchmark" value={pct(m.excess_return_pct)} sub={`Benchmark ${pct(m.benchmark_return_pct)}`} />
+        <div className="grid g4 mt"><Stat label="Final equity · USD" value={money(m.final_equity)} /><Stat label="Gross P&L before commissions" value={money(m.gross_pnl)} /><Stat label="Total commissions" value={money(m.total_fees)} /><Stat label="Excess return vs benchmark" value={pct(m.excess_return_pct)} sub={`${benchLabel(run.config.benchmark) || "Benchmark"} ${pct(m.benchmark_return_pct)}`} />
           <Stat label="Annualized return" value={pct(m.cagr)} sub="Extrapolation; requires 20+ sessions" /><Stat label="Annualized volatility" value={pct(m.annualized_volatility)} /><Stat label="Calmar" value={num(m.calmar)} /><Stat label="Expectancy · USD / trade" value={money(m.expectancy)} /></div>
         <div className="grid g2 mt"><div><h3>Symbol attribution</h3><table><thead><tr><th>Symbol</th><th>Trades</th><th>Net P&L</th><th>Fees</th></tr></thead><tbody>{report.by_symbol?.map((s: any) => <tr key={s.symbol}><td>{s.symbol}</td><td>{s.trades}</td><td className={pnlClass(s.pnl)}>{money(s.pnl)}</td><td>{money(s.fees)}</td></tr>)}</tbody></table></div>
           <div><h3>Monthly returns</h3><table><thead><tr><th>Month</th><th>Net P&L</th><th>Return</th></tr></thead><tbody>{report.monthly?.map((p: any) => <tr key={p.month}><td>{p.month}</td><td>{money(p.pnl)}</td><td className={pnlClass(p.return_pct)}>{pct(p.return_pct)}</td></tr>)}</tbody></table></div></div>
@@ -364,22 +369,53 @@ function CountTable({ title, counts }: { title: string; counts?: Record<string, 
 function ValidationTable({ title, rows }: { title: string; rows?: any[] }) {
   return <><h3>{title}</h3>{rows?.length ? <div className="table-wrap"><table><thead><tr><th>Variant</th><th>Trades</th><th>Return</th><th>Drawdown</th><th>Sharpe</th><th>Fees</th></tr></thead><tbody>{rows.map((r, i) => <tr key={i}><td>{r.label}</td><td>{r.trades}</td><td className={pnlClass(r.return_pct)}>{pct(r.return_pct)}</td><td>{pct(r.max_drawdown)}</td><td>{num(r.sharpe_daily)}</td><td>{money(r.total_fees)}</td></tr>)}</tbody></table></div> : <Empty>Disabled for this experiment.</Empty>}</>;
 }
-function EquityChart({ curve, benchmark, start }: { curve: any[]; benchmark: any[]; start: number }) {
+const INDEX_NAMES: Record<string, string> = { NASDAQ_COMPOSITE: "Nasdaq Composite", NASDAQ_100: "Nasdaq-100", SP_500: "S&P 500",
+  DOW_JONES_INDUSTRIAL: "Dow Jones Industrial", RUSSELL_2000: "Russell 2000" };
+
+const benchLabel = (name: string) => INDEX_NAMES[name] || name;
+const benchNames = (cfg: any, report: any) =>
+  (report.benchmark_curves?.length ? report.benchmark_curves.map((b: any) => benchLabel(b.name)).join(", ") : benchLabel(cfg.benchmark)) || "cash";
+const BENCH_COLORS = ["var(--warn)", "var(--c2)", "var(--c3)", "var(--c4)", "var(--c5)", "var(--c6)"];
+
+function BenchmarkPicker({ value, indexes, symbols, onChange }: { value: string[]; indexes: any[]; symbols: any[]; onChange: (v: string[]) => void }) {
+  const toggle = (name: string) => onChange(value.includes(name) ? value.filter(v => v !== name) : value.length < 6 ? [...value, name] : value);
+  const chip = (name: string, label: string, sub: string, disabled = false) => (
+    <label key={name} className="row" style={{ gap: 4, fontSize: 13, opacity: disabled ? .5 : 1 }} title={sub}>
+      <input type="checkbox" checked={value.includes(name)} disabled={disabled || (!value.includes(name) && value.length >= 6)} onChange={() => toggle(name)} />
+      {label}{value[0] === name && value.length > 1 && <span className="tag">primary</span>}</label>);
+  return (
+    <div>
+      <div className="muted" style={{ fontSize: 12 }}>Market indexes</div>
+      <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>{indexes.map(i => chip(i.instrument, i.label,
+        i.sessions ? `${i.sessions} sessions stored` : i.feed ? "downloads on run" : "no feed configured", !i.feed && !i.sessions))}</div>
+      <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>Stored tickers</div>
+      <select value="" onChange={e => e.target.value && toggle(e.target.value)}>
+        <option value="">Add a ticker…</option>
+        {symbols.filter(s => !value.includes(s.symbol)).map(s => <option key={s.symbol} value={s.symbol}>{s.symbol} · {s.sessions} sessions</option>)}</select>
+      {value.filter(v => !indexes.some(i => i.instrument === v)).map(v =>
+        <button type="button" key={v} className="link" style={{ marginLeft: 8 }} onClick={() => toggle(v)} title="Remove">{v} ✕</button>)}
+    </div>
+  );
+}
+
+function EquityChart({ curve, benchmarks, start }: { curve: any[]; benchmarks: { name: string; curve: any[] }[]; start: number }) {
   const [hover, setHover] = useState<number | null>(null);
   if (!curve.length) return <Empty>No evaluated sessions.</Empty>;
-  const values = [start, ...curve.map(p => p.equity), ...benchmark.map(p => p.equity)];
+  const values = [start, ...curve.map(p => p.equity), ...benchmarks.flatMap(b => b.curve.map(p => p.equity))];
   const low = Math.min(...values), high = Math.max(...values);
   const span = high - low || start * .01;
   const x = (i: number) => 16 + i / Math.max(curve.length - 1, 1) * 928;
   const y = (v: number) => 200 - (v - low) / span * 180;
   const points = (series: any[]) => series.map((p, i) => `${x(i)},${y(p.equity)}`).join(" ");
-  return <div><div className="row muted"><span className="bt-legend strategy">Strategy</span><span className="bt-legend benchmark">Benchmark</span>{hover != null && <span>{curve[hover].day} · ${money(curve[hover].equity)}{benchmark[hover] && ` · benchmark $${money(benchmark[hover].equity)}`}</span>}</div>
+  return <div><div className="row muted" style={{ flexWrap: "wrap" }}><span className="bt-legend strategy">Strategy</span>
+      {benchmarks.map((b, k) => <span key={b.name} className="bt-legend" style={{ ["--lc" as any]: BENCH_COLORS[k % 6] }}>{benchLabel(b.name)}</span>)}
+      {hover != null && <span>{curve[hover].day} · ${money(curve[hover].equity)}{benchmarks.map(b => b.curve[hover] ? ` · ${benchLabel(b.name)} $${money(b.curve[hover].equity)}` : "").join("")}</span>}</div>
     <svg viewBox="0 0 1000 230" className="chart bt-equity" role="img" aria-label="Strategy and benchmark equity by evaluated session" onMouseLeave={() => setHover(null)} onMouseMove={e => {
       const rect = e.currentTarget.getBoundingClientRect(); setHover(Math.max(0, Math.min(curve.length - 1, Math.round(((e.clientX - rect.left) / rect.width * 1000 - 16) / 928 * (curve.length - 1)))));
     }}>
       {[0, .5, 1].map(t => <g key={t}><line x1={16} x2={944} y1={20 + t * 180} y2={20 + t * 180} className="bt-grid" /><text x={950} y={24 + t * 180} className="axis">{money(high - t * span)}</text></g>)}
       <line x1={16} x2={944} y1={y(start)} y2={y(start)} className="lvl lvl-base" />
-      {benchmark.length > 0 && <polyline fill="none" points={points(benchmark)} className="bt-benchmark" />}
+      {benchmarks.map((b, k) => b.curve.length > 0 && <polyline key={b.name} fill="none" points={points(b.curve)} className="bt-benchmark" style={{ stroke: BENCH_COLORS[k % 6] }} />)}
       <polyline fill="none" points={points(curve)} className="series" />
       {hover != null && <><line x1={x(hover)} x2={x(hover)} y1={16} y2={210} className="lvl lvl-base" /><circle cx={x(hover)} cy={y(curve[hover].equity)} r={4} fill="var(--accent)" /></>}
     </svg></div>;

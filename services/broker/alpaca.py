@@ -1,7 +1,9 @@
 """Paper-only Alpaca HTTP adapter. No live endpoint or live credential path."""
 from __future__ import annotations
 
+import logging
 import os
+import time
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -9,6 +11,8 @@ import httpx
 
 PAPER_URL = "https://paper-api.alpaca.markets"
 DATA_URL = "https://data.alpaca.markets"
+SIP_DELAY_S = 16 * 60  # the free data plan serves SIP bars older than 15 minutes
+log = logging.getLogger("alpaca")
 
 
 def epoch(value: str) -> int:
@@ -30,17 +34,55 @@ class Alpaca:
             raise ValueError("Only Alpaca paper trading is supported; live endpoints are refused")
         if os.environ.get("MODE", "paper") not in ("paper", "record_only"):
             raise ValueError("Alpaca mode must be paper or record_only")
-        key, secret = os.environ.get("ALPACA_KEY_ID"), os.environ.get("ALPACA_SECRET_KEY")
+        from common import broker_accounts as BA
+        key, secret, self.account_rev, self.source, self.schema = BA.credentials()
         if not key or not secret:
-            raise ValueError("Missing Alpaca paper credentials in secrets/broker.env")
-        self.feed = os.environ.get("ALPACA_DATA_FEED", "iex")
-        self.http = client or httpx.Client(headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret},
-                                           timeout=15, follow_redirects=False)
+            raise ValueError("No Alpaca paper account: add one on the dashboard System page or in secrets/broker.env")
+        self.feed = os.environ.get("ALPACA_DATA_FEED", "iex")  # live bars
+        # Stored history (daily bars, backtest downloads): the consolidated SIP tape. IEX alone is ~2% of
+        # volume, so liquidity filters fail and thin symbols print a bar only every few minutes.
+        self.history_feed = os.environ.get("ALPACA_HISTORY_FEED", "sip")
+        self._headers = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
+        self._own_client = client is None
+        self.http = client or self._new_client()
+
+    def _new_client(self):
+        return httpx.Client(headers=self._headers, timeout=15, follow_redirects=False)
+
+    def clone(self):
+        """The same account on its own connection pool, so one thread's stuck request can't block another's."""
+        other = object.__new__(Alpaca)
+        other.__dict__.update(self.__dict__)
+        if self._own_client:
+            other.http = other._new_client()
+        return other
 
     def request(self, method, path, *, data=False, **kw):
-        r = self.http.request(method, (DATA_URL if data else PAPER_URL) + path, **kw)
+        url = (DATA_URL if data else PAPER_URL) + path
+        try:
+            r = self.http.request(method, url, **kw)
+        except httpx.PoolTimeout:
+            # A pool left holding phantom connections (seen after a TLS reset) never recovers: replace it.
+            if not self._own_client:
+                raise
+            log.warning("Alpaca connection pool stuck; reconnecting")
+            old, self.http = self.http, self._new_client()
+            old.close()
+            if method != "GET":
+                raise  # an order may need recovery by client ID; never resend blindly
+            r = self.http.request(method, url, **kw)
         r.raise_for_status()
         return r.json() if r.content else None
+
+    def apply_guard(self, allow_short: bool) -> None:
+        """Account-side mirror of the risk limits: 1x margin, and no shorting unless the risk controls allow it."""
+        cfg = self.request("GET", "/v2/account/configurations")
+        if float(cfg.get("max_margin_multiplier", 0)) == 1 and (allow_short or cfg.get("no_shorting")):
+            return
+        body = {"max_margin_multiplier": "1", **({} if allow_short else {"no_shorting": True})}
+        cfg = self.request("PATCH", "/v2/account/configurations", json=body)
+        if float(cfg.get("max_margin_multiplier", 0)) != 1 or (not allow_short and not cfg.get("no_shorting")):
+            raise RuntimeError("Paper account guard verification failed")
 
     def account(self):
         return self.request("GET", "/v2/account")
@@ -131,10 +173,25 @@ class Alpaca:
         return self.request("GET", "/v2/stocks/snapshots", data=True,
                             params={"symbols": ",".join(symbols), "feed": self.feed})
 
-    def bars(self, symbols, timeframe, start, end, adjustment="raw"):
+    def history_bars(self, symbols, timeframe, start, end, adjustment="split"):
+        """Completed bars from the history feed. Falls back to the live feed when the account can't read SIP."""
+        if self.history_feed == "sip":
+            end = min(end, time.time() - SIP_DELAY_S)
+            if end <= start:
+                return {s: [] for s in symbols}
+        try:
+            return self.bars(symbols, timeframe, start, end, adjustment, feed=self.history_feed)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code not in (401, 403, 422) or self.history_feed == self.feed:
+                raise
+            log.warning("History feed %s refused (%s); using %s", self.history_feed, e.response.status_code, self.feed)
+            self.history_feed = self.feed
+            return self.bars(symbols, timeframe, start, end, adjustment)
+
+    def bars(self, symbols, timeframe, start, end, adjustment="raw", feed=None):
         out = {s: [] for s in symbols}
         params = {"symbols": ",".join(symbols), "timeframe": timeframe, "start": iso(start), "end": iso(end),
-                  "feed": self.feed, "adjustment": adjustment, "limit": 10000, "sort": "asc"}
+                  "feed": feed or self.feed, "adjustment": adjustment, "limit": 10000, "sort": "asc"}
         while True:
             page = self.request("GET", "/v2/stocks/bars", data=True, params=params)
             for s, rows in page.get("bars", {}).items():

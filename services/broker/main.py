@@ -99,12 +99,7 @@ class Broker:
     # ---------------------------------------------------------------- gate
     def gate(self, strat, intent: Intent, checks) -> str:
         row = self.registry_rows.get(strat.hash, {})
-        m = row.get("mode", "manual")
-        if m == "manual":
-            return HOLD
-        if m in ("auto", "paper"):
-            return SUBMIT
-        return REJECT
+        return SUBMIT if registry.is_auto(row.get("mode")) else HOLD
 
     # ---------------------------------------------------------------- loop
     def run(self):
@@ -228,10 +223,16 @@ class Broker:
                 self.session.remove_strategy(h)
         return "running: " + ", ".join(f"{s.id} v{s.version}" for _, s in current.values())
 
+    def demote(self, reason: str):
+        for h in registry.demote_live_auto(self.conn, ACTOR, reason):
+            if h in self.registry_rows:
+                self.registry_rows[h]["mode"] = "live_manual"
+
     def trigger_kill(self, reason: str, actor: str = ACTOR):
         i = max(self.session.last_index, 0)
         events = self.session.kill_switch(i, reason)
         db.kv_set(self.conn, "kill_switch", {"active": True, "reason": reason, "ts": time.time(), "by": actor})
+        self.demote(reason)
         # Alpaca equivalent: cancel all orders, close all positions, set suspend_trade on the account.
         db.kv_set(self.conn, "broker.suspend_trade", True)
         for it_id in self.intents:
@@ -374,6 +375,7 @@ class Broker:
                 audit.log(conn, "exit.requested", ACTOR, {k: v for k, v in ev.data.items() if k != "decision"})
             elif ev.kind == "kill":
                 db.kv_set(conn, "kill_switch", {"active": True, "reason": ev.data["reason"], "ts": time.time(), "by": ACTOR})
+                self.demote(ev.data["reason"])
                 db.kv_set(conn, "broker.suspend_trade", True)
                 audit.log(conn, "kill_switch.triggered", ACTOR, ev.data)
 

@@ -239,6 +239,9 @@ def worker(stop: threading.Event):
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s models %(levelname)s %(message)s")
     db.init(db.get())
+    from discovery.run import fail_orphans
+    if orphans := fail_orphans(db.get()):  # their worker threads died with the previous process
+        log.warning("marked interrupted discovery runs as failed: %s", orphans)
     stop = threading.Event()
     t = threading.Thread(target=worker, args=(stop,), daemon=True)
     t.start()

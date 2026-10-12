@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta
 
 import httpx
 
+from common import broker_accounts as BA
 from common import audit, db, marketdata as MD, registry, timeutil as T, monitoring
 from common.config import load_risk, mode, universe
 from core.engine import Intent, StrategyRunner
@@ -90,7 +91,7 @@ class PaperBroker:
             self.close_ts = int(close.timestamp())
             hard = T.ts_at(day, self.risk.flatten_by)
             self.flatten_ts = min(hard, self.close_ts - 5 * 60)
-            daily = self.api.bars(self.syms, "1Day", time.time() - DAILY_FETCH_DAYS * 86400, T.open_ts(day)) if self.syms else {}
+            daily = self.api.history_bars(self.syms, "1Day", time.time() - DAILY_FETCH_DAYS * 86400, T.open_ts(day)) if self.syms else {}
             with db.tx(self.conn):
                 for sym, bars in daily.items():
                     for b in bars:
@@ -154,7 +155,7 @@ class PaperBroker:
             if not asset.get('tradable') or asset.get('status') != 'active':
                 raise ValueError('Untradable monitoring ticker: ' + sym)
         if added:
-            for sym, bars in self.api.bars(sorted(added),'1Day',time.time()-DAILY_FETCH_DAYS*86400,T.open_ts(self.day)).items():
+            for sym, bars in self.api.history_bars(sorted(added),'1Day',time.time()-DAILY_FETCH_DAYS*86400,T.open_ts(self.day)).items():
                 for b in bars:
                     day=T.et(epoch(b['t'])).date()
                     if day < self.day:
@@ -184,7 +185,7 @@ class PaperBroker:
             return
         added = [s for s in want if s not in self.refs]
         if added and self.close_ts:
-            daily = self.api.bars(added, "1Day", time.time() - DAILY_FETCH_DAYS * 86400, T.open_ts(self.day))
+            daily = self.api.history_bars(added, "1Day", time.time() - DAILY_FETCH_DAYS * 86400, T.open_ts(self.day))
             with db.tx(self.conn):
                 for sym, bars in daily.items():
                     for b in bars:
@@ -418,7 +419,7 @@ class PaperBroker:
         it.id=iid
         self.conn.execute("INSERT INTO paper_intents(intent_id,body,client_id) VALUES (?,?,?)",(iid,json.dumps(asdict(it)),f"llama-{iid}-{it.strategy_hash[:12]}"))
         audit.log(self.conn,"intent.pending","broker",{"intent_id":iid,"symbol":it.symbol,"source":"alpaca_paper"})
-        if self.rows[it.strategy_hash]["mode"] in ("auto","paper"):
+        if registry.is_auto(self.rows[it.strategy_hash]["mode"]):
             self.conn.execute("UPDATE intents SET status='approved',decided_by='paper-auto',decided_wall=? WHERE id=?",(time.time(),iid))
 
     def approvals(self):
@@ -475,6 +476,8 @@ class PaperBroker:
 
     def kill(self,reason,actor="broker"):
         db.kv_set(self.conn,"kill_switch",{"active":True,"reason":reason,"ts":time.time(),"by":actor})
+        for h in registry.demote_live_auto(self.conn,actor,reason):
+            if h in self.rows:self.rows[h]["mode"]="live_manual"
         self.conn.execute("UPDATE intents SET status='void',reason='kill switch' WHERE status IN ('pending','approved')")
         self.desk.halt("kill switch")
         self.api.cancel_all()
@@ -604,13 +607,15 @@ class PaperBroker:
         for sym in self.syms:
             asset=_retry(lambda:self.api.asset(sym))
             if not asset.get("tradable") or asset.get("status")!="active":raise ValueError("Untradable watchlist symbol: "+sym)
-        cfg=_retry(lambda:self.api.request("GET","/v2/account/configurations"))
-        if float(cfg.get("max_margin_multiplier",0))!=1 or (not self.risk.allow_short and not cfg.get("no_shorting")):
-            raise RuntimeError("Paper account guards are not applied; run make broker-guard")
-        audit.log(self.conn,"broker.start","broker",{"source":"alpaca_paper","mode":mode(),"risk_sha256":self.risk.sha256})
+        _retry(lambda:self.api.apply_guard(self.risk.allow_short))  # a new account starts with margin and shorting on
+        audit.log(self.conn,"broker.start","broker",{"source":"alpaca_paper","mode":mode(),"risk_sha256":self.risk.sha256,
+                                                   "account":(BA.active(self.conn) or {}).get("label") or self.api.source})
         from .history_worker import HistoryWorker
-        HistoryWorker(self.api).start()  # backtest data on demand, on its own connection
+        HistoryWorker(self.api.clone() if hasattr(self.api, "clone") else self.api).start()  # backtest data on demand, on its own DB and HTTP connections
         while not self.stop:
+            if BA.rev(self.conn)!=self.api.account_rev:
+                log.info("Alpaca account switched on the dashboard; restarting on the new account")
+                raise SystemExit(BA.RESTART)
             try:
                 self.last_error=""
                 self.tick()
@@ -633,10 +638,42 @@ def _retry(call,attempts=5):
             time.sleep(2**k)
 
 
+def wait_for_account(conn,why,since):
+    """No usable Alpaca keys: report it on the dashboard and wait for the owner to add or switch accounts
+    instead of exiting (which would stop the whole stack, dashboard included)."""
+    log.error("Alpaca account unusable (%s); add or switch accounts on the dashboard System page",why)
+    db.kv_set(conn,"paper.error",{"type":why,"ts":time.time()})
+    stop=[]
+    signal.signal(signal.SIGTERM,lambda *_:stop.append(1))
+    signal.signal(signal.SIGINT,lambda *_:stop.append(1))
+    while not stop:
+        db.kv_set(conn,"health.broker",{"ts":time.time(),"waiting":why})
+        if BA.rev(conn)!=since:raise SystemExit(BA.RESTART)
+        time.sleep(3)
+
+
 def main():
     logging.basicConfig(level=logging.INFO,format="%(asctime)s paper %(levelname)s %(message)s")
-    broker=PaperBroker()
+    conn=db.get();db.init(conn)
+    priv=BA.vault_key(create=True)
+    if priv:
+        BA.publish(conn,priv)
+        BA.adopt_env(conn,priv)
+    BA.sync_scope(conn)
+    since=BA.rev(conn)
+    try:
+        api=Alpaca()
+    except ValueError as e:
+        if "Alpaca" not in str(e) and "VAULT" not in str(e):raise
+        return wait_for_account(conn,"NoAlpacaAccount",since)
+    db.pin(api.schema)  # this process trades one account; its book is that account's schema
+    broker=PaperBroker(api=api,conn=conn)
     def stop(*_):broker.stop=True
     signal.signal(signal.SIGTERM,stop)
     signal.signal(signal.SIGINT,stop)
-    broker.run()
+    try:
+        broker.run()
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code not in (401,403):raise
+        broker.conn.execute("SELECT pg_advisory_unlock(?)",(LOCK,))
+        wait_for_account(conn,"AlpacaAuthFailed",broker.api.account_rev)

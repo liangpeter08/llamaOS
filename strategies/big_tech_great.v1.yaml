@@ -1,0 +1,66 @@
+dsl: 0.1
+id: big_tech_great
+version: 1
+source:
+  text: >-
+    GOOGL tends to rebound over the following days after closing more than one standard
+    deviation below its 20-day mean (forced or mechanical selling absorbed by liquidity
+    providers). On such sessions, buy GOOGL after the noisy open (from 10:00) to capture
+    the intraday part of the rebound. Stop under the day low, target 2R, flat by 15:50.
+    Trader's complaint on the copy: It trades too rarely to tell whether it works, it also
+    trades too little, do 100% allocation when possible
+    Trader's complaint on the second copy: max_trades_per_day=3, max_open_positions=3,
+    max_position=0.1. change this to 100, 20, 0.6
+    Trader's follow-up: no change max_trades_per_day to 50, max_open_positions to 10,
+    and max_position: 50%
+    Trader's follow-up: updated risk control, see if you can update now to max possible
+    value you can thihnk of
+    Trader's follow-up: okay updated intraday position to 15 as well
+  based_on: {id: first_strat_googl, version: 1}
+  compiled_by: claude-opus-5-5
+  prompt: architect@v1
+assumptions:
+  - "CHANGED: new id first_strat_googl_max_limits, version 1; copy of first_strat_googl v1. Entry, stop, target and params unchanged."
+  - "CHANGED: max_trades_per_day 3 -> 100 (account maximum), per the trader's request for the maximum."
+  - "CHANGED: max_position 10% -> 100% of equity (account maximum). Total exposure is still capped by this strategy's fund allocation on the Funds page (at most 70% of equity unallocated); there is no leverage."
+  - "CHANGED: max_open_positions 3 -> 8. Read 'updated intraday position to 15' as the account open-position cap now being 15; the universe has 8 symbols, so 8 is the effective maximum."
+  - "Kept: risk_per_trade 1.0%. With stops typically 0.2%-1% from entry, 1% risk already sizes most trades at or near the position cap; 5% would only add size on wide-stop days."
+  - "Concentration: with a 100% position cap, the first symbol to fill at 10:00 can use the whole fund allocation, leaving the other 7 slots unfunded. Trader asked for the maximum; a 9%-12% cap would spread the allocation across up to 8 names."
+  - "Re-entry risk: the z-score condition is fixed for the session, so a position stopped inside 10:00-10:05 re-enters on the next bar; with 100 trades a day several losses per symbol are possible in the window (no per-symbol daily limit in the DSL)."
+  - "When more symbols qualify than the allocation can fund, the first to trigger are taken; the DSL cannot rank by how stretched each one is."
+  - "Kept: universe AAPL, AMD, AMZN, GOOGL, META, MSFT, NVDA, TSLA (watchlist names with stored 1-min bars); AVGO, NFLX and ORCL have daily bars only."
+  - "Kept: stretched down = zscore_d(20) <= -1.0 from completed daily closes; same thresholds for every symbol."
+  - "Kept: entries 10:00-10:05 ET; stop 0.1% below the day low, target 2R, flat by 15:50 ET."
+  - "Known weakness: v1 lost money (146 trades, avg R -0.07, profit factor 0.90) over 84 sessions of the early-2022 tech sell-off; 8 correlated positions at larger size scale those losses."
+suggestions:
+  - "Set max_position to about 12% so up to 8 names share the allocation instead of one symbol taking it all."
+  - "Set max_trades_per_day to 8 (one per symbol) to stop re-entry chains after fast stops."
+  - "Widen the stop (day_low minus 0.5%-1%): 87 of 146 v1 trades hit the stop. Cost: smaller positions at the same risk."
+  - "Regime filter such as ret_d(60) > trend_floor to skip sustained sell-offs. Cost: fewer trades."
+universe:
+  symbols: [AAPL, AMD, AMZN, GOOGL, META, MSFT, NVDA, TSLA]
+timeframe: 1min
+params:
+  z_n:         {value: 20,   range: [10, 40]}
+  z_max:       {value: -1.0, range: [-2.0, -0.5]}
+  stop_buffer: {value: 0.1%, range: [0%, 0.5%]}
+  target_r:    {value: 2.0,  range: [1.0, 4.0]}
+vars:
+  stop_level: day_low * (1 - stop_buffer)
+entry:
+  side: long
+  window: "10:00-10:05"
+  when_all:
+    - zscore_d(z_n) <= z_max
+sizing:
+  risk_per_trade: 1.0%
+exit:
+  stop: stop_level
+  target: entry_price + target_r * risk_per_share
+  flatten_at: "15:50"
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 100
+  max_open_positions: 8
+  max_position: 100%

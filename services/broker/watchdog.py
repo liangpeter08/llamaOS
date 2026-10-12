@@ -4,7 +4,9 @@ import signal
 import time
 from datetime import datetime
 
-from common import audit,db,sleeves,timeutil as T
+import httpx
+
+from common import audit,db,registry,sleeves,timeutil as T,broker_accounts as BA
 from common.config import load_risk
 from .alpaca import Alpaca,epoch
 
@@ -13,7 +15,17 @@ def main():
     from scripts.env import load,ROOT
     load(ROOT/"secrets/broker.env")
     log=logging.getLogger('watchdog')
-    api=Alpaca();c=db.get();db.init(c)
+    c=db.get();db.init(c)
+    since=BA.rev(c)
+    while True:  # no usable account yet: wait for the owner to add one on the dashboard
+        load(ROOT/"secrets/broker.env")  # the broker may have just generated BROKER_VAULT_KEY
+        try:
+            api=Alpaca();api.clock();db.pin(api.schema);break
+        except (ValueError,httpx.HTTPStatusError) as e:
+            db.kv_set(c,'watchdog.error',{'type':type(e).__name__,'ts':time.time()})
+            for _ in range(10):
+                if BA.rev(c)!=since:raise SystemExit(BA.RESTART)
+                time.sleep(1)
     from .paper import SCHEMA
     c.script(SCHEMA)
     risk=load_risk();stopping=False
@@ -22,6 +34,9 @@ def main():
         stopping=True
     signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
     while not stopping:
+        if BA.rev(c)!=api.account_rev:
+            log.info('Alpaca account switched; restarting on the new account')
+            raise SystemExit(BA.RESTART)
         try:
             risk=load_risk()  # the owner may change controls on the dashboard at any time
             clock=api.clock();now=epoch(clock['timestamp'])
@@ -46,6 +61,7 @@ def main():
                 if reason or ks.get('active'):
                     if reason and reason!='calendar flatten deadline' and not ks.get('active'):
                         db.kv_set(c,'kill_switch',{'active':True,'reason':reason,'ts':time.time(),'by':'watchdog'})
+                        registry.demote_live_auto(c,'watchdog',reason)
                         audit.log(c,'kill_switch.triggered','watchdog',{'reason':reason})
                     orders=api.orders()
                     import json

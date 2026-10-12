@@ -55,6 +55,69 @@ def test_validate_allocation(risk):
     assert any("drawdown" in e for e in F.validate_allocation("a", 0.1, 0.5, None, {}, c))
 
 
+# ---------------------------------------------------------------- reserved part + shared pool
+def two(rare_reserved=0.0, rare_deployed=0.0, busy_deployed=0.0, equity=100_000):
+    """'busy' fully reserves 50%; 'rare' has a 60% ceiling with `rare_reserved` of it reserved."""
+    busy = F.StrategyFund("busy", "intraday", 0.50, "set", 0.25, 0.10, base_usd=50_000, deployed=busy_deployed)
+    rare = F.StrategyFund("rare", "intraday", 0.60, "set", 0.25, 0.10, base_usd=60_000, deployed=rare_deployed, reserved=rare_reserved)
+    dep = busy_deployed + rare_deployed
+    return F.Account(equity=equity, cash=equity - dep, deployed=dep, intraday_deployed=dep, strategies={"busy": busy, "rare": rare})
+
+
+def test_seldom_trader_borrows_from_the_pool_but_not_from_reserves(risk):
+    c = cfg(risk)
+    lim = dict(c.__dict__, intraday_budget=1.0, cash_reserve=0.0, max_deployed=0.9)
+    c2 = type(c)(**lim)
+    # ceilings add up to 110% of equity, but only 50% is reserved: the rare one may use the unreserved 40%
+    a = two()
+    assert a.committed() == pytest.approx(50_000)
+    assert F.room_usd("rare", "intraday", a, c2) == pytest.approx(40_000)
+    assert {x.name: x.ok for x in F.check_buy("rare", "intraday", 40_000, a, c2)}["shared_pool"]
+    assert not {x.name: x.ok for x in F.check_buy("rare", "intraday", 41_000, a, c2)}["shared_pool"]
+    # even when 'busy' is idle its reserve is held; when it trades it can always spend all of it
+    a = two(rare_deployed=40_000)
+    assert F.room_usd("busy", "intraday", a, c2) == pytest.approx(50_000)
+    assert F.room_usd("rare", "intraday", a, c2) == pytest.approx(0)
+    # 'busy' bursting past its reserve can't eat into rare's reserve either
+    a = two(rare_reserved=0.25, busy_deployed=50_000)  # rare reserves 15k
+    assert F.room_usd("rare", "intraday", a, c2) == pytest.approx(40_000)
+    assert F.room_usd("busy", "intraday", a, c2) == pytest.approx(0)  # at its 50% ceiling anyway
+    busy = a.strategies["busy"]
+    busy.allocation, busy.base_usd = 0.80, 80_000
+    assert F.room_usd("busy", "intraday", a, c2) == pytest.approx(25_000)  # 90k - 50k used - 15k rare reserve
+
+
+def test_validate_reserves(risk):
+    c = cfg(risk)
+    # a 60% ceiling with half reserved fits next to 50% where a full 60% wouldn't
+    assert F.validate_allocation("a", 0.6, 0.2, 0.05, {"b": 0.5}, c) != []
+    assert F.validate_allocation("a", 0.6, 0.2, 0.05, {"b": 0.5}, c, reserved=1 / 6) == []
+    errs = F.validate_allocation("a", 0.6, 0.2, 0.05, {"b": 0.5}, c, reserved=0.9)
+    assert any("unreserved" in e and "reserve at most" in e for e in errs)
+    assert any("between 0% and 100%" in e for e in F.validate_allocation("a", 0.1, 0.2, None, {}, c, reserved=1.5))
+
+
+def test_funds_api_reserved(conn, risk):
+    from tests.test_api import login
+    c, csrf, _ = login(conn)
+    h = {"x-csrf-token": csrf}
+    s = running_orb(conn, risk)
+    db.kv_set(conn, "account", {"equity": 100_000, "cash": 100_000})
+    r = c.post(f"/api/funds/{s.id}", json={"allocation": "40%", "reserved": "25%", "max_drawdown": "15%"}, headers=h)
+    assert r.status_code == 200, r.text
+    assert "25% reserved" in r.json()["message"]
+    v = c.get("/api/funds").json()
+    row = next(x for x in v["strategies"] if x["sid"] == s.id)
+    assert row["reserved"] == pytest.approx(0.25) and row["reserved_usd"] == pytest.approx(10_000)
+    assert row["activity"]["active_sessions"] == 0
+    assert v["account"]["allocated"] == pytest.approx(0.10) and v["account"]["ceilings"] == pytest.approx(0.40)
+    assert funds.unallocated(conn, risk) == pytest.approx(risk.funds.max_deployed - 0.10)
+    # omitting reserved keeps it
+    assert c.post(f"/api/funds/{s.id}", json={"allocation": "30%"}, headers=h).status_code == 200
+    assert db.row(conn, "SELECT reserved FROM strategy_funds WHERE sid=?", (s.id,))["reserved"] == pytest.approx(0.25)
+    assert c.post(f"/api/funds/{s.id}", json={"allocation": "30%", "reserved": "150%"}, headers=h).status_code == 400
+
+
 def test_entry_is_sized_to_the_fund_room(risk, orb_text):
     from core.engine import StrategyRunner
     from dsl.validator import validate
@@ -202,3 +265,19 @@ def test_promote_with_allocation(conn, risk):
     assert "$20,000 fixed" in r.json()["message"]
     fr = db.row(conn, "SELECT alloc_usd FROM strategy_funds WHERE sid='orb_news_long'")
     assert fr["alloc_usd"] == 20_000
+
+
+def test_draft_promotes_to_paper_without_backtest(conn, risk):
+    from tests.test_api import login
+    c, csrf, _ = login(conn)
+    h = {"x-csrf-token": csrf}
+    registry.sync(conn, risk)
+    hh = db.row(conn, "SELECT hash, status FROM strategies WHERE sid='orb_news_long'")
+    assert hh["status"] == "draft"
+    db.kv_set(conn, "account", {"equity": 100_000, "cash": 100_000})
+    assert c.get(f"/api/strategies/{hh['hash']}").json()["fund_suggest"] is not None
+    r = c.post(f"/api/strategies/{hh['hash']}/promote", json={"to": "paper", "allocation": "10%"}, headers=h)
+    assert r.status_code == 200, r.text
+    assert "without a backtest" in r.json()["message"]
+    assert db.row(conn, "SELECT status FROM strategies WHERE hash=?", (hh["hash"],))["status"] == "paper"
+    assert db.row(conn, "SELECT 1 x FROM audit WHERE kind='strategy.untested_promotion'")

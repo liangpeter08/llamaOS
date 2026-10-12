@@ -410,6 +410,17 @@ def save_trial(conn, tid: int, risk: RiskConfig, actor: str) -> dict:
     return {"trial_id": tid, "hash": h, "id": d["id"], "path": path.name, "existing": False}
 
 
+def fail_orphans(conn, reason: str = "interrupted: the models service restarted while this run was in progress") -> list[int]:
+    """Mark runs left 'running' by a dead process as failed. Runs execute in a thread of the models service,
+    so at its startup any 'running' row has no worker behind it and would otherwise block new runs."""
+    ids = [r["id"] for r in db.rows(conn, "SELECT id FROM discovery_runs WHERE status='running'")]
+    for rid in ids:
+        conn.execute("UPDATE discovery_runs SET status='failed', error=?, finished_at=? WHERE id=? AND status='running'",
+                     (reason, time.time(), rid))
+        audit.log(conn, "discovery.failed", "system", {"run_id": rid, "error": reason})
+    return ids
+
+
 def run(conn, cfg: Config, actor: str, generator=None, progress: Callable[[str], None] | None = None,
         run_id: int | None = None, risk: RiskConfig | None = None) -> dict:
     risk = risk or load_risk(conn=conn)

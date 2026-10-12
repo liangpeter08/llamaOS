@@ -1,0 +1,67 @@
+dsl: '0.1'
+id: disc_tsla_relative_strength_breakout_t21
+version: 1
+source:
+  text: TSLA long while outperforming AMZN intraday and holding above VWAP. Stock-specific demand shows as strength relative to AMZN. Because informed buyers split their orders over the session, that demand persists, and price drifts in its direction for the rest of the day.
+  compiled_by: claude-opus-5-5
+  prompt: discovery@v1
+assumptions:
+- 'single-ticker discovery candidate for TSLA (family: relative_strength_breakout)'
+- Stock-specific demand shows as strength relative to AMZN and tends to persist intraday, because institutional buyers work their orders over hours. The other side is passive sellers and short-horizon mean-reversion liquidity providers, who underreact to buyers that are specific to TSLA.
+- The relative strength condition (TSLA session return minus AMZN session return >= rs_min) filters out moves that only ride broad mega-cap beta. Ablation showed it carries most of the edge (-1.63 Sharpe when removed).
+- close > vwap keeps entries on the side of the day's average buyer cost, so recent buyers are in profit and are not supplying stock. Ablation showed -0.20 Sharpe when removed.
+- Without a trigger, entry happens on the first bar from 10:00 where both conditions hold. After a stop or target exit, a second entry can follow while the conditions still hold, capped at 2 trades a day.
+- 'Falsified if: removing the relative-strength condition stops hurting, or Sharpe stays negative at 3x costs.'
+- 'discovery revision: stop changed from 1.5 x 1-minute ATR to stop_d_mult (0.25) x 14-session daily ATR, so that per-trade risk and the 2R target sit outside 1-minute noise and costs are a smaller fraction of R.'
+- 'discovery revision: rs_min 0% (was 0.5%) to sit in the middle of a stable neighbourhood'
+- 'discovery revision: removed the dead breakout trigger crosses_above(close, hh[1]) and its break_n param (ablation +0.02 Sharpe); the edge is relative-strength persistence, not breakout timing.'
+- 'discovery run #1, trial #21 (improved), saved by paper-owner; discovery Sharpe 2.06 over 63 trades; never scored on the holdout'
+suggestions:
+- If costs are still binding, test max_trades_per_day of 1.
+- Consider a later window start (for example 10:30) so that relative strength has had more time to establish itself.
+- backtest and paper trade before relying on it
+references:
+- AMZN
+universe:
+  symbols:
+  - TSLA
+  filters:
+  - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_adv:
+    value: 5000000
+    range:
+    - 1000000
+    - 10000000000
+  rs_min:
+    value: 0%
+    range:
+    - 0%
+    - 3%
+  stop_d_mult:
+    value: 0.25
+    range:
+    - 0.1
+    - 1.0
+  target_r:
+    value: 2.0
+    range:
+    - 1.0
+    - 4.0
+entry:
+  side: long
+  window: 10:00-14:30
+  when_all:
+  - (close / day_open - 1) - peer(AMZN, close / day_open - 1) >= rs_min
+  - close > vwap
+sizing:
+  risk_per_trade: 0.25%
+exit:
+  stop: entry_price - stop_d_mult * atr_d(14)
+  target: entry_price + target_r * risk_per_share
+  flatten_at: '15:50'
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 2

@@ -109,7 +109,7 @@ export default function Strategies() {
                 <tr className={r.archived_at ? "archived" : ""}>
                   {owner && <td><input type="checkbox" aria-label={`Select ${r.sid} v${r.version}`} checked={selected.has(r.hash)} onChange={(e) => toggle(r.hash, e.target.checked)} /></td>}
                   <td><Link href={`/strategies/${r.hash}`}><b>{r.display_name || r.sid}</b></Link>{r.kind === "portfolio" && <span className="muted"> · portfolio</span>}{r.archived_at && <span className="tag">archived</span>}</td><td>v{r.version}</td>
-                  <td><StatusPill status={r.status} /></td><td>{r.mode}</td>
+                  <td><StatusPill status={r.status} /></td><td>{r.mode?.replace("_", " · ")}</td>
                   <td>{r.validation.ok ? <span className="pos">✓</span> : <span className="neg" title={(r.validation.errors || []).join("; ")}>✗ {(r.validation.errors || []).length}</span>}</td>
                   {r.bt ? (
                     <>

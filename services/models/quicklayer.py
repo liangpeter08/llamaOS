@@ -12,7 +12,7 @@ import json
 import os
 import time
 
-from common import db
+from common import db, news_claude
 from common.config import PROMPTS_DIR, load_yaml
 from dsl.builtins import CATALYSTS
 
@@ -95,9 +95,18 @@ def tier_providers(tier: str) -> list[str]:
     return list(cfg.get("providers") or ["heuristic"])
 
 
-def first_available(tier: str) -> str:
+NEWS_CLAUDE_KEY = news_claude.ON_KEY
+
+
+def news_to_claude(conn) -> bool:
+    """Owner switch (System and News pages): may news items be sent to Claude right now? Default on, the behaviour
+    before the switch existed; when active hours are set, only inside that window."""
+    return news_claude.allowed(conn)
+
+
+def first_available(tier: str, claude: bool = True) -> str:
     for p in tier_providers(tier):
-        if provider_available(p):
+        if (claude or not p.startswith("claude")) and provider_available(p):
             return p
     return "heuristic"
 
@@ -136,7 +145,9 @@ class QuickLayer:
         self.conn = conn
 
     def decide(self, item: dict, questions=T1_QUESTIONS, provider: str | None = None) -> dict:
-        provider = provider or first_available("t1")
+        claude = news_to_claude(self.conn)
+        if not provider or (provider.startswith("claude") and not claude):
+            provider = first_available("t1", claude)
         if provider == "laya":
             return laya_provider.decide(self.conn, item)
         if provider == "claude_haiku":
@@ -154,7 +165,7 @@ class QuickLayer:
         return {k: v for k, v in out.items() if k in questions or k in ("score", "rationale", "model", "provider")}
 
     def deep(self, item: dict, context: dict) -> dict:
-        provider = first_available("t2")
+        provider = first_available("t2", news_to_claude(self.conn))
         if provider == "claude_sonnet":
             model = _model_id("claude_sonnet")
             _, d, _ = llm.call(self.conn, model=model, task="t2", system=prompt("news_agent@v1"),

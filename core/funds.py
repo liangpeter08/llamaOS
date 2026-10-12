@@ -1,9 +1,13 @@
 """Fund controls: cash reserve, deployed capital and per-strategy allocations. Pure functions.
 
-Every strategy line (its `id`, across versions) owns a reserved slice of the account: an
-allocation as a share of equity, or a fixed dollar amount (its share then moves with equity). Allocations add up to at most `funds.max_deployed`, so one
-strategy can never spend another's money. Each slice has its own drawdown stop (pauses the
-strategy) and, for intraday strategies, a daily loss stop (no new entries until tomorrow).
+Every strategy line (its `id`, across versions) has an allocation: a ceiling as a share of equity, or a
+fixed dollar amount (its share then moves with equity). `reserved` is the part of that ceiling held for it
+even while it is idle (1 = the whole ceiling, 0 = nothing). Reserves add up to at most `funds.max_deployed`,
+so a strategy can always spend its reserve. Above its reserve, it draws on a shared pool: whatever of
+max deployed is not reserved by, or in use by, other strategies. So a strategy that rarely trades can get a
+large ceiling without parking cash, and when it does trade it can never eat into another's reserve.
+Each allocation has its own drawdown stop (pauses the strategy) and, for intraday strategies, a daily loss
+stop (no new entries until tomorrow), both measured on the ceiling.
 """
 from __future__ import annotations
 
@@ -31,6 +35,7 @@ class StrategyFund:
     pnl: float = 0.0  # since base_ts: realized + open
     pnl_today: float = 0.0
     fixed_usd: float | None = None  # fixed-dollar allocation; None = `allocation` of equity
+    reserved: float = 1.0  # share of the allocation held for it while idle; the rest comes from the shared pool
 
     @property
     def drawdown(self) -> float:
@@ -39,6 +44,13 @@ class StrategyFund:
 
     def cap_usd(self, equity: float) -> float:
         return self.fixed_usd if self.fixed_usd is not None else self.allocation * equity
+
+    def reserved_usd(self, equity: float) -> float:
+        return self.reserved * self.cap_usd(equity)
+
+    def committed(self, equity: float) -> float:
+        """Money of max deployed this strategy holds: its reserve, or what it has in use when above it."""
+        return max(self.reserved_usd(equity), self.deployed)
 
 
 @dataclass
@@ -55,6 +67,17 @@ class Account:
     def drawdown(self) -> float:
         return max(0.0, 1 - self.equity / self.peak_equity) if self.peak_equity else 0.0
 
+    def committed(self) -> float:
+        """Reserves plus use above them, plus positions no strategy owns."""
+        unmanaged = max(0.0, self.deployed - sum(f.deployed for f in self.strategies.values()))
+        return sum(f.committed(self.equity) for f in self.strategies.values()) + unmanaged
+
+    def pool_room(self, sid: str, cfg: FundsRisk) -> float:
+        """Largest buy for `sid` that keeps every other strategy's reserve intact."""
+        f = self.strategies[sid]
+        others = self.committed() - f.committed(self.equity)
+        return max(0.0, cfg.max_deployed * self.equity - others - f.deployed)
+
 
 def check_buy(sid: str, kind: str, notional: float, acct: Account, cfg: FundsRisk | None) -> list[Check]:
     """Fund checks for one buy (entry or add). Sells always pass: they only free money."""
@@ -69,6 +92,9 @@ def check_buy(sid: str, kind: str, notional: float, acct: Account, cfg: FundsRis
         Check("strategy_active", f.status == "active", f"fund status {f.status}" + (f": {f.reason}" if f.reason else "")),
         Check("strategy_allocation", f.deployed + notional <= f.cap_usd(eq) + 1e-6,
               f"${f.deployed + notional:,.0f} after / allocation ${f.cap_usd(eq):,.0f} ({f.allocation:.1%})"),
+        Check("shared_pool", notional <= acct.pool_room(sid, cfg) + 1e-6,
+              f"${notional:,.0f} buy / ${acct.pool_room(sid, cfg):,.0f} free without touching other strategies' reserves "
+              f"(this one reserves ${f.reserved_usd(eq):,.0f}, {f.reserved:.0%} of its allocation)"),
         Check("cash_reserve", cash_after >= cfg.cash_reserve * eq - 1e-6,
               f"cash ${cash_after:,.0f} after / reserve ${cfg.cash_reserve * eq:,.0f} ({cfg.cash_reserve:.0%})"),
         Check("max_deployed", acct.deployed + notional <= cfg.max_deployed * eq + 1e-6,
@@ -89,7 +115,7 @@ def room_usd(sid: str, kind: str, acct: Account, cfg: FundsRisk | None) -> float
         return 0.0
     eq = acct.equity
     room = min(f.cap_usd(eq) - f.deployed, acct.cash - acct.working_buys - cfg.cash_reserve * eq,
-               cfg.max_deployed * eq - acct.deployed)
+               cfg.max_deployed * eq - acct.deployed, acct.pool_room(sid, cfg))
     if kind == "intraday":
         room = min(room, cfg.intraday_budget * eq - acct.intraday_deployed)
     return max(0.0, room)
@@ -107,15 +133,19 @@ def breach(f: StrategyFund) -> str:
 
 
 def validate_allocation(sid: str, allocation: float, max_drawdown: float, daily_loss: float | None,
-                        others: dict[str, float], cfg: FundsRisk) -> list[str]:
-    """Errors for a proposed allocation; `others` = allocations of every other running strategy."""
+                        others: dict[str, float], cfg: FundsRisk, reserved: float = 1.0) -> list[str]:
+    """Errors for a proposed allocation; `others` = reserved shares of equity of every other running strategy."""
     errs = []
     if not 0 < allocation <= cfg.max_strategy_allocation + 1e-12:
         errs.append(f"allocation must be > 0 and at most {cfg.max_strategy_allocation:.0%} (Risk page: max allocation per strategy)")
-    total = sum(others.values()) + allocation
+    if not 0 <= reserved <= 1 + 1e-12:
+        errs.append("reserved must be between 0% and 100% of the allocation")
+    total = sum(others.values()) + allocation * reserved
     if total > cfg.max_deployed + 1e-9:
-        errs.append(f"allocations would add up to {total:.1%}, above max deployed capital {cfg.max_deployed:.0%}; "
-                    f"{max(0.0, cfg.max_deployed - sum(others.values())):.1%} is unallocated")
+        free = max(0.0, cfg.max_deployed - sum(others.values()))
+        errs.append(f"reserves would add up to {total:.1%}, above max deployed capital {cfg.max_deployed:.0%}; "
+                    f"{free:.1%} is unreserved (reserve at most {min(1.0, free / allocation) if allocation > 0 else 0:.0%} of this allocation "
+                    f"and let the rest come from the shared pool)")
     if not 0 < max_drawdown <= cfg.strategy_max_drawdown + 1e-12:
         errs.append(f"max drawdown must be > 0 and at most {cfg.strategy_max_drawdown:.0%} (Risk page: strategy drawdown stop)")
     if daily_loss is not None and not 0 < daily_loss <= cfg.strategy_daily_loss + 1e-12:

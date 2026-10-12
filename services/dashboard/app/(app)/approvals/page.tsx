@@ -92,7 +92,7 @@ function ApprovalCard({ it, acct, risk, skew, onDone }: {
       <div className="row between">
         <div>
           <h2 style={{ margin: 0 }}>#{it.id} · {it.side.toUpperCase()} {it.qty} {it.symbol} <span className="muted">@ {money(it.entry)}</span></h2>
-          <span className="muted">{it.sid} · decided on the {et(it.ts)} ET bar close · mode {it.mode}</span>
+          <span className="muted">{it.sid} · decided on the {et(it.ts)} ET bar close · mode {it.mode?.replace("_", " · ")}</span>
         </div>
         <Countdown until={it.expires_wall} skew={skew} />
       </div>

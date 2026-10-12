@@ -1,0 +1,66 @@
+dsl: 0.1
+kind: portfolio
+id: intra_tech_v2
+version: 1
+source:
+  text: >-
+    create a strategy that buys top 8 big tech everyday during the initial market open given
+    assumptions that would work (open to ideas here). now use momentum and trends to monitor
+    and nasdaq 100 to give ideas. Trade for small gains and continuous find opportunities
+    across the day. we should target trading every 30 minutes if the condition allows. Trade
+    opening range and look for peek as well. Check news for positive signals and continuous
+    up, we hold.
+    It trade too little and not often enough. It also utilize too little of the portfolio,
+    utilize 3x more of the portfolio
+  based_on: {id: intra_big_tech, version: 1}
+  compiled_by: claude-opus-5-5
+  prompt: architect@v1
+assumptions:
+  - "Copy of intra_big_tech v1 (backtest: 88 trades in 166 sessions, +8.97%, max DD -2.67%, peak exposure 38.3%, basket buy-and-hold +16.34%)."
+  - "Symbols unchanged: AAPL, AMD, AMZN, GOOGL, META, MSFT, NVDA, TSLA, one group, equal weight (12.5% each)."
+  - "CHANGED: capital 40% -> 60% of equity at the first buy (7.5% per name)."
+  - "CHANGED: max_holding 100% -> 150%, so up to 90% of equity invested (11.25% per name). 3x of 40% = 120% exceeds the 90% sleeve cap, so 90% is the closest supported."
+  - "Funds: only 70% of equity is unallocated today. Above that, buys are clipped by the fund controls unless this strategy's allocation is raised to 90%."
+  - "CHANGED: buy-back after an exit now starts on the first up day (day_change > 0%) instead of above +3%, in 50% steps instead of 100%, so a name is fully back in 2 sessions."
+  - "CHANGED: new rule, cost stop: if the price is more than 8% below the average cost, sell all and wait for the buy-back."
+  - "CHANGED: new rule, trim: above +5% on the day, sell 25% of the shares held."
+  - "Kept: below -2% on the day, sell all and wait for the buy-back (85 of 88 v1 exits, source of the low drawdown)."
+  - "CHANGED: new rule, momentum add: above +1.5% on the day AND 20-session return above 0%, add 25% of the original allocation, capped at 150%. The trend filter is meant to avoid adding to one-day pops inside a downtrend."
+  - "Rule order (first match wins): cost stop, trim, -2% exit, momentum add."
+  - "Decision once a day at 15:45 ET; hold up to 130 sessions, then everything is sold (unchanged)."
+  - "Sleeve drawdown stop = account default 15% (unchanged)."
+  - "NOT SUPPORTED: trading every 30 minutes, opening range, news and Nasdaq 100 inputs. A portfolio 0.1 file decides once a day per symbol on its own daily move; intraday timing needs a separate intraday file."
+suggestions:
+  - "If the 15% sleeve stop feels loose at 90% exposure, tighten limits.max_drawdown to 10-12%."
+  - "Backtest add_gain at 1% and 2.5% to check that the add rule is not tuned to one value."
+holdings:
+  capital: 60%
+  max_holding: 150%
+  groups:
+    big_tech:
+      weight: 100%
+      symbols: [AAPL, AMD, AMZN, GOOGL, META, MSFT, NVDA, TSLA]
+schedule:
+  hold_sessions: 130
+  decide_at: "15:45"
+params:
+  loss_stop:    {value: -8%,  range: [-20%, -3%]}
+  take_gain:    {value: 5%,   range: [3%, 10%]}
+  take_size:    {value: 25%,  range: [10%, 50%]}
+  exit_loss:    {value: -2%,  range: [-8%, -0.5%]}
+  add_gain:     {value: 1.5%, range: [0.5%, 4%]}
+  add_size:     {value: 25%,  range: [10%, 50%]}
+  trend_n:      {value: 20,   range: [10, 60]}
+  trend_min:    {value: 0%,   range: [-5%, 10%]}
+  reenter_gain: {value: 0%,   range: [0%, 3%]}
+  reenter_step: {value: 50%,  range: [25%, 100%]}
+rules:
+  - {when: "gain < loss_stop", do: exit_and_wait}
+  - {when: "day_change > take_gain", do: {trim: take_size}}
+  - {when: "day_change < exit_loss", do: exit_and_wait}
+  - {when: "day_change > add_gain and ret_d(trend_n) > trend_min", do: {add: add_size}}
+reentry:
+  when: "day_change > reenter_gain"
+  step: reenter_step
+execution:
+  mode: manual

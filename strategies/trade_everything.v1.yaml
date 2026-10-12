@@ -1,0 +1,75 @@
+dsl: 0.1
+id: trade_everything
+version: 1
+source:
+  text: >-
+    creat a strategy to buy top 10 big tech companies at market open, 100% allocation and then sell when moment and rsi fades. Repeat buy and sell when rsi and other great signal indicate buying. If no volatility and flat or rise or decreasing trend, ignore the stock. Look for swings in the stock. If found buy at low, sell at high, repeat 2-3 time every hour till market close. Prior to market close, liquid everything
+  compiled_by: claude-opus-5-5
+  prompt: architect@v1
+assumptions:
+  - "Universe = AAPL, AMD, AMZN, GOOGL, META, MSFT, NVDA, TSLA (trader confirmed)."
+  - "NOT SUPPORTED: AVGO, NFLX, ORCL have no 1-minute bars, so the 'top 10' becomes these 8."
+  - "NOT SUPPORTED: buy everything at the open. Entries happen only on the swing signal, 09:45-15:30 ET (trader confirmed)."
+  - "NOT SUPPORTED: 100% allocation. The strategy file can't set allocation; the trader approves the fund allocation separately (20% of equity currently unallocated)."
+  - "NOT SUPPORTED: risk 100% of equity per trade. Capped at the account maximum of 5%."
+  - "Each position at most 100% of equity (trader changed this from 25%). With a tight stop, this cap sets the size on nearly every trade, and the fund allocation caps real exposure, so one position can use the whole sleeve."
+  - "NOT SUPPORTED: 20 open positions. Capped at 8, one per tradable symbol; with 100% positions, the allocation usually allows only one at a time."
+  - "NOT SUPPORTED: 200 trades a day. Capped at the account maximum of 100."
+  - "Swing low = 1-min RSI(14) crosses back above 30 (trader confirmed)."
+  - "Volatile enough = daily ATR(14) >= 1.5% of the prior close; filters out quiet stocks (trader confirmed)."
+  - "Not trending away = price within +/-1.5% of VWAP; filters out one-way runs up or down (trader confirmed)."
+  - "Momentum fades = 1-min RSI(14) crosses back below 70 (trader confirmed)."
+  - "Bracket: stop = entry minus 1.5x the 14-bar ATR, target = 2R (trader confirmed)."
+  - "Everything is flat by 15:50 ET (trader confirmed)."
+  - "'Repeat 2-3 times every hour' = re-entry allowed on every new signal, limited only by max trades per day."
+  - "News (trader's sentence was cut off) = block entries and exit open positions on a red flag or news.score below -0.3. No news counts as neutral (score 0, no red flag). News can never increase size."
+  - "News signals are recorded only since 2026-09-07; earlier backtest sessions run without the news filter."
+suggestions:
+  - "Lower max_open_positions to 1-2 to match 100% positions; otherwise the first signal of the day blocks the rest."
+  - "Lower max_trades_per_day to about 20; at 1-minute frequency, costs likely exceed the edge."
+  - "Compare against big_tech_great (68 trades, +7.6%, Sharpe 2.08 over 85 sessions), which buys oversold names once a day."
+universe:
+  from: {news_today: false}
+  symbols: [AAPL, AMD, AMZN, GOOGL, META, MSFT, NVDA, TSLA]
+timeframe: 1min
+params:
+  rsi_n:     {value: 14,   range: [7, 21]}
+  rsi_low:   {value: 30,   range: [20, 40]}
+  rsi_high:  {value: 70,   range: [60, 80]}
+  vol_min:   {value: 1.5%, range: [0.8%, 3%]}
+  vwap_band: {value: 1.5%, range: [0.5%, 3%]}
+  atr_mult:  {value: 1.5,  range: [1.0, 3.0]}
+  target_r:  {value: 2.0,  range: [1.0, 3.0]}
+  news_min:  {value: -0.3, range: [-0.8, 0]}
+signals:
+  news.score:    {from: news_agent@v1, max_age: since_prior_close, default: 0}
+  news.red_flag: {from: news_agent@v1, max_age: session, default: false}
+vars:
+  rsi_v: rsi(close, rsi_n)
+  daily_vol: atr_d(14) / prior_close
+entry:
+  side: long
+  window: "09:45-15:30"
+  when_all:
+    - crosses_above(rsi_v, rsi_low)
+    - daily_vol >= vol_min
+    - close <= vwap * (1 + vwap_band)
+    - close >= vwap * (1 - vwap_band)
+    - news.score >= news_min
+    - not news.red_flag
+sizing:
+  risk_per_trade: 5%
+exit:
+  stop: entry_price - atr_mult * atr(14)
+  target: entry_price + target_r * risk_per_share
+  flatten_at: "15:50"
+  when_any:
+    - crosses_below(rsi_v, rsi_high)
+    - news.red_flag
+    - news.score < news_min
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 100
+  max_open_positions: 8
+  max_position: 100%

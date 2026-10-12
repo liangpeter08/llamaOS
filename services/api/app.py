@@ -25,8 +25,8 @@ from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
 from backtest import engine as bt
-from common import audit, db, registry, sleeves, monitoring
-from common import funds, market_inputs, risk_settings as RS
+from common import audit, db, registry, sleeves, monitoring, broker_accounts as BA
+from common import funds, market_inputs, news_claude, risk_settings as RS
 from common.config import risk_defaults
 from core import funds as F
 from common.config import RiskConfig, load_risk, load_yaml, mode, risk_path
@@ -483,7 +483,7 @@ def strategy(h: str, u: dict = Depends(user)):
         "monitoring": monitoring.coverage(c, s) if s else {"required": [], "unwatched": []},
         "decide_at": f"{s.decide_at:%H:%M}" if kind == "portfolio" and s else None,
         "fund": db.row(c, "SELECT allocation, alloc_usd, status, reason, max_drawdown FROM strategy_funds WHERE sid=?", (row["sid"],)),
-        "fund_suggest": fund_suggest(c, risk, s) if s and risk.funds and row["status"] == "backtested" else None,
+        "fund_suggest": fund_suggest(c, risk, s) if s and risk.funds and row["status"] in ("draft", "backtested") else None,
         "s": {k: v_ for k, v_ in row.items() if k not in ("backtest", "validation")},
         "text": text, "integrity": v.hash == h,
         "validation": v.as_dict(),
@@ -597,6 +597,19 @@ class PromoteIn(BaseModel):
     reviewed: bool = False
     allocation: str | None = None  # paper only: '10%' of equity, or a dollar amount with alloc_mode 'usd'
     alloc_mode: Literal["pct", "usd"] = "pct"
+    reserved: str | None = None  # share of the allocation held while idle ('25%'); omitted: 100%
+
+
+def parse_reserved(text: str | None) -> float | None:
+    """'25%' or '25' -> 0.25 of the allocation; None keeps the current reserve."""
+    from common.units import parse_pct
+    if text is None or not str(text).strip():
+        return None
+    v = str(text).strip()
+    try:
+        return parse_pct(v if v.endswith("%") else v + "%")
+    except ValueError as e:
+        fail(str(e))
 
 
 def parse_allocation(text: str, mode: str) -> tuple[float | None, float | None]:
@@ -629,8 +642,8 @@ def strategy_promote(h: str, body: PromoteIn, u: dict = Depends(owner)):
     if body.to == "paper":
         if row["archived_at"]:
             fail("This version is archived. Unarchive it before promoting.", 409)
-        if row["status"] not in ("backtested", "live"):
-            fail("Paper needs a passing validation and a backtest first.")
+        if row["status"] not in ("draft", "backtested", "live"):
+            fail(f"Only a draft or backtested version can go to paper (this one is {row['status']}).")
         v2 = getattr(s, "v2", None)
         if v2 is not None:
             gaps = market_inputs.missing_feeds(s)
@@ -647,19 +660,22 @@ def strategy_promote(h: str, body: PromoteIn, u: dict = Depends(owner)):
         if risk.funds and body.allocation:
             share, usd = parse_allocation(body.allocation, body.alloc_mode)
             fr = db.row(c, "SELECT max_drawdown, daily_loss FROM strategy_funds WHERE sid=?", (s.id,))
+            rsv = parse_reserved(body.reserved)
             errs = funds.set_allocation(c, risk, s, share, fr["max_drawdown"] if fr else risk.funds.strategy_max_drawdown,
                                         (fr["daily_loss"] if fr else risk.funds.strategy_daily_loss) if s.kind == "intraday" else None,
-                                        u["username"], alloc_usd=usd)
+                                        u["username"], alloc_usd=usd, reserved=rsv)
             if errs:
                 fail("Can't allocate: " + "; ".join(errs))
-            fund_note = f" Fund allocation: ${usd:,.0f} fixed." if usd is not None else f" Fund allocation: {share:.1%} of equity."
+            fund_note = (f" Fund allocation: ${usd:,.0f} fixed" if usd is not None else f" Fund allocation: {share:.1%} of equity") + (
+                f", {rsv:.0%} reserved." if rsv is not None and rsv < 1 else ".")
         elif risk.funds and not db.row(c, "SELECT sid FROM strategy_funds WHERE sid=?", (s.id,)):
             want = funds.default_allocation(s, risk)
             room = funds.unallocated(c, risk, exclude=s.id)
             need = s.capital if s.kind == "portfolio" else min(want, risk.funds.default_allocation)
             if room + 1e-9 < need:
-                fail(f"Not enough unallocated capital: {s.id} needs at least {need:.1%} of equity and {max(room, 0):.1%} is free. "
-                     "Lower other strategies' allocations on the Funds page or raise max deployed capital on the Risk page.")
+                fail(f"Not enough unreserved capital: {s.id} needs at least {need:.1%} of equity and {max(room, 0):.1%} is free. "
+                     "Enter an allocation with a smaller reserved part (the rest comes from the shared pool when it trades), "
+                     "lower other strategies' reserves on the Funds page, or raise max deployed capital on the Risk page.")
             alloc = min(want, room)
             funds.ensure(c, risk, s, u["username"], alloc)
             fund_note = f" Fund allocation: {alloc:.1%} of equity" + (f" (it could use up to {want:.1%}; adjust on Funds)." if alloc < want - 1e-9 else ".")
@@ -672,10 +688,13 @@ def strategy_promote(h: str, body: PromoteIn, u: dict = Depends(owner)):
                     audit.log(c, "scenario_catalog.pinned", u["username"], {"hash": h, "catalog_hash": v2.catalog_hash,
                                                                            "reviewed_defaults": body.reviewed})
                 registry.set_status(c, h, "paper", u["username"], paper_started_at=time.time())
+                if row["status"] == "draft":
+                    audit.log(c, "strategy.untested_promotion", u["username"], {"hash": h, "sid": row["sid"]})
         except ValueError as e:
             fail(str(e))
         command("reload", {}, u["username"])
-        return ok("Promoted to paper. The broker picks it up within a few seconds." + fund_note)
+        untested = " It was promoted without a backtest." if row["status"] == "draft" else ""
+        return ok("Promoted to paper. The broker picks it up within a few seconds." + untested + fund_note)
     if body.to == "live":
         fail("Real-money execution is disabled; this release supports paper trading only.", 403)
     fail("unknown target")
@@ -726,17 +745,25 @@ def strategy_release_cash(h: str, u: dict = Depends(owner)):
 
 class ModeIn(BaseModel):
     mode: str
+    confirm: str = ""
 
 
 @app.post("/api/strategies/{h}/mode")
 def strategy_mode(h: str, body: ModeIn, u: dict = Depends(owner)):
     c = conn()
-    if body.mode not in ("manual", "auto", "paper"):
-        fail("bad mode")
+    if body.mode not in registry.MODES:
+        fail(f"Mode must be one of {', '.join(registry.MODES)}.")
+    row = db.row(c, "SELECT sid, status, mode FROM strategies WHERE hash=?", (h,))
+    if not row:
+        fail("no such strategy", 404)
+    if body.mode.startswith("live_") and row["status"] != "live":
+        fail("Live modes need this exact file approved for live first (status live).")
+    if body.mode == "live_auto" and body.confirm.strip() != row["sid"]:
+        fail(f"Live auto submits every trade without your approval. Type the strategy id ({row['sid']}) to confirm.")
     c.execute("UPDATE strategies SET mode=?, updated_at=? WHERE hash=?", (body.mode, time.time(), h))
-    audit.log(c, "strategy.mode", u["username"], {"hash": h, "mode": body.mode})
+    audit.log(c, "strategy.mode", u["username"], {"hash": h, "mode": body.mode, "from": row["mode"]})
     command("mode", {"hash": h, "mode": body.mode}, u["username"])
-    return ok(f"Execution mode set to {body.mode}.")
+    return ok(f"Execution mode set to {body.mode.replace('_', ' ')}.")
 
 
 class StrategyMetaIn(BaseModel):
@@ -840,6 +867,37 @@ def strategy_duplicate(h: str, body: DuplicateIn, u: dict = Depends(owner)):
 
 class DiffIn(BaseModel):
     diff: str
+
+
+class EditIn(BaseModel):
+    text: str = Field(min_length=1, max_length=200_000)
+
+
+@app.post("/api/strategies/{h}/edit")
+def strategy_edit(h: str, body: EditIn, u: dict = Depends(owner)):
+    """Save an edited copy of this file as the next version (a new draft). The edited version is never changed in place:
+    approvals, backtests and trades stay pinned to its hash."""
+    c = conn()
+    row = db.row(c, "SELECT sid, version FROM strategies WHERE hash=?", (h,))
+    if not row:
+        fail("no such strategy", 404)
+    old = registry.text_of(c, h) or ""
+    text = body.text.replace("\r\n", "\n")
+    if not text.endswith("\n"):
+        text += "\n"
+    if text == old:
+        fail("No changes to save.")
+    risk = load_risk()
+    v = validate(text, risk)
+    if not v.ok:
+        fail("The edited file doesn't validate: " + "; ".join(v.errors))
+    if v.strategy.id != row["sid"]:
+        fail(f"Keep id: {row['sid']}. To make a separate strategy, use Duplicate instead.")
+    path = registry.write_new_version(row["sid"], text)
+    registry.sync(c, risk)
+    nh = validate(path.read_text(), risk).hash
+    audit.log(c, "strategy.edited", u["username"], {"from": h, "sid": row["sid"], "version": row["version"], "to": path.name, "hash": nh})
+    return ok(f"Saved your edit as {path.name} (new draft version).", hash=nh, path=path.name)
 
 
 @app.post("/api/strategies/{h}/apply-diff")
@@ -1282,7 +1340,8 @@ def news(scope: str = "live", u: dict = Depends(user)):
         n["signals"] = sigs.get(n["id"], [])
     counts = {r["triage"] or "pending": r["n"] for r in c.execute(
         "SELECT triage, COUNT(*) n FROM news WHERE session = ANY(?) GROUP BY triage", (sessions,))}
-    return {"items": items, "counts": counts, "notes": db.rows(c, "SELECT * FROM notes WHERE active=1 ORDER BY id DESC")}
+    return {"items": items, "counts": counts, "notes": db.rows(c, "SELECT * FROM notes WHERE active=1 ORDER BY id DESC"),
+            "news_claude": news_claude.status(c)}
 
 
 class NoteIn(BaseModel):
@@ -1336,8 +1395,106 @@ def system(u: dict = Depends(user)):
             "source": (db.kv_get(c, "sim.state") or {}).get("source", "simulator"),
             "history": db.kv_get(c, "sim.history") or db.kv_get(c,"paper.history_loaded") or {}, "suspend_trade": db.kv_get(c, "broker.suspend_trade"),
             "errors": db.rows(c, "SELECT ts, provider, model, task, error FROM model_calls WHERE ok=0 ORDER BY id DESC LIMIT 10"),
+            "news_to_claude": news_claude.settings(c)["on"], "news_claude": news_claude.status(c),
             "database": {"engine": "PostgreSQL", "size": db_size,
                          "version": db.row(c, "SHOW server_version")["server_version"]}}
+
+
+class NewsClaudeIn(BaseModel):
+    on: bool
+
+
+@app.post("/api/settings/news-to-claude")
+def set_news_to_claude(body: NewsClaudeIn, u: dict = Depends(owner)):
+    """Owner switch: send news items to Claude for triage (off = Laya, Gemini or the offline keyword model only)."""
+    c = conn()
+    db.kv_set(c, news_claude.ON_KEY, body.on)
+    audit.log(c, "settings.news_to_claude", u["username"], {"on": body.on})
+    return ok("News is now sent to Claude." if body.on else "News is no longer sent to Claude.")
+
+
+class NewsClaudeHoursIn(BaseModel):
+    enabled: bool
+    start: str = "09:00"
+    end: str = "17:00"
+    weekdays_only: bool = False
+
+
+@app.post("/api/settings/news-to-claude/hours")
+def set_news_to_claude_hours(body: NewsClaudeHoursIn, u: dict = Depends(owner)):
+    """Owner schedule: only send news to Claude between start and end (US/Eastern). Disabled = any time."""
+    if not (news_claude.valid_hhmm(body.start) and news_claude.valid_hhmm(body.end)):
+        fail("times must be HH:MM (24-hour)")
+    c = conn()
+    hours = body.model_dump()
+    db.kv_set(c, news_claude.HOURS_KEY, hours)
+    audit.log(c, "settings.news_to_claude_hours", u["username"], hours)
+    if not body.enabled:
+        return ok("Active hours off: news goes to Claude whenever the switch is on.")
+    days = "weekdays" if body.weekdays_only else "every day"
+    return ok(f"News goes to Claude only {body.start}–{body.end} ET, {days}.")
+
+
+# ---------------------------------------------------------------- Alpaca paper accounts
+@app.get("/api/broker-accounts")
+def broker_accounts(u: dict = Depends(user)):
+    c = conn()
+    st = db.kv_get(c, "sim.state") or {}
+    return {"accounts": BA.listing(c), "vault_ready": bool(db.kv_get(c, "broker.vault_pub")),
+            "paper": st.get("source") == "alpaca_paper" or os.environ.get("BROKER_BACKEND") == "alpaca",
+            "open_positions": db.row(c, "SELECT COUNT(*) n FROM positions")["n"],
+            "error": (db.kv_get(c, "paper.error") or {}).get("type")}
+
+
+class BrokerAccountIn(BaseModel):
+    label: str = Field(min_length=1, max_length=60)
+    key_id: str = Field(min_length=10, max_length=64, pattern=r"^[A-Z0-9]+$")
+    secret: str = Field(min_length=20, max_length=128)
+    code: str = Field(min_length=6, max_length=8)
+    activate: bool = False
+
+
+@app.post("/api/broker-accounts")
+def broker_account_add(body: BrokerAccountIn, u: dict = Depends(owner)):
+    auth.require_code(u, body.code)
+    c = conn()
+    try:
+        acct = BA.check(body.key_id.strip(), body.secret.strip())
+        aid = BA.add(c, body.label.strip(), body.key_id.strip(), body.secret.strip(), u["username"], acct)
+        if body.activate:
+            BA.activate(c, aid, u["username"])
+    except ValueError as e:
+        fail(str(e))
+    msg = f"Saved paper account {acct.get('account_number', '')} (equity ${float(acct.get('equity') or 0):,.2f})."
+    return ok(msg + (" The broker is restarting on it." if body.activate else ""))
+
+
+class BrokerSwitchIn(BaseModel):
+    code: str = Field(min_length=6, max_length=8)
+    confirm_open: bool = False
+
+
+@app.post("/api/broker-accounts/{aid}/activate")
+def broker_account_activate(aid: int, body: BrokerSwitchIn, u: dict = Depends(owner)):
+    auth.require_code(u, body.code)
+    c = conn()
+    n = db.row(c, "SELECT COUNT(*) n FROM positions")["n"]
+    if n and not body.confirm_open:
+        fail(f"The current account holds {n} position(s); they stay open there, unmanaged. Confirm to switch anyway.")
+    try:
+        BA.activate(c, aid, u["username"])
+    except ValueError as e:
+        fail(str(e))
+    return ok("Switched. Pending and approved intents were expired; the broker restarts on the new account in a few seconds.")
+
+
+@app.post("/api/broker-accounts/{aid}/delete")
+def broker_account_delete(aid: int, u: dict = Depends(owner)):
+    try:
+        BA.remove(conn(), aid, u["username"])
+    except ValueError as e:
+        fail(str(e))
+    return ok("Account removed.")
 
 
 @app.get("/api/audit")
@@ -1422,9 +1579,12 @@ def fund_suggest(c, risk: RiskConfig, s) -> dict:
     eq, _ = funds.equity_now(c)
     room = max(0.0, funds.unallocated(c, risk, exclude=s.id))
     want = funds.default_allocation(s, risk)
-    cur = db.row(c, "SELECT allocation, alloc_usd FROM strategy_funds WHERE sid=?", (s.id,))
-    return {"equity": eq, "wants": want, "room": room, "suggested": min(want, room), "kind": s.kind,
-            "current": {"mode": "usd" if cur["alloc_usd"] is not None else "pct",
+    cur = db.row(c, "SELECT allocation, alloc_usd, reserved FROM strategy_funds WHERE sid=?", (s.id,))
+    # the rules' full ceiling, with as much reserved as is free (the rest is drawn from the shared pool when it trades)
+    ceiling = min(want, risk.funds.max_strategy_allocation)
+    return {"equity": eq, "wants": want, "room": room, "suggested": ceiling, "kind": s.kind,
+            "suggested_reserved": min(1.0, room / ceiling) if ceiling > 0 else 1.0,
+            "current": {"mode": "usd" if cur["alloc_usd"] is not None else "pct", "reserved": cur["reserved"],
                         "allocation": funds.share(cur, eq), "usd": funds.base_usd(cur, eq)} if cur else None}
 
 
@@ -1438,8 +1598,11 @@ def fund_view(c, risk: RiskConfig) -> dict:
         s = run[sid]
         want = funds.default_allocation(s, risk) if cfg else None
         hashes = db.rows(c, "SELECT hash, version, status FROM strategies WHERE sid=? AND status IN ('paper','live') ORDER BY version", (sid,))
+        burst = min(F.room_usd(sid, f.kind, acct, cfg) or 0.0, max(0.0, f.cap_usd(eq) - f.deployed)) if cfg else None
         rows.append({
             "sid": sid, "kind": f.kind, "versions": hashes, "allocation": f.allocation, "allocation_usd": f.cap_usd(eq),
+            "reserved": f.reserved, "reserved_usd": f.reserved_usd(eq), "committed_usd": f.committed(eq), "can_buy_now": burst,
+            "activity": funds.activity(c, sid),
             "alloc_mode": "usd" if f.fixed_usd is not None else "pct", "pnl_pct": f.pnl / f.base_usd if f.base_usd else None,
             "source": f.source, "deployed": f.deployed, "used": f.deployed / f.cap_usd(eq) if f.cap_usd(eq) else None,
             "pnl": f.pnl, "pnl_today": f.pnl_today, "peak_pnl": f.peak_pnl, "drawdown": f.drawdown, "max_drawdown": f.max_drawdown,
@@ -1447,7 +1610,9 @@ def fund_view(c, risk: RiskConfig) -> dict:
             "wants": want, "warning": (f"its rules can use up to {want:.1%} of equity; orders above {f.allocation:.1%} are refused"
                                        if want and want > f.allocation + 1e-9 and f.kind == "portfolio" else None),
         })
-    allocated = sum(f.allocation for f in acct.strategies.values())
+    allocated = sum(f.reserved_usd(eq) for f in acct.strategies.values()) / eq if eq > 0 else 0.0  # reserved share of equity
+    ceilings = sum(f.allocation for f in acct.strategies.values())
+    committed = acct.committed()
     return {
         "enabled": cfg is not None, "limits": {k: getattr(cfg, k) for k in cfg.__dataclass_fields__} if cfg else None,
         "account": {"equity": eq, "cash": acct.cash, "deployed": acct.deployed, "working_buys": acct.working_buys,
@@ -1455,7 +1620,8 @@ def fund_view(c, risk: RiskConfig) -> dict:
                     "reserve_usd": cfg.cash_reserve * eq if cfg else None,
                     "available": max(0.0, min(acct.cash - acct.working_buys - cfg.cash_reserve * eq, cfg.max_deployed * eq - acct.deployed)) if cfg else None,
                     "max_deployed_usd": cfg.max_deployed * eq if cfg else None, "peak_equity": acct.peak_equity, "drawdown": acct.drawdown,
-                    "allocated": allocated, "unallocated": (cfg.max_deployed - allocated) if cfg else None,
+                    "allocated": allocated, "unallocated": (cfg.max_deployed - allocated) if cfg else None, "ceilings": ceilings,
+                    "committed": committed, "pool_free_usd": max(0.0, cfg.max_deployed * eq - committed) if cfg else None,
                     "gross_cap_usd": risk.max_gross_exposure * eq, "sleeve_cap_usd": risk.portfolio.max_allocation * eq if risk.portfolio else None},
         "strategies": rows,
         "history": db.rows(c, "SELECT id, ts, kind, actor, payload FROM audit WHERE kind LIKE 'funds.%' ORDER BY id DESC LIMIT 30"),
@@ -1470,6 +1636,7 @@ def funds_get(u: dict = Depends(user)):
 class FundIn(BaseModel):
     allocation: str
     alloc_mode: Literal["pct", "usd"] = "pct"
+    reserved: str | None = None  # share of the allocation held while idle; omitted: keep the current one
     max_drawdown: str | None = None  # omitted: keep the current stop
     daily_loss: str | None = None  # omitted: keep the current stop; null clears it
 
@@ -1496,10 +1663,13 @@ def funds_set(sid: str, body: FundIn, u: dict = Depends(owner)):
         dl = (parse_pct(body.daily_loss) if body.daily_loss else None) if "daily_loss" in body.model_fields_set else cur["daily_loss"]
     except ValueError as e:
         fail(str(e))
-    errs = funds.set_allocation(c, risk, s, share, dd, dl, u["username"], alloc_usd=usd)
+    rsv = parse_reserved(body.reserved)
+    errs = funds.set_allocation(c, risk, s, share, dd, dl, u["username"], alloc_usd=usd, reserved=rsv)
     if errs:
         fail("; ".join(errs))
-    what = f"${usd:,.0f} fixed" if usd is not None else f"{share:.1%} of equity"
+    rsv = db.row(c, "SELECT reserved FROM strategy_funds WHERE sid=?", (sid,))["reserved"]
+    what = (f"${usd:,.0f} fixed" if usd is not None else f"{share:.1%} of equity") + (
+        f", {rsv:.0%} reserved (the rest from the shared pool)" if rsv < 1 else ", fully reserved")
     return ok(f"{sid}: allocation {what}, drawdown stop {dd:.0%} of it"
               + (f", daily loss stop {dl:.0%}" if dl and s.kind == "intraday" else "") + ". Drawdown is measured from now.")
 

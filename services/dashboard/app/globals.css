@@ -208,6 +208,7 @@ details summary { cursor: pointer; color: var(--muted); }
 .bt-legend::before { content: ''; display: inline-block; width: 14px; height: 3px; margin-right: 5px; vertical-align: middle; }
 .bt-legend.strategy::before { background: var(--accent); }
 .bt-legend.benchmark::before { background: var(--warn); }
+.bt-legend[style]::before { background: var(--lc); }
 .bt-legend.stock::before { background: var(--c1); height: 8px; }
 .bt-legend.cash::before { background: var(--c2); height: 8px; opacity: .45; }
 .bt-alloc { min-height: 140px; }

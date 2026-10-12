@@ -225,6 +225,8 @@ CREATE TABLE IF NOT EXISTS strategy_funds(
   source TEXT, updated_by TEXT, updated_at DOUBLE PRECISION);
 -- Fixed-dollar allocation; NULL means `allocation` (share of equity) applies.
 ALTER TABLE strategy_funds ADD COLUMN IF NOT EXISTS alloc_usd DOUBLE PRECISION;
+-- Share of the allocation held for the strategy while idle; the rest is drawn from the shared pool when it trades.
+ALTER TABLE strategy_funds ADD COLUMN IF NOT EXISTS reserved DOUBLE PRECISION NOT NULL DEFAULT 1;
 
 -- Owner-set risk controls (dashboard Risk page) over the factory defaults in config/risk.yaml.
 CREATE TABLE IF NOT EXISTS risk_settings(
@@ -242,7 +244,130 @@ CREATE INDEX IF NOT EXISTS design_reviews_thread ON design_reviews(thread, draft
 CREATE TABLE IF NOT EXISTS audit(
   id BIGSERIAL PRIMARY KEY, ts DOUBLE PRECISION NOT NULL, kind TEXT NOT NULL, actor TEXT,
   payload TEXT, prev_hash TEXT, hash TEXT NOT NULL);
+
+-- Alpaca paper accounts managed on the dashboard; the secret is sealed to the broker's vault key.
+CREATE TABLE IF NOT EXISTS broker_accounts(
+  id BIGSERIAL PRIMARY KEY, label TEXT NOT NULL, key_id TEXT UNIQUE NOT NULL, secret_sealed TEXT NOT NULL,
+  account_number TEXT, active INTEGER NOT NULL DEFAULT 0, created_by TEXT, created_at DOUBLE PRECISION,
+  activated_at DOUBLE PRECISION);
 """
+
+# Per-account data: with an Alpaca account active, these live in schema acct_<id> and every
+# connection's search_path is "acct_<id>, public", so the same SQL reads that account's book.
+# Everything else (market data, news, strategy files and backtests, users, audit, kv) is shared.
+ACCOUNT_TABLES = ("intents", "orders", "fills", "positions", "trades", "equity_curve", "equity_history",
+                  "commands", "portfolio_state", "portfolio_orders", "portfolio_days", "portfolio_events",
+                  "strategy_funds", "risk_settings", "risk_settings_history")
+
+# Shared strategy registry, per-account deployment: which versions run (paper/live), their execution
+# mode and approval. The account's `strategies` view overlays strategy_state on public.strategies;
+# writes are routed by INSTEAD OF triggers, so registry code is unchanged.
+ACCOUNT_STRATEGIES = """
+CREATE TABLE IF NOT EXISTS strategy_state(
+  hash TEXT PRIMARY KEY, status TEXT, mode TEXT, approved_by TEXT, approved_at DOUBLE PRECISION,
+  paper_started_at DOUBLE PRECISION, updated_at DOUBLE PRECISION);
+CREATE OR REPLACE VIEW strategies AS
+  SELECT p.hash, p.sid, p.version, p.path,
+         COALESCE(s.status, CASE WHEN p.status IN ('paper','live') THEN 'backtested' ELSE p.status END) AS status,
+         COALESCE(s.mode, REPLACE(p.mode, 'live_', 'paper_')) AS mode,
+         p.created_at, GREATEST(p.updated_at, s.updated_at) AS updated_at, p.validation, p.backtest, p.back_translation,
+         s.approved_by, s.approved_at, s.paper_started_at, p.display_name, p.archived_at
+  FROM public.strategies p LEFT JOIN strategy_state s ON s.hash = p.hash;
+CREATE OR REPLACE FUNCTION strategies_write() RETURNS trigger LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    DELETE FROM strategy_state WHERE hash = OLD.hash;
+    DELETE FROM public.strategies WHERE hash = OLD.hash;
+    RETURN OLD;
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    INSERT INTO public.strategies(hash, sid, version, path, status, mode, created_at, updated_at, validation,
+                                  backtest, back_translation, display_name, archived_at)
+    VALUES (NEW.hash, NEW.sid, NEW.version, NEW.path, NEW.status, COALESCE(NEW.mode, 'paper_manual'), NEW.created_at,
+            NEW.updated_at, NEW.validation, NEW.backtest, NEW.back_translation, NEW.display_name, NEW.archived_at);
+    RETURN NEW;
+  END IF;
+  UPDATE public.strategies SET sid = NEW.sid, version = NEW.version, path = NEW.path, validation = NEW.validation,
+         backtest = NEW.backtest, back_translation = NEW.back_translation, display_name = NEW.display_name,
+         archived_at = NEW.archived_at, updated_at = GREATEST(updated_at, NEW.updated_at),
+         -- a finished backtest is shared: every account may then promote the version
+         status = CASE WHEN NEW.status = 'backtested' AND status = 'draft' THEN 'backtested' ELSE status END
+   WHERE hash = OLD.hash;
+  IF NEW.status IS DISTINCT FROM OLD.status OR NEW.mode IS DISTINCT FROM OLD.mode
+     OR NEW.approved_by IS DISTINCT FROM OLD.approved_by OR NEW.approved_at IS DISTINCT FROM OLD.approved_at
+     OR NEW.paper_started_at IS DISTINCT FROM OLD.paper_started_at THEN
+    INSERT INTO strategy_state(hash, status, mode, approved_by, approved_at, paper_started_at, updated_at)
+    VALUES (NEW.hash, NEW.status, NEW.mode, NEW.approved_by, NEW.approved_at, NEW.paper_started_at, NEW.updated_at)
+    ON CONFLICT(hash) DO UPDATE SET status = excluded.status, mode = excluded.mode, approved_by = excluded.approved_by,
+       approved_at = excluded.approved_at, paper_started_at = excluded.paper_started_at, updated_at = excluded.updated_at;
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS strategies_write ON strategies;
+CREATE TRIGGER strategies_write INSTEAD OF INSERT OR UPDATE OR DELETE ON strategies
+  FOR EACH ROW EXECUTE FUNCTION strategies_write();
+"""
+
+_STMT_TABLE = re.compile(r"^\s*(?:CREATE TABLE IF NOT EXISTS|CREATE INDEX IF NOT EXISTS \w+ ON|ALTER TABLE)\s+(\w+)", re.I)
+
+
+def account_ddl() -> str:
+    """The SCHEMA statements for ACCOUNT_TABLES (run with search_path set to the account schema)."""
+    body = "\n".join(l for l in SCHEMA.splitlines() if not l.strip().startswith("--"))
+    out = []
+    for stmt in body.split(";"):
+        m = _STMT_TABLE.match(stmt)
+        if m and m.group(1) in ACCOUNT_TABLES:
+            out.append(stmt.strip() + ";")
+    return "\n".join(out) + ACCOUNT_STRATEGIES
+
+
+def account_schema(aid: int) -> str:
+    return f"acct_{int(aid)}"
+
+
+def ensure_account_schema(conn: "Conn", schema: str) -> bool:
+    """Create an account's tables (idempotent). A new account starts with an empty book, nothing
+    deployed, and a copy of the current risk controls. Returns True when the schema was new."""
+    if not re.fullmatch(r"acct_\d+", schema):
+        raise ValueError("bad account schema")
+    with conn.raw.transaction():
+        conn.raw.execute("SELECT pg_advisory_xact_lock(42)")
+        new = not conn.raw.execute("SELECT 1 FROM pg_namespace WHERE nspname=%s", (schema,)).fetchone()
+        conn.raw.execute(f"CREATE SCHEMA IF NOT EXISTS {schema}")
+        conn.raw.execute(f"SET LOCAL search_path TO {schema}, public")
+        conn.raw.execute(account_ddl())
+        if new:
+            conn.raw.execute(f"INSERT INTO {schema}.risk_settings SELECT * FROM public.risk_settings")
+    return new
+
+
+# Search path: which account's tables unqualified SQL sees. Long-running services follow the
+# active account (kv 'broker.account_schema', re-read every few seconds); the broker and watchdog
+# pin the account their Alpaca keys belong to and restart when it changes.
+_scope = {"pinned": False, "schema": None, "checked": 0.0}
+SCOPE_TTL = 2.0
+
+
+def pin(schema: str | None) -> None:
+    _scope.update(pinned=True, schema=schema, checked=time.time())
+
+
+def unpin() -> None:
+    _scope.update(pinned=False, schema=None, checked=0.0)
+
+
+def _wanted(raw) -> str | None:
+    if _scope["pinned"] or time.time() - _scope["checked"] < SCOPE_TTL:
+        return _scope["schema"]
+    try:
+        r = raw.execute("SELECT v FROM public.kv WHERE k='broker.account_schema'").fetchone()
+        schema = json.loads(r["v"]) if r else None
+    except psycopg.Error:  # fresh database: no kv yet
+        schema = None
+    _scope.update(schema=schema, checked=time.time())
+    return schema
+
 
 # Tables that hold one simulated session's live state. Wiped when the broker starts a day.
 SESSION_TABLES = ("intents", "orders", "fills", "positions", "trades", "equity_curve", "commands")
@@ -269,13 +394,25 @@ class Conn:
     def __init__(self, dsn: str):
         self.raw = psycopg.connect(dsn, autocommit=True, row_factory=dict_row, connect_timeout=10)
         self.dsn = dsn
+        self.scope: str | None = None  # schema in search_path ahead of public
+
+    def follow(self):
+        """Point search_path at the active account (outside transactions only)."""
+        if self.raw.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
+            return
+        want = _wanted(self.raw)
+        if want != self.scope:
+            self.raw.execute(f"SET search_path TO {want}, public" if want else "SET search_path TO public")
+            self.scope = want
 
     def execute(self, sql: str, args=()):
+        self.follow()
         if not args:
             return self.raw.execute(sql)  # no params: psycopg sends the text as-is
         return self.raw.execute(_translate(sql), tuple(args))
 
     def executemany(self, sql: str, seq):
+        self.follow()
         with self.raw.cursor() as cur:
             cur.executemany(_translate(sql), [tuple(a) for a in seq])
 
@@ -283,6 +420,7 @@ class Conn:
         return self.execute(sql.rstrip().rstrip(";") + " RETURNING id", args).fetchone()["id"]
 
     def script(self, sql: str):
+        self.follow()
         self.raw.execute(sql)  # no parameters: multiple statements allowed
 
     def close(self):
@@ -312,7 +450,12 @@ def get(dsn: str | None = None) -> Conn:
 def init(conn: Conn) -> None:
     with conn.raw.transaction():
         conn.raw.execute("SELECT pg_advisory_xact_lock(42)")  # concurrent services may init at once
-        conn.script(SCHEMA)
+        conn.raw.execute("SET LOCAL search_path TO public")  # shared tables always live in public
+        conn.raw.execute(SCHEMA)
+        # execution modes became stage + approval (paper_/live_ x manual/auto)
+        conn.raw.execute("UPDATE strategies SET mode='live_manual' WHERE status='live' AND mode IN ('manual','auto','paper')")
+        conn.raw.execute("UPDATE strategies SET mode='paper_manual' WHERE mode='manual'")
+        conn.raw.execute("UPDATE strategies SET mode='paper_auto' WHERE mode IN ('auto','paper')")
 
 
 @contextmanager
@@ -350,4 +493,9 @@ def row(conn: Conn, sql: str, args=()) -> dict | None:
 
 def reset(conn: Conn) -> None:
     """Drop every table (tests and `make reset-db`)."""
-    conn.script("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+    for r in conn.raw.execute("SELECT nspname FROM pg_namespace WHERE nspname ~ '^acct_[0-9]+$'").fetchall():
+        conn.raw.execute(f"DROP SCHEMA {r['nspname']} CASCADE")
+    conn.raw.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+    conn.raw.execute("SET search_path TO public")
+    conn.scope = None
+    unpin()

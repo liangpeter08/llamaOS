@@ -17,6 +17,7 @@ from scripts.env import ROOT, load  # noqa: E402
 load()
 os.environ.setdefault("BROKER_BACKEND", "simulator")
 PY = sys.executable
+RESTART = 75  # common.broker_accounts.RESTART
 PROCS = [
     ("models", [PY, "-m", "services.models"], ROOT),
     ("api", [PY, "-m", "services.api"], ROOT),
@@ -57,8 +58,14 @@ def main():
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
     while True:
-        for name, p in running:
-            if p.poll() is not None:
+        for i, (name, p) in enumerate(running):
+            if p.poll() == RESTART:  # broker/watchdog after an Alpaca account switch
+                print(f"{name} restarting on the new Alpaca account")
+                cmd, cwd = next((c, d) for n, c, d in PROCS if n == name)
+                p = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=os.environ.copy())
+                threading.Thread(target=pump, args=(name, p.stdout), daemon=True).start()
+                running[i] = (name, p)
+            elif p.poll() is not None:
                 print(f"{name} exited with {p.returncode}; stopping the stack")
                 stop()
         time.sleep(1)

@@ -5,6 +5,7 @@ import { usePoll } from "@/lib/hooks";
 import { cls, et } from "@/lib/format";
 import { Card, Loading, Notice, Pill } from "@/components/ui";
 import { isOwner, useSession } from "@/components/session";
+import { NewsToClaude } from "@/components/NewsToClaude";
 
 const tierKind = (t: string | null) => (t === "escalated" ? "bad" : t === "t1" ? "accent" : "");
 
@@ -46,7 +47,10 @@ export default function News() {
               </tbody>
             </table></div>
           </Card>
-          <Notes notes={data.notes} owner={isOwner(me)} reload={reload} />
+          <div>
+            {data.news_claude && <Card title="Claude escalation"><NewsToClaude status={data.news_claude} owner={isOwner(me)} reload={reload} /></Card>}
+            <Notes notes={data.notes} owner={isOwner(me)} reload={reload} />
+          </div>
         </div>
       )}
     </>

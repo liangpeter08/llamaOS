@@ -54,6 +54,11 @@ def available(c) -> bool:
     return time.time() - float(w.get("ts") or 0) < 60
 
 
+def first_available(c, sym: str) -> str | None:
+    """The first day the feed has for a symbol, when a download found it starts later than asked (a recent listing)."""
+    return (db.kv_get(c, f"history.first.{sym}") or {}).get("day")
+
+
 def plan(c, kind: str, symbols: list[str], indexes: list[str], config, lookback: int = 0) -> dict | None:
     """What the window needs and the database doesn't have; None when nothing is missing."""
     start, end = window(kind, config)
@@ -64,7 +69,8 @@ def plan(c, kind: str, symbols: list[str], indexes: list[str], config, lookback:
     for sym in symbols:
         r = db.row(c, "SELECT MIN(day) a, MAX(day) b, COUNT(*) n FROM daily WHERE symbol=? AND day>=? AND day<=?",
                    (sym, daily_from.isoformat(), end.isoformat()))
-        if not r["n"] or r["a"] > (daily_from + timedelta(days=SLACK_DAYS)).isoformat() or r["b"] < (end - timedelta(days=SLACK_DAYS)).isoformat():
+        begins = max((daily_from + timedelta(days=SLACK_DAYS)).isoformat(), first_available(c, sym) or "")
+        if not r["n"] or r["a"] > begins or r["b"] < (end - timedelta(days=SLACK_DAYS)).isoformat():
             need_daily.append(sym)
     for inst in indexes:
         r = db.row(c, "SELECT MIN(day) a, MAX(day) b, COUNT(*) n FROM index_daily WHERE instrument=? AND day>=? AND day<=?",

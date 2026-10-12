@@ -1,0 +1,73 @@
+dsl: 0.1
+kind: portfolio
+id: intra_tech_v2
+version: 2
+source:
+  text: >-
+    create a strategy that buys top 8 big tech everyday during the initial market open given
+    assumptions that would work (open to ideas here). now use momentum and trends to monitor
+    and nasdaq 100 to give ideas. Trade for small gains and continuous find opportunities
+    across the day. we should target trading every 30 minutes if the condition allows. Trade
+    opening range and look for peek as well. Check news for positive signals and continuous
+    up, we hold.
+    It trade too little and not often enough. It also utilize too little of the portfolio,
+    utilize 3x more of the portfolio
+    this traded worse than nasdaq 100, see what can be improved, see how it can get better
+  based_on: {id: intra_tech_v2, version: 1}
+  compiled_by: claude-opus-5-5
+  prompt: architect@v1
+assumptions:
+  - "Copy of intra_tech_v2 v1 (backtest: 168 trades in 146 sessions, +10.03%, max DD -6.70%, Sharpe 1.50; benchmark +16.26%, basket buy-and-hold +18.21%; 141 of 168 exits were exit_and_wait, 529 orders, turnover 22x)."
+  - "Diagnosis: most of the gap is the 60% capital (basket at 60% exposure is about +10.9%); the rest is whipsaw from selling every -2% day and buying back on the next up day."
+  - "Symbols unchanged: AAPL, AMD, AMZN, GOOGL, META, MSFT, NVDA, TSLA, one group, equal weight (12.5% each)."
+  - "CHANGED: capital 60% -> 65% of equity at the first buy (8.125% per name), matching the 65% unallocated today."
+  - "CHANGED: max_holding 150% -> 135%, so worst case 87.75% of equity (10.97% per name), inside the 90% sleeve and 15% per-symbol caps."
+  - "Funds: a new strategy starts at the 5% default allocation; the trader must raise it to at least 65% (88% for full adds) on the Funds page or buys are clipped."
+  - "Kept: cost stop, sell all and wait if price is more than 8% below average cost. It is now the main protection while the trend is up."
+  - "CHANGED: daily exit now needs a down trend: day_change below -3% (was -2%) AND 20-session return below 0%. Meant to stop selling routine dips in uptrends."
+  - "CHANGED: trim only when holding is above 115% of the original allocation on a +5% day (sell 25% of shares), so only added shares are trimmed and the core is kept."
+  - "CHANGED: new rule, any other day above +5% is a hold (no add on spike days)."
+  - "Kept: momentum add, above +1.5% on the day AND 20-session return above 0%, add 25% of the original allocation, capped at max_holding."
+  - "CHANGED: buy-back after an exit needs an up day AND a 20-session return above 0% (was any up day); still 50% steps, full in 2 sessions."
+  - "One trend window (trend_n = 20) and threshold (trend_min = 0%) are shared by the exit, add and buy-back to limit free parameters."
+  - "Rule order (first match wins): cost stop, trend-gated exit, trim of added shares, spike-day hold, momentum add."
+  - "Decision once a day at 15:45 ET; hold up to 130 sessions, then everything is sold (unchanged). Sleeve drawdown stop = account default 15% (unchanged)."
+  - "Expectation: a sleeve capped below 100% invested can still trail a fully invested Nasdaq 100 in strong up markets; the goal is to close the gap with fewer whipsaws and better risk-adjusted returns."
+  - "NOT SUPPORTED: Nasdaq 100 as a direct input (no QQQ/NDX bars stored; the 0.2 index feed is not used here), trading every 30 minutes, opening range and news. Portfolio files decide once a day per symbol."
+suggestions:
+  - "Backtest trend_n at 10 and 40 and exit_loss at -2% and -4% to check the result is not tuned to one value."
+  - "At up to 88% exposure, consider limits.max_drawdown 12%."
+  - "If whipsaw remains on AMD/TSLA, try a volatility-scaled exit instead of a fixed -3%."
+holdings:
+  capital: 65%
+  max_holding: 135%
+  groups:
+    big_tech:
+      weight: 100%
+      symbols: [AAPL, AMD, AMZN, GOOGL, META, MSFT, NVDA, TSLA]
+schedule:
+  hold_sessions: 130
+  decide_at: "15:45"
+params:
+  loss_stop:    {value: -8%,  range: [-20%, -3%]}
+  exit_loss:    {value: -3%,  range: [-8%, -1%]}
+  take_gain:    {value: 5%,   range: [3%, 10%]}
+  take_size:    {value: 25%,  range: [10%, 50%]}
+  trim_above:   {value: 115%, range: [100%, 135%]}
+  add_gain:     {value: 1.5%, range: [0.5%, 4%]}
+  add_size:     {value: 25%,  range: [10%, 50%]}
+  trend_n:      {value: 20,   range: [10, 60]}
+  trend_min:    {value: 0%,   range: [-5%, 5%]}
+  reenter_gain: {value: 0%,   range: [0%, 3%]}
+  reenter_step: {value: 50%,  range: [25%, 100%]}
+rules:
+  - {when: "gain < loss_stop", do: exit_and_wait}
+  - {when: "day_change < exit_loss and ret_d(trend_n) < trend_min", do: exit_and_wait}
+  - {when: "day_change > take_gain and holding > trim_above", do: {trim: take_size}}
+  - {when: "day_change > take_gain", do: hold}
+  - {when: "day_change > add_gain and ret_d(trend_n) > trend_min", do: {add: add_size}}
+reentry:
+  when: "day_change > reenter_gain and ret_d(trend_n) > trend_min"
+  step: reenter_step
+execution:
+  mode: manual

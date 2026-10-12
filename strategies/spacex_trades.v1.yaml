@@ -1,0 +1,66 @@
+dsl: 0.1
+id: spacex_trades
+version: 1
+source:
+  text: "generate a strategy that monitors spacex, buy on positive news and hold till rsi fades. Sell on negative news, short on negative news till a huge positive day."
+  compiled_by: claude-opus-5-5
+  prompt: architect@v1
+assumptions:
+  - "Symbol written as SPACEX is a placeholder; replace with the exact ticker on the watchlist (trader says SpaceX was added to monitoring; the account context shows no stored bars or news for it yet)."
+  - "Backtest will have no data for this symbol until bars and news accumulate; news recording starts 2026-09-07 for all symbols."
+  - "Positive news = news.score >= 0.5, materiality medium or high, received since the prior 16:00 ET close, and no red flag."
+  - "Entry = a 1-min bar closes above VWAP after being below it (cross, not just above, to avoid re-buying right after an exit), 09:45-11:30 ET."
+  - "RSI fades = 14-bar RSI on 1-minute bars crosses below 45; 1-min RSI is noisy, so expect holds of minutes to about an hour."
+  - "Sell on negative news = exit when news.score <= -0.3 or a red flag appears during the trade."
+  - "Stop = entry minus 1.5x the 14-bar ATR."
+  - "Target = entry plus 4R (4x the entry-to-stop distance). Required by the risk controls; set wide as a backstop so the RSI, news and stop exits normally decide. Cost: a very large spike is capped at 4R."
+  - "NOT SUPPORTED: holding for days. News and RSI only exist in intraday files, so every position is flat by 15:50 ET."
+  - "NOT SUPPORTED: 100% risk per trade (trader's request). Account max is 5.00%; set to 5%. Real size is capped by the 100% position limit and the fund allocation."
+  - "Trader's limits: at most 10 trades a day, 1 open position."
+  - "NOT SUPPORTED: short until a huge positive day. Multi-day shorts are not possible; a same-day short on negative news will be a separate intraday file."
+  - "Universe filter: prior close >= $5, to skip broken prints; no average-volume filter because a newly listed symbol lacks 20 days of history."
+suggestions:
+  - "Lower risk_per_trade to 0.5% and size via the fund allocation; at 5% every trade is a full-allocation bet."
+  - "Paper-trade with a small fund allocation before trusting it; there is no backtest evidence for this symbol."
+universe:
+  symbols: [SPACEX]
+  from: {news_today: true}
+  filters:
+    - prior_close >= min_price
+timeframe: 1min
+params:
+  min_price:  {value: 5,    range: [1, 50]}
+  score_min:  {value: 0.5,  range: [0.3, 0.9]}
+  exit_score: {value: -0.3, range: [-0.8, 0]}
+  rsi_exit:   {value: 45,   range: [30, 55]}
+  atr_mult:   {value: 1.5,  range: [1.0, 3.0]}
+  target_r:   {value: 4.0,  range: [2.0, 8.0]}
+signals:
+  news.score:       {from: news_agent@v1, max_age: since_prior_close}
+  news.materiality: {from: news_agent@v1, max_age: since_prior_close}
+  news.red_flag:    {from: news_agent@v1, max_age: session}
+vars:
+  rsi_v: rsi(close, 14)
+entry:
+  side: long
+  window: "09:45-11:30"
+  when_all:
+    - crosses_above(close, vwap)
+    - news.score >= score_min
+    - news.materiality in [medium, high]
+    - not news.red_flag
+sizing:
+  risk_per_trade: 5%
+exit:
+  stop: entry_price - atr_mult * atr(14)
+  target: entry_price + target_r * risk_per_share
+  flatten_at: "15:50"
+  when_any:
+    - crosses_below(rsi_v, rsi_exit)
+    - news.score <= exit_score
+    - news.red_flag
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 10
+  max_open_positions: 1

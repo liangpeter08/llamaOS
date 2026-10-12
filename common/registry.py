@@ -2,7 +2,7 @@
 
 Promoting a strategy never changes its file. Any edit is a new hash, so it starts at draft.
 
-    draft -> backtested -> paper -> live ;  any -> retired
+    draft -> backtested -> paper -> live ;  draft -> paper (owner, no backtest) ;  any -> retired
 """
 from __future__ import annotations
 
@@ -19,6 +19,30 @@ from .config import STRATEGIES_DIR, RiskConfig
 
 STATUSES = ("draft", "backtested", "paper", "live", "retired")
 RUNNABLE = ("paper", "live")
+# Execution mode = account stage + approval. *_manual holds each trade for the owner; *_auto submits it.
+# live_* needs status live (hash approved). There is one broker account per stack: until a real-money
+# connection exists, live modes trade on whatever account the stack runs (paper today).
+MODES = ("paper_manual", "paper_auto", "live_manual", "live_auto")
+LEGACY_MODES = {"manual": "paper_manual", "auto": "paper_auto", "paper": "paper_auto"}
+
+
+def norm_mode(m: str | None) -> str:
+    m = LEGACY_MODES.get(m or "", m or "")
+    return m if m in MODES else "paper_manual"
+
+
+def is_auto(m: str | None) -> bool:
+    return norm_mode(m).endswith("_auto")
+
+
+def demote_live_auto(conn, actor: str, reason: str) -> list[str]:
+    """Kill switch tripped: every live_auto strategy drops to live_manual (the owner re-enables it after review)."""
+    rows = db.rows(conn, "SELECT hash, sid FROM strategies WHERE mode='live_auto'")
+    if rows:
+        conn.execute("UPDATE strategies SET mode='live_manual', updated_at=? WHERE mode='live_auto'", (time.time(),))
+        for r in rows:
+            audit.log(conn, "strategy.mode", actor, {"hash": r["hash"], "mode": "live_manual", "from": "live_auto", "why": f"kill switch: {reason}"})
+    return [r["hash"] for r in rows]
 
 
 def sync(conn, risk: RiskConfig) -> list[dict]:
@@ -36,7 +60,7 @@ def sync(conn, risk: RiskConfig) -> list[dict]:
             "INSERT INTO strategies(hash, sid, version, path, status, mode, created_at, updated_at, validation)"
             " VALUES (?,?,?,?,?,?,?,?,?)",
             (h, sid, ver, str(p.relative_to(STRATEGIES_DIR.parent)), "draft",
-             v.strategy.mode if v.ok else "manual", now, now, json.dumps(v.as_dict())),
+             "paper_manual", now, now, json.dumps(v.as_dict())),
         )
         audit.log(conn, "strategy.registered", "system", {"hash": h, "sid": sid, "version": ver, "valid": v.ok})
         added.append({"hash": h, "sid": sid, "version": ver, "ok": v.ok})
@@ -93,6 +117,10 @@ def set_status(conn, h: str, status: str, actor: str, **extra):
         sets.append(f"{k}=?")
         args.append(v)
     conn.execute(f"UPDATE strategies SET {', '.join(sets)} WHERE hash=?", (*args, h))
+    if status == "live":  # entering live keeps manual approval; live_auto is a separate, confirmed owner choice
+        conn.execute("UPDATE strategies SET mode='live_manual' WHERE hash=? AND mode IN ('paper_manual', 'paper_auto', 'manual', 'auto', 'paper')", (h,))
+    else:  # live modes need live status: keep the approval behaviour, move back to the paper stage
+        conn.execute("UPDATE strategies SET mode=REPLACE(mode, 'live_', 'paper_') WHERE hash=? AND mode IN ('live_manual', 'live_auto')", (h,))
     audit.log(conn, "strategy.status", actor, {"hash": h, "status": status, **{k: v for k, v in extra.items() if k != 'backtest'}})
 
 

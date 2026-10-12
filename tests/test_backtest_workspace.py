@@ -218,3 +218,44 @@ def test_strategy_categorize_archive_delete(conn, risk, orb_text, tmp_path, monk
     assert not db.row(conn, 'SELECT sid FROM strategy_categories')
     registry.sync(conn, risk)  # the file is gone, so it doesn't come back
     assert not db.row(conn, 'SELECT hash FROM strategies WHERE hash=?', (s.hash,))
+
+
+def test_market_index_benchmark(conn):
+    from common import market_inputs as MI
+    days = ['2026-03-02', '2026-03-03', '2026-03-04']
+    MI.store_history(conn, 'SP_500', [(d, None, None, None, c) for d, c in zip(days, (5000, 5100, 5250))], 'yahoo')
+    report = {'equity_curve': [{'day': d, 'equity': 100_000} for d in days], 'metrics': {'return_pct': 0.0}, 'trades': []}
+    cfg = W.RunConfig(strategy_hash='a' * 64, benchmark='sp_500', starting_equity=100_000)
+    assert cfg.benchmark == 'SP_500' and W.bench_indexes(cfg) == ['SP_500'] and W.bench_symbols(cfg) == []
+    W.enrich(conn, report, cfg)
+    # closes-only index history: buy at the first close
+    assert report['metrics']['benchmark_return_pct'] == pytest.approx(0.05)
+    assert report['metrics']['excess_return_pct'] == pytest.approx(-0.05)
+    with pytest.raises(ValidationError):
+        W.RunConfig(strategy_hash='a' * 64, benchmark='NOT_AN_INDEX')  # underscores only for known indexes
+
+
+def test_multiple_benchmarks_each_get_a_curve(conn):
+    from common import market_inputs as MI
+    days = ['2026-03-02', '2026-03-03', '2026-03-04']
+    MI.store_history(conn, 'SP_500', [(d, None, None, None, c) for d, c in zip(days, (5000, 5100, 5250))], 'yahoo')
+    MI.store_history(conn, 'NASDAQ_100', [(d, None, None, None, c) for d, c in zip(days, (20000, 19000, 18000))], 'yahoo')
+    report = {'equity_curve': [{'day': d, 'equity': 100_000} for d in days], 'metrics': {'return_pct': 0.0}, 'trades': []}
+    cfg = W.RunConfig(strategy_hash='a' * 64, benchmarks=['nasdaq_100', 'SP_500', 'NASDAQ_100', 'RUSSELL_2000'], starting_equity=100_000)
+    assert cfg.benchmark == 'NASDAQ_100' and cfg.benchmarks == ['NASDAQ_100', 'SP_500', 'RUSSELL_2000']
+    W.enrich(conn, report, cfg)
+    got = {b['name']: b['return_pct'] for b in report['benchmark_curves']}
+    assert got == pytest.approx({'NASDAQ_100': -0.1, 'SP_500': 0.05})  # Russell has no history: skipped with a warning
+    assert any('RUSSELL_2000' in w for w in report['warnings'])
+    assert report['metrics']['benchmark_return_pct'] == pytest.approx(-0.1)  # excess return is against the primary
+    old = W.RunConfig(strategy_hash='a' * 64, benchmark='SPY')  # saved runs from before the list existed
+    assert old.benchmarks == ['SPY'] and old.benchmark == 'SPY'
+
+
+def test_recorded_signal_coverage_counts_sessions_with_signals(conn):
+    from datetime import date
+    from common import timeutil as T
+    days = [date(2026, 7, 13), date(2026, 7, 14), date(2026, 7, 15)]
+    conn.execute("INSERT INTO signals(ts, symbol, name, value) VALUES (?,?,?,?)", (T.open_ts(days[1]) + 600, 'SPCX', 'news.score', '0.7'))
+    assert W.recorded_coverage(conn, ['SPCX'], days) == (1, 3)
+    assert W.recorded_coverage(conn, ['AAPL'], days) == (0, 3)

@@ -87,6 +87,17 @@ def require_owner(request: Request) -> dict:
     return u
 
 
+def require_code(user: dict, code: str):
+    """Fresh 2FA code for high-impact owner actions (e.g. changing the broker account)."""
+    key = f"code:{user['username']}"
+    if rate_limited(key):
+        raise HTTPException(429, "too many wrong codes; wait a few minutes")
+    u = db.row(db.get(), "SELECT totp_secret FROM users WHERE id=?", (user["id"],))
+    if not u or not u["totp_secret"] or not pyotp.TOTP(u["totp_secret"]).verify(code or "", valid_window=1):
+        note_failure(key)
+        raise HTTPException(403, "wrong 2FA code")
+
+
 def check_csrf(request: Request, form_token: str | None):
     expected = request.session.get("csrf")
     got = request.headers.get("x-csrf-token") or form_token

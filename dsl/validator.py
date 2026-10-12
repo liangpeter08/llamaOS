@@ -23,8 +23,10 @@ TOP_KEYS = {
     "params", "signals", "vars", "entry", "sizing", "exit", "execution", "limits", "references",
 }
 REQUIRED = {"dsl", "id", "version", "universe", "timeframe", "params", "entry", "sizing", "exit", "execution"}
-LIMIT_KEYS = {"max_trades_per_day", "max_open_positions", "max_position"}
-MODES = {"manual", "auto", "paper"}
+LIMIT_KEYS = {"max_trades_per_day", "max_open_positions"}
+# Position size is controlled above the DSL (risk controls and fund allocations); old files may still carry it
+RETIRED_LIMIT_KEYS = {"max_position"}
+MODES = {"manual", "auto", "paper", "paper_manual", "paper_auto", "live_manual", "live_auto"}
 SYMBOL = re.compile(r"[A-Z][A-Z.]{0,5}")
 UNIVERSE_KEYS = {"from", "filters", "symbols"}
 # Daily-history builtins that existed before builtins@v2: name -> sessions needed for argument n
@@ -277,25 +279,27 @@ class _V:
         mode_ = exe.get("mode", "manual")
         if mode_ not in MODES:
             self.err(f"execution.mode must be one of {sorted(MODES)}")
-        if mode_ == "auto":
-            self.warnings.append("execution.mode 'auto' in the file is ignored: the registry starts at manual and the owner switches modes on the dashboard")
+        if mode_ not in ("manual", "paper_manual") and mode_ in MODES:
+            self.warnings.append(f"execution.mode '{mode_}' in the file is ignored: the registry starts at paper_manual and the owner switches modes on the dashboard")
             mode_ = "manual"
 
         # limits: only tighten
         limits = {}
         for k, v in (d.get("limits") or {}).items():
+            if k in RETIRED_LIMIT_KEYS:
+                self.warnings.append(f"limits.{k} is ignored: position size is set by the risk controls and fund allocations")
+                continue
             if k not in LIMIT_KEYS:
                 self.err(f"unknown limit {k!r} (allowed: {sorted(LIMIT_KEYS)})")
                 continue
             try:
-                val = parse_pct(v) if k == "max_position" else parse_number(v)
+                val = parse_number(v)
             except ValueError as e:
                 self.err(f"limits.{k}: {e}")
                 continue
             cap = {
                 "max_trades_per_day": self.risk.max_trades_per_day,
                 "max_open_positions": self.risk.max_open_positions,
-                "max_position": self.risk.max_position,
             }[k]
             if val > cap:
                 self.err(f"limits.{k} = {v} loosens the risk control ({cap}); strategies can only tighten limits")

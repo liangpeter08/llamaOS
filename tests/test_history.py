@@ -11,9 +11,13 @@ from tests.test_portfolio_v2 import V2, strat
 
 class FakeData:
     """Alpaca-shaped daily and 1-minute bars for any symbol, recording each request's adjustment."""
+    history_feed = "sip"
 
     def __init__(self):
         self.calls = []
+
+    def history_bars(self, symbols, timeframe, start, end, adjustment="split"):
+        return self.bars(symbols, timeframe, start, end, adjustment)
 
     def bars(self, symbols, timeframe, start, end, adjustment="raw"):
         self.calls.append((tuple(symbols), timeframe, adjustment))
@@ -63,6 +67,7 @@ def test_plan_lists_only_what_is_missing(conn, risk):
     r = db.row(conn, "SELECT status, result FROM data_requests")
     assert r["status"] == "done" and json.loads(r["result"])["daily"] > 1000
     assert {c[2] for c in w.api.calls} == {"split"}  # split-adjusted, so a split isn't replayed as a crash
+    assert json.loads(r["result"])["feed"] == "sip" and db.kv_get(conn, "history.feed.AMD")["feed"] == "sip"
     assert history.plan(conn, "portfolio", [*s.symbols, "AMD"], ["NASDAQ_COMPOSITE"], cfg) is None  # stored now: no second download
     # an identical request still pending is reused rather than queued twice
     assert history.request(conn, {**spec, "daily": ["X"]}, "a") == history.request(conn, {**spec, "daily": ["X"]}, "b")
@@ -152,3 +157,29 @@ def test_paper_backend_refuses_to_silently_shrink_the_window(conn, risk, monkeyp
     monkeypatch.setenv("BROKER_BACKEND", "alpaca")
     with pytest.raises(ValueError, match="history download isn't running"):
         W.preflight(conn, W.RunConfig(strategy_hash=s.hash, start_date=date(2025, 1, 6), end_date=date(2025, 6, 30)))
+
+
+def test_recent_listing_is_not_redownloaded_and_explains_the_first_testable_day(conn, orb_text, risk):
+    from dsl.validator import validate
+    listed = date(2025, 3, 3)
+
+    class Listed(FakeData):  # the feed has nothing before the listing day
+        def bars(self, symbols, timeframe, start, end, adjustment="raw"):
+            begin = max(start, datetime(listed.year, listed.month, listed.day, tzinfo=timezone.utc).timestamp())
+            return super().bars(symbols, timeframe, begin, end, adjustment) if begin <= end else {s: [] for s in symbols}
+
+    s = validate(orb_text, risk).strategy
+    cfg = W.RunConfig(strategy_hash=s.hash, start_date=date(2025, 2, 3), end_date=date(2025, 3, 14))
+    spec = history.plan(conn, "intraday", ["NEWCO"], [], cfg)
+    worker(Listed()).fulfil(conn, {"id": history.request(conn, spec, "pytest"), "spec": json.dumps(spec)})
+    first = db.row(conn, "SELECT MIN(day) d FROM daily WHERE symbol='NEWCO'")["d"]  # the fake's 04:00Z stamps land a day early in ET
+    assert first < "2025-03-04" and history.first_available(conn, "NEWCO") == first
+    assert history.plan(conn, "intraday", ["NEWCO"], [], cfg) is None  # no second download of history that doesn't exist
+    gaps = W.history_gaps(conn, ["NEWCO"], cfg)
+    assert len(gaps) == 1 and f"daily history starts {first}" in gaps[0] and "needs" in gaps[0] and "Only" in gaps[0]
+    later = W.RunConfig(strategy_hash=s.hash, start_date=date(2025, 2, 3), end_date=date(2025, 4, 30))
+    worker(Listed()).fulfil(conn, {"id": history.request(conn, history.plan(conn, "intraday", ["NEWCO"], [], later), "pytest"),
+                                   "spec": json.dumps(history.plan(conn, "intraday", ["NEWCO"], [], later))})
+    gaps = W.history_gaps(conn, ["NEWCO"], later)
+    days = [r["day"] for r in db.rows(conn, "SELECT day FROM daily WHERE symbol='NEWCO' ORDER BY day")]
+    assert f"first testable session is {days[20]}" in gaps[0]  # the 21st stored session: 20 prior ones

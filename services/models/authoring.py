@@ -270,7 +270,11 @@ def design_context(conn, risk) -> str:
     try:
         acct = funds.account(conn, risk) if risk.funds else None
         money = ({"equity": round(acct.equity), "cash_reserve": f"{risk.funds.cash_reserve:.0%}",
-                  "unallocated_for_new_strategies": f"{funds.unallocated(conn, risk):.1%} of equity",
+                  "unreserved_for_new_strategies": f"{funds.unallocated(conn, risk):.1%} of equity",
+                  "allocation_model": "Each strategy has an allocation ceiling (up to max_allocation_per_strategy) and a reserved part of it. "
+                                      "Only reserves must fit in the unreserved room; above its reserve a strategy borrows from a shared pool "
+                                      "when it trades. A seldom-trading strategy can get a large ceiling with a small reserve, so the "
+                                      "unreserved figure does not cap how much it can use when it trades. The trader sets both on the Funds page.",
                   "default_allocation": f"{risk.funds.default_allocation:.0%}",
                   "max_allocation_per_strategy": f"{risk.funds.max_strategy_allocation:.0%}"} if acct else None)
     except Exception:  # noqa: BLE001 - context is best effort; the conversation still works without it
@@ -436,7 +440,8 @@ def panel_evidence(conn, s, risk) -> dict:
                         "overlap": sorted(set(syms) & set(symbols)) if other.kind == "portfolio" else None})
     try:
         fund = funds.account(conn, risk) if risk.funds else None
-        fund_view = {"equity": round(fund.equity), "deployed": round(fund.deployed), "unallocated": round(funds.unallocated(conn, risk), 4),
+        fund_view = {"equity": round(fund.equity), "deployed": round(fund.deployed), "unreserved": round(funds.unallocated(conn, risk), 4),
+                     "shared_pool_free_usd": round(max(0.0, risk.funds.max_deployed * fund.equity - fund.committed())),
                      "cash_reserve": risk.funds.cash_reserve, "strategy_drawdown_cap": risk.funds.strategy_max_drawdown} if fund else None
     except Exception:  # noqa: BLE001 - evidence is best effort
         fund_view = None

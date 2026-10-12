@@ -1,0 +1,70 @@
+dsl: 0.1
+id: oil_simple_rsi
+version: 1
+source:
+  text: >-
+    generate a strategy on oilU and oilD we are capture the reversal per day. Also
+    track UUP, if uup goes up, we should have cut position on oilU, and load up on
+    oilD. We should keep 100% allocation at entire trading session and do not hold
+    overnight. We are looking for swing trades by rsi indication and moment signals.
+    Limit trades per day to under 20.
+  compiled_by: claude-opus-5-5
+  prompt: architect@v1
+assumptions:
+  - "This file trades OILU only. OILD gets a mirror file (oil_bear_uup_gate) with the UUP conditions reversed, so exactly one side is held at any time."
+  - "OILU / OILD = MicroSectors 3x long / 3x inverse oil ETNs. Bearish oil is expressed by buying OILD, never by shorting OILU."
+  - "DATA GAP: no daily or 1-minute bars are stored for OILU, OILD or UUP. The backtest will show 0 trades until they are backfilled."
+  - "v2 change requested by trader: trade every day and hold a position right after the open. The RSI-reversal and EMA-momentum entry from v1 is replaced by an always-in regime rule. The only entry condition is the UUP gate."
+  - "Right after the open = first entry possible at the 09:35 ET bar close, the earliest the account allows."
+  - "UUP goes up = UUP's move since its prior close is >= +0.15% (range 0.05%-0.5%), read from UUP's latest 1-min bar (confirmed in v1). Early in the session this mostly reflects UUP's overnight gap."
+  - "Hold OILU while UUP is below +0.15%. Exit OILU at the next bar once UUP reaches +0.15% (the OILD file then holds instead)."
+  - "Hypothesis being tested: a stronger dollar on the day means weaker oil intraday. The backtest must show this earns its place."
+  - "If UUP's latest bar is more than 2 minutes old, the UUP value is missing. No entry is made (possible at 09:35 if UUP hasn't printed), and the UUP exit cannot fire. Stop, target and flatten still apply."
+  - "Stop = entry minus 0.5 x 14-day daily ATR (range 0.25-1.5). A 1-min ATR stop would be hit repeatedly in the opening volatility of a 3x ETN."
+  - "Target = 3R (range 2-8), kept wide because the file re-enters on the next bar after any exit."
+  - "After a stop or target, the file re-enters on the next bar if the UUP gate still allows it. There is no cooldown builtin."
+  - "Risk 1% of equity per trade, about 33% of equity in notional with a ~3% stop. Not yet confirmed by trader; about 3% risk is needed to approach the trader's 100% allocation."
+  - "v3 change requested by trader: max 20 trades per day in this file. With the OILD mirror at the same cap, up to 40 trades a day across both files (the original idea said under 20 in total)."
+  - "Worst case at 20 trades: up to 20 consecutive stops x 1% risk = about -20% of equity in one day for this file. The DSL has no daily-loss stop; only the account Risk page can cap this."
+  - "v3 change requested by trader: max 2 open positions. Since this file trades only OILU and the entry gate stays true, a second OILU position may be bought on the next bar, doubling exposure to about 2% risk. If the engine allows one position per symbol, this setting has no effect. It does not let this file hold OILD."
+  - "Entries 09:35-15:15 ET, flat by 15:50 ET, nothing held overnight."
+  - "Liquidity filter: 20-day average dollar volume >= $5M (range $1M-$50M)."
+  - "NOT SUPPORTED: staying 100% allocated regardless of size limits. Position size is set by risk per trade and capped at 100% of equity and by the Funds-page allocation (default 5%)."
+  - "NOT SUPPORTED: partially cutting OILU and loading up on OILD. Exits are all-or-nothing, and OILD is bought by the mirror file."
+  - "NOT SUPPORTED in this version: RSI/momentum entries alongside the open entry. when_all cannot express 'at the open OR on a reversal'."
+suggestions:
+  - "If stacking 2 OILU positions is intended, consider risk_per_trade 0.5% so combined risk stays at 1%."
+  - "Set a daily loss limit on the account Risk page before paper, since 20 re-entries can compound stops."
+  - "Add hysteresis later (for example, exit OILU only at UUP >= +0.25%) to cut whipsaw. Cost: a short window where neither file holds."
+  - "Compare against a plain 'hold OILU all day' baseline to see whether the UUP gate adds anything."
+references: [UUP]
+universe:
+  symbols: [OILU]
+  filters:
+    - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_adv:     {value: 5_000_000, range: [1_000_000, 50_000_000]}
+  uup_up:      {value: 0.15%,     range: [0.05%, 0.5%]}
+  stop_d_mult: {value: 0.5,       range: [0.25, 1.5]}
+  target_r:    {value: 3.0,       range: [2.0, 8.0]}
+vars:
+  uup_move: peer(UUP, close / prior_close - 1)
+entry:
+  side: long
+  window: "09:35-15:15"
+  when_all:
+    - uup_move < uup_up
+sizing:
+  risk_per_trade: 1.0%
+exit:
+  stop: entry_price - stop_d_mult * atr_d(14)
+  target: entry_price + target_r * risk_per_share
+  flatten_at: "15:50"
+  when_any:
+    - uup_move >= uup_up
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 20
+  max_open_positions: 2

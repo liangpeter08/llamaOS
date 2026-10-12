@@ -6,7 +6,7 @@ import { usePoll } from "@/lib/hooks";
 import { money, pct, pnlClass, wall } from "@/lib/format";
 import { Card, Empty, Loading, Meter, Notice, Pill, Stat, StatusPill } from "@/components/ui";
 import { isOwner, useSession } from "@/components/session";
-import { AllocationInput, allocText, allocValue, type AllocMode } from "@/components/Allocation";
+import { AllocationInput, ReservedInput, activityText, allocText, allocValue, ceilingUsd, type AllocMode } from "@/components/Allocation";
 
 export default function Funds() {
   const { data, error, reload } = usePoll<any>("/api/funds", 5000);
@@ -20,8 +20,10 @@ export default function Funds() {
     <>
       <h1>Funds</h1>
       <p className="muted">
-        Where the money is. Each running strategy owns a reserved slice of equity (its allocation, a percent of the fund or a fixed dollar amount) and can&apos;t spend another&apos;s; a cash
-        reserve is never deployed. Account-wide limits live on the <Link href="/risk">Risk</Link> page.
+        Where the money is. Each running strategy has an allocation (a percent of the fund or a fixed dollar amount): the most it may hold. The
+        reserved part of it is held for that strategy even while it is idle; above that it borrows from the shared pool, the part of max deployed
+        no other strategy has reserved or is using. So a strategy that seldom trades can have a large allocation with a small reserve, and when
+        it does trade it never touches another strategy&apos;s reserve. A cash reserve is never deployed. Account-wide limits live on the <Link href="/risk">Risk</Link> page.
       </p>
       {msg && <Notice kind={msg.kind}>{msg.text}</Notice>}
       {!data.enabled ? <Notice kind="warn">Fund controls are off.</Notice> : (
@@ -35,7 +37,10 @@ export default function Funds() {
           <Card title="Capital" className="mt">
             <CapitalBar a={a} L={L} />
             <div className="grid g4" style={{ marginTop: 12 }}>
-              <Budget label="Allocated to strategies" used={a.allocated} cap={L.max_deployed} fmt="pct" />
+              <Budget label="Reserved by strategies" used={a.allocated} cap={L.max_deployed} fmt="pct"
+                note={`· allocations add up to ${pct(a.ceilings, 1)}`} />
+              <Budget label="Shared pool in use" used={Math.max(0, L.max_deployed * a.equity - a.pool_free_usd - a.allocated * a.equity)}
+                cap={Math.max(0, (L.max_deployed - a.allocated) * a.equity)} />
               <Budget label="Intraday deployed" used={a.intraday_deployed} cap={L.intraday_budget * a.equity} />
               <Budget label="Sleeves deployed" used={a.sleeve_deployed} cap={a.sleeve_cap_usd} />
               <Budget label="Account drawdown" used={a.drawdown} cap={L.account_max_drawdown} fmt="pct" note="→ kill switch" />
@@ -47,7 +52,7 @@ export default function Funds() {
       <Card title="Strategy allocations" className="mt">
         {!data.strategies.length ? <Empty>No strategy is running. Promoting one to paper gives it an allocation.</Empty> : (
           <div className="table-wrap"><table>
-            <thead><tr><th>Strategy</th><th>Status</th><th className="num">Allocation</th><th>Deployed</th><th className="num">P&amp;L since set</th>
+            <thead><tr><th>Strategy</th><th>Status</th><th className="num">Allocation</th><th className="num">Reserved</th><th>Deployed</th><th className="num">P&amp;L since set</th>
               <th className="num">Today</th><th>Drawdown</th><th className="num">Daily loss stop</th><th></th></tr></thead>
             <tbody>{data.strategies.map((r: any) => <Row key={r.sid} r={r} equity={a.equity} owner={isOwner(me)} done={done} />)}</tbody>
           </table></div>
@@ -71,12 +76,12 @@ export default function Funds() {
 
 function CapitalBar({ a, L }: { a: any; L: any }) {
   const eq = a.equity || 1;
-  const allocatedIdle = Math.max(0, a.allocated * eq - a.deployed);
+  const reservedIdle = Math.max(0, a.committed - a.deployed);
   const parts: [string, number, string][] = [
     ["Intraday deployed", a.intraday_deployed, "var(--accent, #4c8bf5)"],
     ["Sleeves deployed", a.sleeve_deployed, "var(--good, #2ea56b)"],
-    ["Allocated, not deployed", allocatedIdle, "rgba(127,127,127,.35)"],
-    ["Unallocated", Math.max(0, (L.max_deployed - a.allocated) * eq), "rgba(127,127,127,.15)"],
+    ["Reserved, idle", reservedIdle, "rgba(127,127,127,.35)"],
+    ["Shared pool free", a.pool_free_usd, "rgba(127,127,127,.15)"],
     ["Cash reserve", L.cash_reserve * eq, "var(--warn, #d9a400)"],
   ];
   return (
@@ -112,6 +117,7 @@ function Row({ r, equity, owner, done }: { r: any; equity: number; owner: boolea
   const [edit, setEdit] = useState(false);
   const [mode, setMode] = useState<AllocMode>(r.alloc_mode);
   const [alloc, setAlloc] = useState(allocValue(r.alloc_mode, r.allocation, r.allocation_usd));
+  const [reserved, setReserved] = useState(`${+(r.reserved * 100).toFixed(1)}`);
   const [dd, setDd] = useState(`${+(r.max_drawdown * 100).toFixed(2)}%`);
   const [dl, setDl] = useState(r.daily_loss != null ? `${+(r.daily_loss * 100).toFixed(2)}%` : "");
   const [busy, setBusy] = useState(false);
@@ -136,6 +142,10 @@ function Row({ r, equity, owner, done }: { r: any; equity: number; owner: boolea
         <td className="num">{r.alloc_mode === "usd"
           ? <>${money(r.allocation_usd)}<div className="muted">fixed · {pct(r.allocation, 1)}</div></>
           : <>{pct(r.allocation, 1)}<div className="muted">${money(r.allocation_usd)}{r.source === "default" && " · default"}</div></>}</td>
+        <td className="num">{pct(r.reserved, 0)}<div className="muted">${money(r.reserved_usd)}</div>
+          <div className="muted" style={{ fontSize: 12 }} title="What it could buy right now, within its allocation, cash and the shared pool">
+            can buy ${money(r.can_buy_now)}</div>
+          {r.activity && <div className="muted" style={{ fontSize: 12 }}>{activityText(r.activity)}</div>}</td>
         <td style={{ minWidth: 140 }}>${money(r.deployed)} <span className="muted">({pct(r.used, 0)})</span><Meter frac={r.used ?? 0} danger={(r.used ?? 0) > 0.95} /></td>
         <td className={`num ${pnlClass(r.pnl)}`}>{money(r.pnl, true)}</td>
         <td className={`num ${pnlClass(r.pnl_today)}`}>{money(r.pnl_today, true)}</td>
@@ -154,14 +164,15 @@ function Row({ r, equity, owner, done }: { r: any; equity: number; owner: boolea
       </tr>
       {edit && (
         <tr>
-          <td colSpan={9}>
+          <td colSpan={10}>
             <div className="row">
               <label className="row">Allocation <AllocationInput mode={mode} value={alloc} equity={equity} disabled={busy}
                 onMode={(m, v) => { setMode(m); setAlloc(v); }} onValue={setAlloc} /></label>
+              <ReservedInput value={reserved} onValue={setReserved} ceilingUsd={ceilingUsd(mode, alloc, equity)} disabled={busy} />
               <label>Drawdown stop <input value={dd} onChange={(e) => setDd(e.target.value)} style={{ width: 80 }} /></label>
               {r.kind === "intraday" && <label>Daily loss stop <input value={dl} onChange={(e) => setDl(e.target.value)} style={{ width: 80 }} /></label>}
               <button className="primary" disabled={busy}
-                onClick={() => call(`/api/funds/${r.sid}`, { allocation: allocText(mode, alloc), alloc_mode: mode, max_drawdown: dd, daily_loss: r.kind === "intraday" && dl ? dl : null })}>Save</button>
+                onClick={() => call(`/api/funds/${r.sid}`, { allocation: allocText(mode, alloc), alloc_mode: mode, reserved: reserved.trim() || undefined, max_drawdown: dd, daily_loss: r.kind === "intraday" && dl ? dl : null })}>Save</button>
               <Pill>{r.wants != null ? `rules can use up to ${pct(r.wants, 1)}` : ""}</Pill>
             </div>
           </td>

@@ -9,7 +9,7 @@ import yaml
 from common import db, registry
 from discovery import mutate as M
 from discovery import stats as ST
-from discovery.run import Config, OfflineGenerator, run, summary
+from discovery.run import Config, OfflineGenerator, fail_orphans, run, summary
 from discovery.templates import hypotheses
 from dsl.validator import validate
 
@@ -297,3 +297,12 @@ def test_save_all_saves_every_evaluated_trial(conn, risk, monkeypatch, tmp_path)
     n = db.row(conn, "SELECT COUNT(*) n FROM discovery_trials WHERE run_id=? AND status IN"
                      " ('evaluated','improved','not_better','holdout_pass','holdout_fail')", (rep["run_id"],))["n"]
     assert len(rep["drafts"]) == n > 1 and len(list(tmp_path.glob("*.yaml"))) == n
+
+
+def test_fail_orphans_unblocks_runs_left_running(conn):
+    rid = conn.insert("INSERT INTO discovery_runs(created_at, created_by, ticker, config, status, stage) VALUES (?,?,?,?,?,?)",
+                      (1.0, "t", "AAA", "{}", "running", "evaluating"))
+    assert fail_orphans(conn) == [rid]
+    row = db.row(conn, "SELECT status, error, finished_at FROM discovery_runs WHERE id=?", (rid,))
+    assert row["status"] == "failed" and "interrupted" in row["error"] and row["finished_at"]
+    assert fail_orphans(conn) == []

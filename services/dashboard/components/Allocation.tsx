@@ -54,6 +54,39 @@ export function AllocationInput({ mode, value, equity, onMode, onValue, disabled
   );
 }
 
+/** Share of the allocation held for the strategy while idle ("25" = 25%); the rest is borrowed from the shared pool when it trades. */
+export function ReservedInput({ value, onValue, ceilingUsd, disabled }: {
+  value: string; onValue: (v: string) => void; ceilingUsd: number | null; disabled?: boolean;
+}) {
+  const n = parseFloat(value.replace(/[%\s]/g, ""));
+  const ok = Number.isFinite(n) && n >= 0 && n <= 100;
+  const hint = !ok ? "0-100% of the allocation" : ceilingUsd == null ? ""
+    : n >= 100 ? `all $${money(ceilingUsd)} held for it` : `$${money((n / 100) * ceilingUsd)} held while idle, up to $${money(ceilingUsd)} when it trades`;
+  return (
+    <span className="alloc-input" title="Reserved money is always there for this strategy. The rest of its allocation comes from the shared pool (money no other strategy has reserved or is using), so an idle strategy doesn't park cash.">
+      <span className="muted">Reserved</span>
+      <span className="alloc-amount">
+        <input value={value} inputMode="decimal" disabled={disabled} aria-label="Reserved, percent of the allocation"
+          onChange={(e) => onValue(e.target.value)} style={{ width: 52 }} />
+        <span className="muted">%</span>
+      </span>
+      <span className={`muted alloc-hint ${ok ? "" : "neg"}`}>{hint}</span>
+    </span>
+  );
+}
+
+/** Ceiling in dollars at today's equity for an allocation input, or null when it doesn't parse. */
+export function ceilingUsd(mode: AllocMode, value: string, equity: number): number | null {
+  const n = parse(mode, value);
+  return n == null ? null : mode === "pct" ? n * equity : n;
+}
+
+/** "Seldom trades" label from a line's recent activity: sessions with an entry over the window. */
+export function activityText(a: any) {
+  if (!a) return "";
+  return `traded ${a.active_sessions}/${a.sessions} sessions (${a.days}d)` + (a.busiest_usd ? ` · busiest day $${money(a.busiest_usd)}` : "");
+}
+
 export function Switch({ on, onChange, disabled, label }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean; label: string }) {
   return (
     <button type="button" role="switch" aria-checked={on} aria-label={label} title={label} disabled={disabled}
@@ -74,7 +107,7 @@ export function StrategyControls({ owner }: { owner: boolean }) {
     <Card title={<span className="row" style={{ justifyContent: "space-between" }}>
       <span>Strategies</span>
       {data.enabled && <span className="muted" style={{ fontSize: 12, fontWeight: 400 }}>
-        allocated {pct(a.allocated, 1)} · unallocated {pct(a.unallocated, 1)} (${money(a.unallocated * a.equity)}) · <Link href="/funds">Funds</Link>
+        reserved {pct(a.allocated, 1)} · unreserved {pct(a.unallocated, 1)} · shared pool free ${money(a.pool_free_usd)} · <Link href="/funds">Funds</Link>
       </span>}
     </span>}>
       {msg && <Notice kind={msg.kind}>{msg.text}</Notice>}
@@ -93,6 +126,7 @@ function ControlRow({ r, equity, owner, done }: { r: any; equity: number; owner:
   const [edit, setEdit] = useState(false);
   const [mode, setMode] = useState<AllocMode>(r.alloc_mode);
   const [value, setValue] = useState("");
+  const [reserved, setReserved] = useState("");
   const [busy, setBusy] = useState(false);
   const on = r.status === "active";
   async function call(path: string, body: object) {
@@ -116,6 +150,7 @@ function ControlRow({ r, equity, owner, done }: { r: any; equity: number; owner:
   function openEdit() {
     setMode(r.alloc_mode);
     setValue(allocValue(r.alloc_mode, r.allocation, r.allocation_usd));
+    setReserved(`${+(r.reserved * 100).toFixed(1)}`);
     setEdit(!edit);
   }
   const link = r.versions.length ? `/strategies/${r.versions[r.versions.length - 1].hash}` : null;
@@ -131,6 +166,7 @@ function ControlRow({ r, equity, owner, done }: { r: any; equity: number; owner:
           {r.alloc_mode === "usd"
             ? <><b>${money(r.allocation_usd)}</b> <span className="muted">fixed · {pct(r.allocation, 1)}</span></>
             : <><b>{pct(r.allocation, 1)}</b> <span className="muted">of fund · ${money(r.allocation_usd)}</span></>}
+          <div className="muted" style={{ fontSize: 12 }}>{r.reserved >= 0.9995 ? "fully reserved" : `${pct(r.reserved, 0)} reserved · rest from pool`}</div>
         </td>
         <td style={{ minWidth: 130 }}>${money(r.deployed)} <span className="muted">({pct(r.used, 0)})</span><Meter frac={r.used ?? 0} danger={(r.used ?? 0) > 0.95} /></td>
         <td className={`num ${pnlClass(r.pnl_today)}`}>{money(r.pnl_today, true)}</td>
@@ -143,12 +179,16 @@ function ControlRow({ r, equity, owner, done }: { r: any; equity: number; owner:
             <div className="row">
               <AllocationInput mode={mode} value={value} equity={equity} disabled={busy}
                 onMode={(m, v) => { setMode(m); setValue(v); }} onValue={setValue} />
+              <ReservedInput value={reserved} onValue={setReserved} ceilingUsd={ceilingUsd(mode, value, equity)} disabled={busy} />
               <button className="primary" disabled={busy || !value.trim()}
-                onClick={() => call(`/api/funds/${r.sid}`, { allocation: allocText(mode, value), alloc_mode: mode })}>Save</button>
+                onClick={() => call(`/api/funds/${r.sid}`, { allocation: allocText(mode, value), alloc_mode: mode, reserved: reserved.trim() || undefined })}>Save</button>
               {r.wants != null && <span className="muted">rules can use up to {pct(r.wants, 1)}</span>}
+              {r.activity && <span className="muted">{activityText(r.activity)}</span>}
             </div>
             <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
               Saving restarts the strategy&apos;s drawdown measurement. A fixed amount stays the same as equity moves; a percent grows and shrinks with it.
+              The reserved part is always there for this strategy; above it, buys use the shared pool if other strategies aren&apos;t using or reserving it.
+              Seldom-trading strategies can take a large allocation with a small reserve.
               {r.kind === "portfolio" && " A running sleeve keeps its size; the allocation caps its buys."}
             </div>
           </td>

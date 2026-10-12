@@ -68,3 +68,39 @@ def test_equity_ranges_and_strategy_attribution(conn, orb_text, risk):
     assert part["stats"]["sessions"] == 3
     assert abs(part["stats"]["start"] - full["daily"][1]["close"]) < 1e-6  # rebased on the prior close
     assert c.get(f"/api/equity?range=custom&start={days[4]}&end={days[2]}").status_code == 400
+
+
+def test_execution_modes_stage_and_approval(conn, orb_text, risk, monkeypatch, tmp_path):
+    from common import db, registry
+    monkeypatch.setattr(registry, "STRATEGIES_DIR", tmp_path)
+    registry.write_new_version("orb_news_long", orb_text)
+    registry.sync(conn, risk)
+    h = db.row(conn, "SELECT hash FROM strategies WHERE sid='orb_news_long'")["hash"]
+    mode = lambda: db.row(conn, "SELECT mode FROM strategies WHERE hash=?", (h,))["mode"]
+    assert mode() == "paper_manual" and not registry.is_auto(mode())
+    c, csrf, _ = login(conn)
+    post = lambda body: c.post(f"/api/strategies/{h}/mode", json=body, headers={"x-csrf-token": csrf})
+    assert post({"mode": "auto"}).status_code == 400  # legacy names are no longer accepted
+    assert post({"mode": "paper_auto"}).status_code == 200 and registry.is_auto(mode())
+    assert "approved for live" in post({"mode": "live_manual"}).json()["detail"]  # not live yet
+    registry.set_status(conn, h, "live", "test")
+    assert mode() == "live_manual"  # promotion to live never lands on auto
+    assert "Type the strategy id" in post({"mode": "live_auto"}).json()["detail"]
+    assert post({"mode": "live_auto", "confirm": "orb_news_long"}).status_code == 200 and mode() == "live_auto"
+    assert registry.demote_live_auto(conn, "test", "daily loss") == [h] and mode() == "live_manual"  # kill switch
+    post({"mode": "live_auto", "confirm": "orb_news_long"})
+    registry.set_status(conn, h, "paper", "test")
+    assert mode() == "paper_auto"  # leaving live keeps the approval behaviour, back on the paper stage
+    # legacy values still read correctly by the broker
+    assert registry.is_auto("auto") and registry.is_auto("paper") and not registry.is_auto("manual")
+
+
+def test_legacy_modes_migrate(conn):
+    from common import db
+    rows = [("a" * 64, "s1", "paper", "manual"), ("b" * 64, "s2", "paper", "paper"), ("c" * 64, "s3", "live", "auto")]
+    for h, sid, st, m in rows:
+        conn.execute("INSERT INTO strategies(hash, sid, version, path, status, mode, created_at, updated_at) VALUES (?,?,?,?,?,?,0,0)",
+                     (h, sid, 1, f"{sid}.yaml", st, m))
+    db.init(conn)
+    assert {r["sid"]: r["mode"] for r in db.rows(conn, "SELECT sid, mode FROM strategies")} == \
+        {"s1": "paper_manual", "s2": "paper_auto", "s3": "live_manual"}

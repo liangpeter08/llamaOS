@@ -63,6 +63,13 @@ def test_leverage_is_a_warning(risk, orb_text):
     assert v.ok and any("leverage" in w for w in v.warnings)
 
 
+def test_max_position_limit_is_ignored(risk, orb_text):
+    v = validate(mutate(orb_text, "max_trades_per_day: 3", "max_trades_per_day: 3\n  max_position: 5%"), risk)
+    assert v.ok, v.errors
+    assert "max_position" not in v.strategy.limits
+    assert any("limits.max_position is ignored" in w for w in v.warnings)
+
+
 def test_parser_precedence():
     n = E.parse("a + b * c >= d and not e or f")
     assert isinstance(n, E.BoolOp) and n.op == "or"

@@ -11,7 +11,12 @@ from pydantic import BaseModel, Field
 
 from backtest import workspace as W
 from common import audit, db, registry
+from common import market_inputs as MI
 from common.config import load_risk
+from dsl.portfolio_v2 import INDEXES
+
+INDEX_LABELS = {'NASDAQ_COMPOSITE': 'Nasdaq Composite', 'NASDAQ_100': 'Nasdaq-100', 'SP_500': 'S&P 500',
+                'DOW_JONES_INDUSTRIAL': 'Dow Jones Industrial', 'RUSSELL_2000': 'Russell 2000'}
 
 
 def router(user, owner):
@@ -37,6 +42,9 @@ def router(user, owner):
             strat, why = registry.load(c, s['hash'], risk)
             s.update(valid=bool(strat), reason=why, kind=getattr(strat, 'kind', 'intraday'), symbols=getattr(strat, 'symbols', []))
         return {'strategies': strategies, 'symbols': db.rows(c, 'SELECT symbol,COUNT(*) sessions,MIN(day) first,MAX(day) last FROM daily GROUP BY symbol ORDER BY symbol'),
+                'indexes': [{'instrument': i, 'label': INDEX_LABELS.get(i, i), 'feed': i in MI.feeds(),
+                             **db.row(c, 'SELECT COUNT(*) sessions, MIN(day) first, MAX(day) last FROM index_daily WHERE instrument=?', (i,))}
+                            for i in INDEXES],
                 'risk': json.loads(W.encode(asdict(risk))),
                 'defaults': W.RunConfig.model_construct(strategy_hash='').model_dump(mode='json'),
                 'capabilities': [

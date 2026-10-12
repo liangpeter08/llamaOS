@@ -176,3 +176,27 @@ def test_duplicate_and_improve(conn, claude, monkeypatch, tmp_path):
     c.post(f"/api/design/{THREAD}", json={"message": "ok", "source": src}, headers=h)
     assert "<strategy_to_improve" not in claude[0][-1]["messages"][-1]["content"]
     assert c.post("/api/design/design:zzz999zzz", json={"message": "x", "source": "0" * 64}, headers=h).status_code == 404
+
+
+# ---------------------------------------------------------------- direct edit
+def test_edit_saves_next_version_and_leaves_original(conn, monkeypatch, tmp_path):
+    from tests.test_api import login
+    from common import registry
+    from common.config import load_risk
+    (tmp_path / "strategies").mkdir()
+    monkeypatch.setattr(registry, "STRATEGIES_DIR", tmp_path / "strategies")
+    text = (ROOT / "strategies" / "orb_news_long.v1.yaml").read_text()
+    orig = registry.write_new_version("orb_news_long", text)
+    registry.sync(conn, load_risk())
+    src = db.row(conn, "SELECT hash FROM strategies WHERE sid='orb_news_long'")["hash"]
+    c, csrf, _ = login(conn)
+    h = {"x-csrf-token": csrf}
+    edited = text.replace("dsl: 0.1", "dsl: 0.1\n# tuned by hand", 1)
+    r = c.post(f"/api/strategies/{src}/edit", json={"text": edited}, headers=h)
+    assert r.status_code == 200, r.text
+    row = db.row(conn, "SELECT sid, version, status FROM strategies WHERE hash=?", (r.json()["hash"],))
+    assert row == {"sid": "orb_news_long", "version": 2, "status": "draft"} and orig.read_text() == text
+    assert c.post(f"/api/strategies/{src}/edit", json={"text": text}, headers=h).status_code == 400  # no changes
+    assert c.post(f"/api/strategies/{src}/edit", json={"text": "dsl: 0.1\nid: x\n"}, headers=h).status_code == 400  # invalid
+    other = text.replace("id: orb_news_long", "id: something_else", 1)
+    assert "Keep id" in c.post(f"/api/strategies/{src}/edit", json={"text": other}, headers=h).json()["detail"]

@@ -47,7 +47,6 @@ def check_intent(intent, state: AccountState, risk: RiskConfig, strategy_limits:
     eq = max(state.equity, 1e-9)
     notional = intent.qty * intent.entry
     risk_pct = intent.risk_usd / eq
-    max_pos = min(risk.max_position, lim.get("max_position", risk.max_position))
     max_open = min(risk.max_open_positions, lim.get("max_open_positions", risk.max_open_positions))
     strat_trades = state.strategy_trades_today.get(intent.sid, 0)
     strat_cap = lim.get("max_trades_per_day")
@@ -71,7 +70,7 @@ def check_intent(intent, state: AccountState, risk: RiskConfig, strategy_limits:
               f"stop={intent.stop} target={intent.target}"),
         Check("stop_side", _stop_ok(intent), f"entry={intent.entry:.2f} stop={intent.stop} target={intent.target}"),
         Check("max_risk", risk_pct <= risk.max_risk + 1e-12, f"{risk_pct:.3%} of equity / max {risk.max_risk:.2%}"),
-        Check("max_position", notional <= max_pos * eq + 1e-6, f"${notional:,.0f} = {notional / eq:.1%} / max {max_pos:.0%}"),
+        Check("max_position", notional <= risk.max_position * eq + 1e-6, f"${notional:,.0f} = {notional / eq:.1%} / max {risk.max_position:.0%}"),
         Check("gross_exposure", state.gross_exposure + notional <= risk.max_gross_exposure * eq + 1e-6,
               f"${state.gross_exposure + notional:,.0f} after / max {risk.max_gross_exposure:.2f}x equity"),
         Check("min_price", intent.entry >= risk.min_price, f"{intent.entry:.2f} / min {risk.min_price:.2f}"),
