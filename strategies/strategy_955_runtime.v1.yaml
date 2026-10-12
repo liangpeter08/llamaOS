@@ -1,0 +1,55 @@
+dsl: 0.1
+id: strategy_955_runtime
+version: 1
+source:
+  text: >-
+    create a strategy that will trade big tech on market open at 9:31am and that enable paper auto on this
+    strategy, iterate till the backtest show positive intraday result for feb 30 2026 to april 30 2026
+
+    change it so it runs at 9:47am
+
+    change this to 955 runtime window
+  compiled_by: claude-opus-5-5
+  prompt: architect@v1
+assumptions:
+  - "Big tech = AAPL, MSFT, NVDA, AMZN, META, GOOGL, TSLA, AMD (unchanged from strategy_947_run_time v1)."
+  - "Rule (unchanged): buy a name that gapped up at least 0.3% from the prior close and is still above the day's open at the entry bar (gap-and-go continuation)."
+  - "Stop = entry minus 0.5 x 14-day daily ATR; target = 4R; flat by 15:50; nothing held overnight (unchanged)."
+  - "Sizing 0.25% of equity risk per trade, up to 8 trades and 8 open positions per day (unchanged)."
+  - "CHANGED: new strategy id strategy_955_run_time, version 1, copied from strategy_947_run_time v1."
+  - "CHANGED: entry window 09:47-09:48 -> 09:55-09:56. '9:55' = the close of the 09:54-09:55 bar; a symbol that doesn't qualify then can still enter on the 09:56 bar (same two-bar convention as the 09:47 version)."
+  - "No backtest or paper results exist for the 09:47 version, so this change is not based on evidence that 09:47 underperformed; it is the trader's requested timing and needs its own backtest."
+  - "Minute bars: stored 1-min data starts around 2026-02-23 for these names (~137 sessions), so the requested Mar-Apr window is covered."
+suggestions:
+  - "Backtest this file and strategy_947_run_time on the same full ~137-session period; choosing the entry minute from one short window risks overfitting."
+  - "Try a stop at today's low so far (day_low) instead of 0.5 x daily ATR: by 09:55 the opening range is a natural invalidation level. Cost: wider stops on volatile days mean smaller positions."
+  - "Add 'close > vwap' to entry as a second check that the gap is holding. Cost: fewer trades."
+  - "Cap max_open_positions at 4: eight correlated big-tech longs opened in the same minute are close to one 2%-risk bet."
+  - "Test target_r 2 alongside 4; a 4R target was never reached in the 4 trades of big_tech_open_931 v1."
+universe:
+  symbols: [AAPL, MSFT, NVDA, AMZN, META, GOOGL, TSLA, AMD]
+  filters:
+    - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_adv:   {value: 500_000_000, range: [100_000_000, 5_000_000_000]}
+  gap_min:   {value: 0.3%, range: [0.1%, 3%]}
+  stop_mult: {value: 0.5, range: [0.1, 1.0]}
+  target_r:  {value: 4.0, range: [0.5, 4.0]}
+entry:
+  side: long
+  window: "09:55-09:56"
+  when_all:
+    - gap >= gap_min
+    - close > day_open
+sizing:
+  risk_per_trade: 0.25%
+exit:
+  stop: entry_price - stop_mult * atr_d(14)
+  target: entry_price + target_r * risk_per_share
+  flatten_at: "15:50"
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 8
+  max_open_positions: 8

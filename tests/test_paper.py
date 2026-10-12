@@ -388,3 +388,16 @@ def test_news_to_claude_active_hours(conn):
     db.kv_set(conn, NC.ON_KEY, False)
     assert not NC.allowed(conn, ts(2026, 10, 12, 23, 30))  # the off switch wins over the window
     assert NC.status(conn, mon_10) == NC.settings(conn) | {"active_now": False}
+
+
+def test_first_bar_of_the_session_is_stored(broker):
+    """An empty session (no bars yet) must not be mistaken for a missing symbol."""
+    from datetime import date
+    from common import timeutil as T
+    from dsl.evaluator import DayData
+    day=date(2026,10,12)
+    broker.day=day; broker.close_ts=T.close_ts(day)
+    broker.days={'AAPL':DayData('AAPL',day,[])}; broker.refs={}
+    t=T.open_ts(day)
+    broker.store_bars({'AAPL':[{'t':__import__('datetime').datetime.fromtimestamp(t,__import__('datetime').timezone.utc).isoformat().replace('+00:00','Z'),'o':1,'h':1,'l':1,'c':1,'v':10}]})
+    assert len(broker.days['AAPL'])==1

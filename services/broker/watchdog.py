@@ -6,7 +6,7 @@ from datetime import datetime
 
 import httpx
 
-from common import audit,db,registry,sleeves,timeutil as T,broker_accounts as BA
+from common import audit,db,sleeves,timeutil as T,broker_accounts as BA
 from common.config import load_risk
 from .alpaca import Alpaca,epoch
 
@@ -53,16 +53,22 @@ def main():
                 # stale-feed checks cover intraday positions only. A kill still closes everything.
                 sleeve=set(sleeves.owned_symbols(c))
                 intraday=[p for p in positions if p['symbol'] not in sleeve]
-                reason=None
-                if now>=deadline:reason='calendar flatten deadline'
-                elif now>T.open_ts(day)+risk.stale_feed_halt and (age is None or age>60):reason='broker heartbeat stale'
-                elif now>T.open_ts(day)+risk.stale_feed_halt and (now-bar>risk.stale_feed_halt or any(now-symbol_bars.get(p['symbol'],0)>risk.stale_feed_halt for p in intraday)):reason='market feed stale'
+                # Stale heartbeat/feed are warnings only: the kill switch is set by the owner, never by the watchdog.
+                late=now>T.open_ts(day)+risk.stale_feed_halt
+                problems={'heartbeat':late and (age is None or age>60),
+                          'feed':late and (now-bar>risk.stale_feed_halt or any(now-symbol_bars.get(p['symbol'],0)>risk.stale_feed_halt for p in intraday))}
+                for name,bad in problems.items():
+                    key=f'watchdog.{name}_stale';warned=db.kv_get(c,key)
+                    if bad and not warned:
+                        log.warning('%s stale; not triggering the kill switch',name)
+                        db.kv_set(c,key,{'ts':time.time(),'heartbeat_age':age,'last_bar':bar})
+                        audit.log(c,f'watchdog.{name}_stale','watchdog',{'heartbeat_age':age,'last_bar':bar})
+                    elif warned and not bad:
+                        db.kv_set(c,key,None)
+                        audit.log(c,f'watchdog.{name}_recovered','watchdog',{})
+                reason='calendar flatten deadline' if now>=deadline else None
                 ks=db.kv_get(c,'kill_switch') or {}
                 if reason or ks.get('active'):
-                    if reason and reason!='calendar flatten deadline' and not ks.get('active'):
-                        db.kv_set(c,'kill_switch',{'active':True,'reason':reason,'ts':time.time(),'by':'watchdog'})
-                        registry.demote_live_auto(c,'watchdog',reason)
-                        audit.log(c,'kill_switch.triggered','watchdog',{'reason':reason})
                     orders=api.orders()
                     import json
                     if not ks.get('active') and reason=='calendar flatten deadline':

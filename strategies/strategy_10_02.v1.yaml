@@ -1,0 +1,61 @@
+dsl: 0.1
+id: strategy_10_02
+version: 1
+source:
+  text: >-
+    create a strategy that will trade big tech on market open at 9:31am and that enable paper auto on this
+    strategy, iterate till the backtest show positive intraday result for feb 30 2026 to april 30 2026
+
+    change it so it runs at 9:47am
+
+    change this to 955 runtime window
+
+    change the execution time to 10:02
+  compiled_by: claude-opus-5-5
+  prompt: architect@v1
+assumptions:
+  - "Big tech = AAPL, MSFT, NVDA, AMZN, META, GOOGL, TSLA, AMD (unchanged from strategy_955_runtime v1)."
+  - "Rule (unchanged): buy a name that gapped up at least 0.3% from the prior close and is still above the day's open at the entry bar (gap-and-go continuation)."
+  - "Stop = entry minus 0.5 x 14-day daily ATR; target = 4R; flat by 15:50; nothing held overnight (unchanged)."
+  - "Sizing 0.25% of equity risk per trade, up to 8 trades and 8 open positions per day (unchanged)."
+  - "CHANGED: new strategy id strategy_1002_runtime, version 1, copied from strategy_955_runtime v1."
+  - "CHANGED: entry window 09:55-09:56 -> 10:02-10:06. '10:02' = the close of the 10:01-10:02 bar; a symbol that doesn't qualify then can still enter on any bar close through 10:06."
+  - "CHANGED (reason): the window is 5 bars instead of 2 because all 3 signals from strategy_955_runtime on 2026-10-12 (AAPL, META, MSFT at 09:55) passed the entry rules but were rejected with reason strategy_window. The inferred cause is that a 2-bar window leaves no slack between the signal and the runtime window check."
+  - "A symbol stopped out inside 10:02-10:06 could re-enter on a later bar in the window; total entries stay capped at 8 per day."
+  - "NOT FIXED HERE: AAPL was also rejected for intraday_budget. At 0.25% risk with a 0.5 x ATR stop, single positions are about $170k-$265k notional (17-26% of equity), far above the default 5% allocation. The allocation ceiling is set on the Funds page, not in this file."
+  - "No backtest exists for the 09:47 or 09:55 versions; the only evidence for this rule is big_tech_open_931 v1 (4 trades, avg -0.72R). The 10:02 timing is the trader's choice and needs its own backtest."
+  - "Minute bars: stored 1-min data starts around 2026-02-23 for these names (~132-166 sessions)."
+suggestions:
+  - "Backtest this file and strategy_955_runtime on the same full ~137-session period before choosing a minute; picking the entry time from short windows risks overfitting."
+  - "Raise this strategy's allocation ceiling on the Funds page, or it will keep hitting intraday_budget: three signals already need about $640k notional."
+  - "Cap max_open_positions at 3-4: eight correlated big-tech longs opened in the same minutes behave like one 2%-risk bet, and fewer positions ease the budget problem. Cost: some valid signals skipped."
+  - "Try a stop at day_low (the morning low by 10:02) instead of 0.5 x daily ATR. Cost: wider stops mean smaller positions and fewer target hits."
+  - "Add 'close > vwap' to entry as a second check that the gap is holding. Cost: fewer trades."
+  - "Test target_r 2 alongside 4; a 4R target was never reached in the 4 trades of big_tech_open_931 v1."
+universe:
+  symbols: [AAPL, MSFT, NVDA, AMZN, META, GOOGL, TSLA, AMD]
+  filters:
+    - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_adv:   {value: 500_000_000, range: [100_000_000, 5_000_000_000]}
+  gap_min:   {value: 0.3%, range: [0.1%, 3%]}
+  stop_mult: {value: 0.5, range: [0.1, 1.0]}
+  target_r:  {value: 4.0, range: [0.5, 4.0]}
+entry:
+  side: long
+  window: "10:02-10:06"
+  when_all:
+    - gap >= gap_min
+    - close > day_open
+sizing:
+  risk_per_trade: 0.25%
+exit:
+  stop: entry_price - stop_mult * atr_d(14)
+  target: entry_price + target_r * risk_per_share
+  flatten_at: "15:50"
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 8
+  max_open_positions: 8

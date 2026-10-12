@@ -207,7 +207,7 @@ class PaperBroker:
         for sym, bars in grouped.items():
             if sym not in self.days and sym not in self.refs:
                 continue
-            d = self.days.get(sym) or self.refs[sym]
+            d = self.days[sym] if sym in self.days else self.refs[sym]  # not `or`: a session with no bars yet is falsy
             for b in sorted(bars, key=lambda x: x["t"]):
                 ts = epoch(b["t"])
                 if ts < T.open_ts(self.day) or ts + 60 > min(time.time()-2, self.close_ts):

@@ -1,0 +1,51 @@
+dsl: 0.1
+id: big_tech_open_931
+version: 1
+source:
+  text: >-
+    create a strategy that will trade big tech on market open at 9:31am and that enable paper auto on this
+    strategy, iterate till the backtest show positive intraday result for feb 30 2026 to april 30 2026
+  compiled_by: claude-opus-5-5
+  prompt: architect@v1
+assumptions:
+  - "Big tech = AAPL, MSFT, NVDA, AMZN, META, GOOGL, TSLA, AMD."
+  - "Market open at 9:31 = the close of the first 1-minute bar (09:30-09:31). The window is 09:31-09:32 because the DSL needs a window at least a minute wide; a symbol whose first bar doesn't qualify can still enter on the 09:32 bar."
+  - "Rule: buy a name that gapped up at least 0.3% from the prior close and whose first minute closed above the day's open (the gap is holding). Gap-and-go continuation."
+  - "Stop = entry minus 0.5 x 14-day daily ATR (a 1-minute ATR doesn't exist yet at 09:31). Target = 4R. Otherwise held until 15:50, flat before the close, nothing overnight."
+  - "Feb 30 2026 doesn't exist: the target window was read as the first session after Feb 28, i.e. 2026-03-02 to 2026-04-30."
+  - "Iterated variants (all 09:31 entries): gap-up + green first minute with a 60-minute hold (-0.19% Mar-Apr), gap-down reversal (-2.85%), gap-up + 5-day trend (-0.43%), gap-down reversal + 20-day trend (-1.43%), gap-up + QQQ up (+1.01% but no out-of-sample QQQ data). Chosen: gap-up + green first minute held to 15:50 with a 4R target."
+  - "Research backtests ($100k, 2 bps slippage): Mar 2-Apr 30 68 trades, +2.25%, profit factor 1.35, max drawdown -2.6%. Out of sample Jun 15-Oct 9: 154 trades, +4.18%, PF 1.28. With doubled costs: +1.79% and +3.21%. Neighbouring settings (gap 0.2%/0.5%, stop 0.4/0.6 ATR, target 3R) stayed positive in both windows; the original settings were kept rather than the best neighbour."
+  - "Minute bars for Mar-Apr were downloaded from the SIP (full market) feed. Live bars come from IEX, which is fine for these liquid names."
+suggestions:
+  - "Results are small (a few percent over months) and per-symbol P&L is uneven (NVDA and GOOGL lost in both windows). Paper-trade for several weeks before trusting it."
+  - "Up to 8 positions can open at 09:31 at once; the 40% intraday budget shared with the other intraday strategies limits how many fill."
+universe:
+  symbols: [AAPL, MSFT, NVDA, AMZN, META, GOOGL, TSLA, AMD]
+  filters:
+    - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_adv:   {value: 500_000_000, range: [100_000_000, 5_000_000_000]}
+  gap_min:   {value: 0.3%, range: [0.1%, 3%]}
+  stop_mult: {value: 0.5, range: [0.1, 1.0]}
+  target_r:  {value: 4.0, range: [0.5, 4.0]}
+  hold_n:    {value: 370, range: [5, 380]}
+entry:
+  side: long
+  window: "09:31-09:32"
+  when_all:
+    - gap >= gap_min
+    - close > day_open
+sizing:
+  risk_per_trade: 0.25%
+exit:
+  stop: entry_price - stop_mult * atr_d(14)
+  target: entry_price + target_r * risk_per_share
+  flatten_at: "15:50"
+  when_any:
+    - bars_held >= hold_n
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 8
+  max_open_positions: 8
