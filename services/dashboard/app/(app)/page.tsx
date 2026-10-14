@@ -145,7 +145,7 @@ function IntradayTab() {
             ))}
             <dt>{t("Last bar")}</dt><dd>{et(health.last_bar)} {t("ET")}</dd>
             <dt>{t("Reconcile")}</dt>
-            <dd>{health.reconcile?.sim_ts ? <><Pill kind={health.reconcile.ok ? "good" : "bad"}>{t(health.reconcile.ok ? "match" : "MISMATCH")}</Pill> <span className="muted">{et(health.reconcile.sim_ts)}</span></> : "—"}</dd>
+            <dd>{health.reconcile?.sim_ts ? <><Pill kind={health.reconcile.ok ? "good" : "bad"}>{t(health.reconcile.ok ? "match" : "MISMATCH")}</Pill> <span className="muted">{et(health.reconcile.sim_ts)}</span>{" "}{isOwner(me) && <ReconcileButton />}</> : "—"}</dd>
             <dt>{t("Strategies")}</dt><dd>{sim.strategies?.join(", ") || t("none running")}</dd>
           </dl>
         </Card>
@@ -183,6 +183,29 @@ function SimControls({ paper, speed, paused, onChange }: { paper?: boolean; spee
         </select>}
       </div>
     </Card>
+  );
+}
+
+function ReconcileButton() {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const t = useT();
+  async function run() {
+    setBusy(true);
+    try {
+      const r = await post("/api/reconcile/accept", {});
+      setMsg(r.message);
+    } catch (err) {
+      setMsg((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <>
+      <button type="button" disabled={busy} onClick={run}>{t(busy ? "Reconciling…" : "Reconcile")}</button>
+      {msg && <span className="muted"> {msg}</span>}
+    </>
   );
 }
 
