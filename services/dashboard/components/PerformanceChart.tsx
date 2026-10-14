@@ -6,6 +6,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { usePoll } from "@/lib/hooks";
 import { cls, money, pct, pnlClass } from "@/lib/format";
 import { Card, Empty, Notice, Stat } from "./ui";
+import { useI18n } from "@/lib/i18n";
 
 export type Range = "1D" | "1W" | "1M" | "3M" | "YTD" | "ALL" | "custom";
 type Metric = "return" | "equity";
@@ -57,8 +58,9 @@ function niceTicks(lo: number, hi: number, minSpan: number, count = 5) {
   return ticks;
 }
 
+let dayLocale = "en-US"; // follows the UI language (set by PerformanceChart on render)
 const fmtDay = (iso: string, withYear = false) =>
-  new Date(iso + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", ...(withYear ? { year: "numeric" } : {}), timeZone: "UTC" });
+  new Date(iso + "T12:00:00Z").toLocaleDateString(dayLocale, { month: "short", day: "numeric", ...(withYear ? { year: "numeric" } : {}), timeZone: "UTC" });
 const fmtTime = (ts: number) => new Date(ts * 1000).toLocaleTimeString("en-GB", { timeZone: ET, hour: "2-digit", minute: "2-digit" });
 const compact = (v: number) => (Math.abs(v) >= 1e6 ? `$${(v / 1e6).toFixed(2)}M` : `$${Math.round(v).toLocaleString("en-US")}`);
 
@@ -80,7 +82,7 @@ export function PerformanceChart({
   defaultMetric = "return",
   height = 320,
   poll = 10000,
-  title = "Portfolio performance",
+  title,
 }: {
   ranges?: Range[];
   defaultRange?: Range;
@@ -95,6 +97,8 @@ export function PerformanceChart({
   const [metric, setMetric] = useState<Metric>(defaultMetric);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [showTable, setShowTable] = useState(false);
+  const { t, lang } = useI18n();
+  dayLocale = lang === "zh" ? "zh-CN" : "en-US";
 
   const path = `/api/equity?range=${range}` + (range === "custom" ? `&start=${applied.start}&end=${applied.end}` : "");
   // the previous frame stays on screen (dimmed) while a new range loads: no layout jump
@@ -107,56 +111,56 @@ export function PerformanceChart({
   return (
     <Card className="perf-card">
       <div className="row between" style={{ marginBottom: 8 }}>
-        <h2 style={{ margin: 0 }}>{title}</h2>
+        <h2 style={{ margin: 0 }}>{title ?? t("Portfolio performance")}</h2>
         {data && !data.empty && (
           <span className="muted">
-            {data.intraday ? fmtDay(data.lo, true) : `${fmtDay(data.lo, true)} – ${fmtDay(data.hi, true)}`} · {data.stats.sessions} session{data.stats.sessions === 1 ? "" : "s"}
+            {data.intraday ? fmtDay(data.lo, true) : `${fmtDay(data.lo, true)} – ${fmtDay(data.hi, true)}`} · {t(data.stats.sessions === 1 ? "{n} session" : "{n} sessions", { n: data.stats.sessions })}
           </span>
         )}
       </div>
       <div className="filters">
         {ranges.length > 1 && (
-          <div className="seg" role="group" aria-label="Date range">
+          <div className="seg" role="group" aria-label={t("Date range")}>
             {ranges.map((r) => (
               <button key={r} className={cls(range === r && "on")} aria-pressed={range === r} onClick={() => setRange(r)}>
-                {LABELS[r]}
+                {t(LABELS[r])}
               </button>
             ))}
           </div>
         )}
         {range === "custom" && (
           <form className="row" onSubmit={(e) => { e.preventDefault(); setApplied(custom); }}>
-            <input type="date" aria-label="From" value={custom.start} min={data?.first} max={data?.last} onChange={(e) => setCustom({ ...custom, start: e.target.value })} />
-            <span className="muted">to</span>
-            <input type="date" aria-label="To" value={custom.end} min={data?.first} max={data?.last} onChange={(e) => setCustom({ ...custom, end: e.target.value })} />
-            <button>Apply</button>
+            <input type="date" aria-label={t("From")} value={custom.start} min={data?.first} max={data?.last} onChange={(e) => setCustom({ ...custom, start: e.target.value })} />
+            <span className="muted">{t("to")}</span>
+            <input type="date" aria-label={t("To")} value={custom.end} min={data?.first} max={data?.last} onChange={(e) => setCustom({ ...custom, end: e.target.value })} />
+            <button>{t("Apply")}</button>
           </form>
         )}
-        <div className="seg" role="group" aria-label="Metric">
-          <button className={cls(metric === "return" && "on")} aria-pressed={metric === "return"} onClick={() => setMetric("return")}>Return % by strategy</button>
-          <button className={cls(metric === "equity" && "on")} aria-pressed={metric === "equity"} onClick={() => setMetric("equity")}>Equity $</button>
+        <div className="seg" role="group" aria-label={t("Metric")}>
+          <button className={cls(metric === "return" && "on")} aria-pressed={metric === "return"} onClick={() => setMetric("return")}>{t("Return % by strategy")}</button>
+          <button className={cls(metric === "equity" && "on")} aria-pressed={metric === "equity"} onClick={() => setMetric("equity")}>{t("Equity $")}</button>
         </div>
         <span className="grow" style={{ flex: 1 }} />
-        <button onClick={() => setShowTable(!showTable)} aria-pressed={showTable}>{showTable ? "Hide table" : "Table view"}</button>
+        <button onClick={() => setShowTable(!showTable)} aria-pressed={showTable}>{t(showTable ? "Hide table" : "Table view")}</button>
       </div>
 
       {error && <Notice kind="bad">{error}</Notice>}
-      {!data ? <p className="muted">Loading…</p> : data.empty ? (
-        <Empty>No equity history yet. Run <code>make replay</code> (or <code>make demo</code>) to replay the running strategies over the stored sessions, or start the broker.</Empty>
+      {!data ? <p className="muted">{t("Loading…")}</p> : data.empty ? (
+        <Empty>{t("No equity history yet. Run {replay} (or {demo}) to replay the running strategies over the stored sessions, or start the broker.", { replay: <code>make replay</code>, demo: <code>make demo</code> })}</Empty>
       ) : (
         <>
           <Summary d={data} />
           {metric === "return" && (
-            <div className="legend" aria-label="Series">
+            <div className="legend" aria-label={t("Series")}>
               <span className="row" style={{ gap: 6, fontSize: 12, padding: "3px 4px" }}>
-                <span className="key" style={{ borderColor: "var(--ink)", borderTopWidth: 3 }} /> Total portfolio
+                <span className="key" style={{ borderColor: "var(--ink)", borderTopWidth: 3 }} /> {t("Total portfolio")}
               </span>
               {data.strategies.map((s, i) => (
                 <button key={s} aria-pressed={!hidden.has(s)} onClick={() => {
                   const h = new Set(hidden);
                   if (h.has(s)) h.delete(s); else h.add(s);
                   setHidden(h);
-                }} title="Show / hide">
+                }} title={t("Show / hide")}>
                   <span className="key" style={{ borderColor: color(i) }} /> {s}
                 </button>
               ))}
@@ -164,9 +168,9 @@ export function PerformanceChart({
           )}
           <Plot d={data} metric={metric} hidden={hidden} height={height} loading={loading} />
           <p className="muted" style={{ fontSize: 12, margin: "6px 0 0" }}>
-            {data.sessions.some((s) => s.source === "replay") && <>Unshaded sessions are <b>replayed history</b>: the strategies now running, re-run over stored sessions with every intent auto-approved. </>}
-            {data.sessions.some((s) => s.source === "live") && <>Shaded = <b>live simulated session</b>. </>}
-            {metric === "return" && <>Strategy lines are each strategy's P&amp;L (realized + open) as a % of the account at the start of the range; they add up to Total.</>}
+            {data.sessions.some((s) => s.source === "replay") && <>{t("Unshaded sessions are {b}: the strategies now running, re-run over stored sessions with every intent auto-approved.", { b: <b>{t("replayed history")}</b> })} </>}
+            {data.sessions.some((s) => s.source === "live") && <>{t("Shaded = {b}.", { b: <b>{t("live simulated session")}</b> })} </>}
+            {metric === "return" && t("Strategy lines are each strategy's P&L (realized + open) as a % of the account at the start of the range; they add up to Total.")}
           </p>
           <StrategyTable d={data} hidden={hidden} />
           {showTable && <DailyTable d={data} />}
@@ -178,15 +182,16 @@ export function PerformanceChart({
 
 function Summary({ d }: { d: EquityData }) {
   const s = d.stats;
+  const { t } = useI18n();
   return (
     <div className="grid g4" style={{ marginBottom: 10 }}>
-      <Stat label="Account equity" value={money(s.end)} sub={`from ${money(s.start)}`} />
-      <Stat label="Return" value={pct(s.change_pct, 2, true)} valueClass={pnlClass(s.change)} sub={`${money(s.change, true)} over the range`} />
-      <Stat label="Max drawdown" value={pct(s.max_drawdown)} sub={`high ${money(s.high)} · low ${money(s.low)}`} />
+      <Stat label={t("Account equity")} value={money(s.end)} sub={t("from {v}", { v: money(s.start) })} />
+      <Stat label={t("Return")} value={pct(s.change_pct, 2, true)} valueClass={pnlClass(s.change)} sub={t("{v} over the range", { v: money(s.change, true) })} />
+      <Stat label={t("Max drawdown")} value={pct(s.max_drawdown)} sub={t("high {h} · low {l}", { h: money(s.high), l: money(s.low) })} />
       {d.intraday ? (
-        <Stat label="Session" value={fmtDay(d.lo)} sub={`${s.points} bars`} />
+        <Stat label={t("Session")} value={fmtDay(d.lo)} sub={t("{n} bars", { n: s.points })} />
       ) : (
-        <Stat label="Best / worst day"
+        <Stat label={t("Best / worst day")}
           value={<span><span className="pos">{pct(s.best_day?.change_pct, 2, true)}</span> / <span className="neg">{pct(s.worst_day?.change_pct, 2, true)}</span></span>}
           sub={`${s.best_day ? fmtDay(s.best_day.session) : "—"} / ${s.worst_day ? fmtDay(s.worst_day.session) : "—"}`} />
       )}
@@ -200,15 +205,16 @@ function Plot({ d, metric, hidden, height, loading }: { d: EquityData; metric: M
   const [wrapRef, width] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const { t, lang } = useI18n();
 
   const series: Series[] = useMemo(() => {
-    if (metric === "equity") return [{ key: "equity", label: "Account equity", color: "var(--c1)", values: d.equity, width: 2, area: true }];
-    const total: Series = { key: "total", label: "Total portfolio", color: "var(--ink)", values: d.equity.map((v) => (v - d.base) / d.base), width: 2.5 };
+    if (metric === "equity") return [{ key: "equity", label: t("Account equity"), color: "var(--c1)", values: d.equity, width: 2, area: true }];
+    const total: Series = { key: "total", label: t("Total portfolio"), color: "var(--ink)", values: d.equity.map((v) => (v - d.base) / d.base), width: 2.5 };
     const strat = d.strategies
       .map((s, i) => ({ key: s, label: s, color: color(i), values: d.strategy_pnl[s].map((v) => v / d.base), width: 2 }))
       .filter((s) => !hidden.has(s.key));
     return [...strat, total]; // total drawn last, on top
-  }, [d, metric, hidden]);
+  }, [d, metric, hidden, t]);
 
   const n = d.equity.length;
   const all = series.flatMap((s) => s.values);
@@ -287,12 +293,12 @@ function Plot({ d, metric, hidden, height, loading }: { d: EquityData; metric: M
   return (
     <div ref={wrapRef} className={cls("perf", loading && "loading")}>
       <svg ref={svgRef} width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" tabIndex={0}
-        aria-label={`${metric === "return" ? "Cumulative return" : "Account equity"} from ${d.lo} to ${d.hi}. Use arrow keys to inspect values.`}
+        aria-label={t("{what} from {lo} to {hi}. Use arrow keys to inspect values.", { what: t(metric === "return" ? "Cumulative return" : "Account equity"), lo: d.lo, hi: d.hi })}
         onPointerMove={(e) => pick(e.clientX)} onPointerLeave={() => setHover(null)} onKeyDown={onKey} onBlur={() => setHover(null)}>
         {bands.map((b, k) => (
           <g key={k}>
             <rect x={b.x0} y={mt} width={Math.max(2, b.x1 - b.x0)} height={height - mt - mb} fill="var(--band)" />
-            {b.x1 - b.x0 > 40 && <text x={b.x0 + 4} y={mt + 11} className="bandlabel">live sim</text>}
+            {b.x1 - b.x0 > 40 && <text x={b.x0 + 4} y={mt + 11} className="bandlabel">{t("live sim")}</text>}
           </g>
         ))}
         <g className="grid">
@@ -329,8 +335,8 @@ function Plot({ d, metric, hidden, height, loading }: { d: EquityData; metric: M
       {h != null && (
         <div className="tip" style={{ left: tipFlip ? x(h) - 200 : tipLeft, top: 8 }}>
           <div className="when">
-            {new Date(d.ts[h] * 1000).toLocaleString("en-US", { timeZone: ET, weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })} ET
-            {d.source[h] === "replay" ? " · replay" : " · live sim"}
+            {new Date(d.ts[h] * 1000).toLocaleString(lang === "zh" ? "zh-CN" : "en-US", { timeZone: ET, weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })} {t("ET")}
+            {" · "}{t(d.source[h] === "replay" ? "replay" : "live sim")}
           </div>
           {[...series].reverse().map((s) => (
             <div className="r" key={s.key}>
@@ -345,7 +351,7 @@ function Plot({ d, metric, hidden, height, loading }: { d: EquityData; metric: M
             </div>
           ))}
           {metric === "equity" && (
-            <div className="muted" style={{ marginTop: 2 }}>{pct(d.equity[h] / d.base - 1, 2, true)} vs range start</div>
+            <div className="muted" style={{ marginTop: 2 }}>{t("{pct} vs range start", { pct: pct(d.equity[h] / d.base - 1, 2, true) })}</div>
           )}
         </div>
       )}
@@ -356,11 +362,12 @@ function Plot({ d, metric, hidden, height, loading }: { d: EquityData; metric: M
 function StrategyTable({ d, hidden }: { d: EquityData; hidden: Set<string> }) {
   if (!d.by_strategy.length) return null;
   const total = d.stats.change;
+  const { t } = useI18n();
   return (
     <div className="table-wrap" style={{ marginTop: 12 }}>
       <table>
         <thead>
-          <tr><th>Strategy</th><th className="num">P&amp;L</th><th className="num">Return contribution</th><th className="num">Share of total</th><th style={{ width: "30%" }}>Contribution</th></tr>
+          <tr><th>{t("Strategy")}</th><th className="num">{t("P&L")}</th><th className="num">{t("Return contribution")}</th><th className="num">{t("Share of total")}</th><th style={{ width: "30%" }}>{t("Contribution")}</th></tr>
         </thead>
         <tbody>
           {d.by_strategy.map((b, i) => {
@@ -384,7 +391,7 @@ function StrategyTable({ d, hidden }: { d: EquityData; hidden: Set<string> }) {
             );
           })}
           <tr>
-            <td><span className="key" style={{ borderColor: "var(--ink)", borderTopWidth: 3, marginRight: 8 }} /><b>Total portfolio</b></td>
+            <td><span className="key" style={{ borderColor: "var(--ink)", borderTopWidth: 3, marginRight: 8 }} /><b>{t("Total portfolio")}</b></td>
             <td className={`num ${pnlClass(total)}`}><b>{money(total, true)}</b></td>
             <td className={`num ${pnlClass(total)}`}><b>{pct(d.stats.change_pct, 2, true)}</b></td>
             <td className="num">100%</td><td />
@@ -396,21 +403,22 @@ function StrategyTable({ d, hidden }: { d: EquityData; hidden: Set<string> }) {
 }
 
 function DailyTable({ d }: { d: EquityData }) {
+  const { t } = useI18n();
   return (
     <details open style={{ marginTop: 12 }}>
-      <summary>Per session ({d.daily.length})</summary>
+      <summary>{t("Per session")} ({d.daily.length})</summary>
       <div className="table-wrap" style={{ maxHeight: 420, overflowY: "auto" }}>
         <table>
           <thead>
             <tr>
-              <th>Session</th><th>Source</th><th className="num">Close</th><th className="num">Change</th><th className="num">%</th>
+              <th>{t("Session")}</th><th>{t("Source")}</th><th className="num">{t("Close")}</th><th className="num">{t("Change")}</th><th className="num">%</th>
               {d.strategies.map((s) => <th key={s} className="num">{s}</th>)}
             </tr>
           </thead>
           <tbody>
             {[...d.daily].reverse().map((r) => (
               <tr key={r.session}>
-                <td>{fmtDay(r.session, true)}</td><td className="muted">{r.source}</td>
+                <td>{fmtDay(r.session, true)}</td><td className="muted">{t(r.source)}</td>
                 <td className="num">{money(r.close)}</td>
                 <td className={`num ${pnlClass(r.change)}`}>{money(r.change, true)}</td>
                 <td className={`num ${pnlClass(r.change)}`}>{pct(r.change_pct, 2, true)}</td>

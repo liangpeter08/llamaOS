@@ -1,15 +1,15 @@
-# Production overrides — used on the Hong Kong ECS, never for local development.
+# Production overrides — used when the ECS runs prebuilt images from the registry
+# (GitHub Actions path). Do NOT use for local development or for the rsync "build on the
+# server" path (that path uses docker-compose.yml alone).
 #
+#   IMAGE_TAG=<12-char git sha> REGISTRY_NAMESPACE=<host/namespace> \
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 #
-# Purpose:
-#   1. Every Python service and the dashboard run prebuilt images that GitHub Actions
-#      builds on a cloud runner and pushes to the registry (the cheap ECS never builds
-#      torch). Image coordinates come from the host's .env and the IMAGE_TAG env var:
-#         REGISTRY_NAMESPACE=registry.cn-hongkong.aliyuncs.com/<your-namespace>
-#         IMAGE_TAG=<12-char git sha>   (exported by scripts/deploy/deploy.sh)
-#   2. Caddy also publishes port 80 so it can finish the Let's Encrypt HTTP-01 challenge
-#      and redirect http:// -> https://. Open 80 AND 443 in the Aliyun security group.
+# The cheap ECS only pulls these images; GitHub Actions builds them on a cloud runner so the
+# box never compiles torch. REGISTRY_NAMESPACE is read from /opt/llamaos/.env, and IMAGE_TAG
+# is exported by deploy/server-deploy.sh.
+#
+# Port 80 (ACME challenge + redirect) and caddy_config already live in docker-compose.yml.
 services:
   broker:
     image: ${REGISTRY_NAMESPACE}/llamaos-app:${IMAGE_TAG}
@@ -29,5 +29,3 @@ services:
   dashboard:
     image: ${REGISTRY_NAMESPACE}/llamaos-dashboard:${IMAGE_TAG}
     pull_policy: always
-  caddy:
-    ports: ["80:80", "443:443"]

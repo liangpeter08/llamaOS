@@ -8,6 +8,7 @@ import { Card, Empty, Loading, Notice, StatusPill } from "@/components/ui";
 import { isOwner, useSession } from "@/components/session";
 import { BulkBar, ViewSwitch, type View } from "@/components/Organize";
 import { DiscoverPanel } from "@/components/Discovery";
+import { useT } from "@/lib/i18n";
 
 const STATUSES = ["draft", "backtested", "paper", "live", "retired"];
 
@@ -15,6 +16,7 @@ export default function Strategies() {
   const { data, error, reload } = usePoll<any>("/api/strategies", 5000);
   const { me } = useSession();
   const owner = isOwner(me);
+  const t = useT();
   const [view, setView] = useState<View>("active");
   const [q, setQ] = useState("");
   const [category, setCategory] = useState("");
@@ -66,57 +68,56 @@ export default function Strategies() {
   return (
     <>
       <div className="row between">
-        <h1>Strategies</h1>
-        {owner && <Link className="btn primary" href="/strategies/new">+ New strategy</Link>}
+        <h1>{t("Strategies")}</h1>
+        {owner && <Link className="btn primary" href="/strategies/new">{t("+ New strategy")}</Link>}
       </div>
       <p className="muted">
-        Lifecycle: draft → backtested → paper → live (hash-approved). Status lives in the registry, keyed by each file's SHA-256, so any edit is a
-        new version that starts at draft. Archive old versions to hide them; archiving never changes the file or its status.
+        {t("Lifecycle: draft → backtested → paper → live (hash-approved). Status lives in the registry, keyed by each file's SHA-256, so any edit is a new version that starts at draft. Archive old versions to hide them; archiving never changes the file or its status.")}
       </p>
       {msg && <Notice kind={msg.kind}>{msg.text}</Notice>}
       <DiscoverPanel owner={owner} />
       <Card className="mt">
         <div className="filters">
           <ViewSwitch view={view} setView={(v) => { setView(v); setSelected(new Set()); }} archived={archivedCount} />
-          <input type="search" aria-label="Search strategies" placeholder="Search name, id, category or hash" value={q} onChange={(e) => setQ(e.target.value)} />
-          <select aria-label="Category" value={category} onChange={(e) => setCategory(e.target.value)}>
-            <option value="">All categories</option>
+          <input type="search" aria-label={t("Search strategies")} placeholder={t("Search name, id, category or hash")} value={q} onChange={(e) => setQ(e.target.value)} />
+          <select aria-label={t("Category")} value={category} onChange={(e) => setCategory(e.target.value)}>
+            <option value="">{t("All categories")}</option>
             {data.categories.map((c: string) => <option key={c}>{c}</option>)}
-            <option value="-">Uncategorized</option>
+            <option value="-">{t("Uncategorized")}</option>
           </select>
-          <select aria-label="Status" value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="">All statuses</option>{STATUSES.map((s) => <option key={s}>{s}</option>)}
+          <select aria-label={t("Status")} value={status} onChange={(e) => setStatus(e.target.value)}>
+            <option value="">{t("All statuses")}</option>{STATUSES.map((s) => <option key={s} value={s}>{t(s)}</option>)}
           </select>
-          <select aria-label="Kind" value={kind} onChange={(e) => setKind(e.target.value)}>
-            <option value="">All kinds</option><option>intraday</option><option>portfolio</option>
+          <select aria-label={t("Kind")} value={kind} onChange={(e) => setKind(e.target.value)}>
+            <option value="">{t("All kinds")}</option><option value="intraday">{t("intraday")}</option><option value="portfolio">{t("portfolio")}</option>
           </select>
-          <label className="row" style={{ gap: 4 }}><input type="checkbox" checked={latest} onChange={(e) => setLatest(e.target.checked)} /> Latest version only</label>
-          <span className="muted">{rows.length} of {data.rows.length}</span>
+          <label className="row" style={{ gap: 4 }}><input type="checkbox" checked={latest} onChange={(e) => setLatest(e.target.checked)} /> {t("Latest version only")}</label>
+          <span className="muted">{t("{n} of {total}", { n: rows.length, total: data.rows.length })}</span>
         </div>
         {owner && <BulkBar count={visible.length} categories={data.categories} busy={busy} onClear={() => setSelected(new Set())}
           onCategory={(c) => bulk({ category: c })} onArchive={(a) => bulk({ archived: a })} />}
         <div className="table-wrap"><table>
           <thead><tr>
-            {owner && <th><input type="checkbox" aria-label="Select all shown" checked={allOn} onChange={(e) => setSelected(e.target.checked ? new Set(rows.map((r) => r.hash)) : new Set())} /></th>}
-            <th>Strategy</th><th>Version</th><th>Status</th><th>Mode</th><th>Valid</th><th className="num">Backtest trades</th><th className="num">Win rate</th><th className="num">Backtest P&amp;L</th><th className="num">Sim trades</th><th className="num">Sim P&amp;L</th><th>Category</th><th>Hash</th>
+            {owner && <th><input type="checkbox" aria-label={t("Select all shown")} checked={allOn} onChange={(e) => setSelected(e.target.checked ? new Set(rows.map((r) => r.hash)) : new Set())} /></th>}
+            <th>{t("Strategy")}</th><th>{t("Version")}</th><th>{t("Status")}</th><th>{t("Mode")}</th><th>{t("Valid")}</th><th className="num">{t("Backtest trades")}</th><th className="num">{t("Win rate")}</th><th className="num">{t("Backtest P&L")}</th><th className="num">{t("Sim trades")}</th><th className="num">{t("Sim P&L")}</th><th>{t("Category")}</th><th>{t("Hash")}</th>
           </tr></thead>
           <tbody>
             {rows.map((r: any, i: number) => (
               <Fragment key={r.hash}>
                 {grouped && (i === 0 || rows[i - 1].category !== r.category) && (
-                  <tr className="group"><td colSpan={cols}>{r.category ?? "Uncategorized"}</td></tr>
+                  <tr className="group"><td colSpan={cols}>{r.category ?? t("Uncategorized")}</td></tr>
                 )}
                 <tr className={r.archived_at ? "archived" : ""}>
-                  {owner && <td><input type="checkbox" aria-label={`Select ${r.sid} v${r.version}`} checked={selected.has(r.hash)} onChange={(e) => toggle(r.hash, e.target.checked)} /></td>}
-                  <td><Link href={`/strategies/${r.hash}`}><b>{r.display_name || r.sid}</b></Link>{r.kind === "portfolio" && <span className="muted"> · portfolio</span>}{r.archived_at && <span className="tag">archived</span>}</td><td>v{r.version}</td>
-                  <td><StatusPill status={r.status} /></td><td>{r.mode?.replace("_", " · ")}</td>
+                  {owner && <td><input type="checkbox" aria-label={t("Select {sid} v{v}", { sid: r.sid, v: r.version })} checked={selected.has(r.hash)} onChange={(e) => toggle(r.hash, e.target.checked)} /></td>}
+                  <td><Link href={`/strategies/${r.hash}`}><b>{r.display_name || r.sid}</b></Link>{r.kind === "portfolio" && <span className="muted"> · {t("portfolio")}</span>}{r.archived_at && <span className="tag">{t("archived")}</span>}</td><td>v{r.version}</td>
+                  <td><StatusPill status={r.status} /></td><td>{r.mode?.split("_").map((m: string) => t(m)).join(" · ")}</td>
                   <td>{r.validation.ok ? <span className="pos">✓</span> : <span className="neg" title={(r.validation.errors || []).join("; ")}>✗ {(r.validation.errors || []).length}</span>}</td>
                   {r.bt ? (
                     <>
                       <td className="num">{r.bt.metrics.trades}</td><td className="num">{pct(r.bt.metrics.win_rate, 0)}</td>
                       <td className={`num ${pnlClass(r.bt.metrics.total_pnl)}`}>{money(r.bt.metrics.total_pnl, true)}</td>
                     </>
-                  ) : <td className="num muted" colSpan={3}>not run</td>}
+                  ) : <td className="num muted" colSpan={3}>{t("not run")}</td>}
                   <td className="num">{r.sim.n}</td><td className={`num ${pnlClass(r.sim.pnl)}`}>{money(r.sim.pnl, true)}</td>
                   <td>{r.category ? <span className="tag">{r.category}</span> : <span className="muted">—</span>}</td>
                   <td className="mono muted">{short(r.hash)}</td>
@@ -125,7 +126,7 @@ export default function Strategies() {
             ))}
           </tbody>
         </table></div>
-        {!rows.length && <Empty>{view === "archived" ? "No archived strategies." : "No strategies match these filters."}</Empty>}
+        {!rows.length && <Empty>{t(view === "archived" ? "No archived strategies." : "No strategies match these filters.")}</Empty>}
       </Card>
     </>
   );

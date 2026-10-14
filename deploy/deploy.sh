@@ -30,6 +30,9 @@ ssh "$HOST" "chmod 600 $DIR/secrets/*.env"
 ssh "$HOST" "set -e; cd $DIR
   mkdir -p data
   chown -R 10001:10001 strategies data      # containers run as UID 10001 and write here
-  docker compose up -d --build --remove-orphans
+  # Build one image at a time: building torch and Next.js in parallel exhausts a 4 GB host.
+  docker compose build broker            # the five Python services share llamaos-app:local
+  docker compose build dashboard
+  docker compose up -d --no-build --remove-orphans
   docker image prune -f >/dev/null
   docker compose ps"

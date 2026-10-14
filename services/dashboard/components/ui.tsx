@@ -1,6 +1,7 @@
 "use client";
 import type { ReactNode } from "react";
 import { cls } from "@/lib/format";
+import { useT } from "@/lib/i18n";
 import type { Check, Cond } from "@/lib/types";
 
 export function Card({ title, children, className, id }: { title?: ReactNode; children: ReactNode; className?: string; id?: string }) {
@@ -43,6 +44,7 @@ export function Meter({ frac, danger }: { frac: number; danger?: boolean }) {
 }
 
 export function Conditions({ items }: { items?: Cond[] }) {
+  const t = useT();
   if (!items?.length) return null;
   return (
     <div>
@@ -52,7 +54,7 @@ export function Conditions({ items }: { items?: Cond[] }) {
           <span>
             <code>{c.cond}</code>
             <br />
-            <span className="muted mono">{c.detail ?? String(c.value ?? "missing")}</span>
+            <span className="muted mono">{c.detail ?? String(c.value ?? t("missing"))}</span>
           </span>
         </div>
       ))}
@@ -81,7 +83,8 @@ export function StatusPill({ status }: { status: string }) {
   const good = ["filled", "submitted", "live", "accepted", "compiled", "t1", "active"];
   const bad = ["rejected", "auto_rejected", "rejected_guard", "void", "retired", "expired", "escalated", "unfilled", "paused", "paused_today", "halted", "stopped", "broker_rejected"];
   const accent = ["paper", "pending", "backtested"];
-  return <Pill kind={good.includes(status) ? "good" : bad.includes(status) ? "bad" : accent.includes(status) ? "accent" : ""}>{status}</Pill>;
+  const t = useT();
+  return <Pill kind={good.includes(status) ? "good" : bad.includes(status) ? "bad" : accent.includes(status) ? "accent" : ""}>{t(status)}</Pill>;
 }
 
 export function Empty({ children }: { children: ReactNode }) {
@@ -89,5 +92,6 @@ export function Empty({ children }: { children: ReactNode }) {
 }
 
 export function Loading({ error }: { error?: string | null }) {
-  return error ? <Notice kind="bad">{error}</Notice> : <p className="muted">Loading…</p>;
+  const t = useT();
+  return error ? <Notice kind="bad">{error}</Notice> : <p className="muted">{t("Loading…")}</p>;
 }

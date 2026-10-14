@@ -26,7 +26,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from backtest import engine as bt
 from common import audit, db, registry, sleeves, monitoring, broker_accounts as BA
-from common import funds, market_inputs, news_claude, risk_settings as RS
+from common import funds, manual, market_inputs, news_claude, risk_settings as RS
 from common.config import risk_defaults
 from core import funds as F
 from common.config import RiskConfig, load_risk, load_yaml, mode, risk_path
@@ -92,9 +92,9 @@ def models_api(path: str, payload: dict, timeout: float = 300) -> dict:
     return result
 
 
-def command(kind: str, payload: dict, actor: str):
-    conn().execute("INSERT INTO commands(ts, kind, payload, issued_by) VALUES (?,?,?,?)",
-                   (time.time(), kind, json.dumps(payload), actor))
+def command(kind: str, payload: dict, actor: str) -> int:
+    return conn().insert("INSERT INTO commands(ts, kind, payload, issued_by) VALUES (?,?,?,?)",
+                         (time.time(), kind, json.dumps(payload), actor))
 
 
 def risk_dict(r: RiskConfig) -> dict:
@@ -434,6 +434,123 @@ def portfolio(u: dict = Depends(user)):
             "orders": db.rows(c, "SELECT * FROM orders ORDER BY id DESC LIMIT 50"),
             "fills": db.rows(c, "SELECT * FROM fills ORDER BY id DESC LIMIT 50"),
             "trades": trades, "by": by, "acct": db.kv_get(c, "account") or {}, "risk": risk_dict(load_risk())}
+
+
+# ---------------------------------------------------------------- manual positions & reconciliation
+SYMBOL = r"^[A-Za-z][A-Za-z0-9.]{0,9}$"
+
+
+@app.get("/api/positions/manage")
+def positions_manage(u: dict = Depends(user)):
+    """Live positions with their owner, working orders, reconciliation state and recent owner actions."""
+    c = conn()
+    holds = manual.holds(c)
+    rows = db.rows(c, "SELECT * FROM positions ORDER BY symbol")
+    owned = sleeves.owned_symbols(c)
+    for r in rows:
+        r["owner"] = "sleeve" if r["symbol"] in owned else "manual" if r["sid"] == manual.MANUAL else "strategy" if r["sid"] else "unmanaged"
+        r["hold"] = r["symbol"] in holds
+        r["upnl"] = ((r["last_price"] or 0) - (r["avg_price"] or 0)) * (r["qty"] or 0) * (-1 if r["side"] == "short" else 1)
+    cmds = db.rows(c, f"SELECT id, ts, kind, payload, issued_by, status, processed_at, result FROM commands"
+                      f" WHERE kind IN {manual.COMMANDS} ORDER BY id DESC LIMIT 25")
+    for x in cmds:
+        x["payload"] = {k: v for k, v in (j(x["payload"]) or {}).items() if not k.startswith("_")}
+    risk = load_risk()
+    return {"positions": rows, "orders": db.kv_get(c, "paper.open_orders") or [], "reconcile": db.kv_get(c, "reconcile") or {},
+            "auto": manual.auto(c), "commands": cmds, "acct": db.kv_get(c, "account") or {},
+            "allow_short": risk.allow_short, "kill": (db.kv_get(c, "kill_switch") or {}).get("active", False),
+            "market_open": (db.kv_get(c, "sim.state") or {}).get("phase") == "open"}
+
+
+class ManualOrderIn(BaseModel):
+    symbol: str = Field(pattern=SYMBOL)
+    side: Literal["long", "short"] = "long"
+    qty: int = Field(gt=0, le=1_000_000)
+    type: Literal["market", "limit"] = "market"
+    tif: Literal["day", "gtc"] = "day"
+    limit_price: float | None = Field(default=None, gt=0)
+    stop: float | None = Field(default=None, gt=0)
+    target: float | None = Field(default=None, gt=0)
+
+
+@app.post("/api/positions/order")
+def manual_order(body: ManualOrderIn, u: dict = Depends(owner)):
+    if body.type == "limit" and not body.limit_price:
+        fail("a limit order needs a limit price")
+    cid = command("manual_open", {**body.model_dump(), "symbol": body.symbol.upper()}, u["username"])
+    return ok("Order sent to the broker.", command=cid)
+
+
+class ManualCloseIn(BaseModel):
+    qty: float | None = Field(default=None, gt=0)
+
+
+@app.post("/api/positions/{symbol}/close")
+def manual_close(symbol: str, body: ManualCloseIn, u: dict = Depends(owner)):
+    cid = command("manual_close", {"symbol": symbol.upper(), "qty": body.qty}, u["username"])
+    return ok("Close sent to the broker.", command=cid)
+
+
+class ProtectIn(BaseModel):
+    stop: float | None = Field(default=None, gt=0)
+    target: float | None = Field(default=None, gt=0)
+
+
+@app.post("/api/positions/{symbol}/protect")
+def manual_protect(symbol: str, body: ProtectIn, u: dict = Depends(owner)):
+    cid = command("manual_protect", {"symbol": symbol.upper(), "stop": body.stop, "target": body.target}, u["username"])
+    return ok("Stop/target update sent to the broker.", command=cid)
+
+
+@app.post("/api/positions/{symbol}/adopt")
+def manual_adopt(symbol: str, u: dict = Depends(owner)):
+    return ok("Adopting the position.", command=command("manual_adopt", {"symbol": symbol.upper()}, u["username"]))
+
+
+class HoldIn(BaseModel):
+    on: bool
+
+
+@app.post("/api/positions/{symbol}/hold")
+def manual_hold(symbol: str, body: HoldIn, u: dict = Depends(owner)):
+    return ok("Saved.", command=command("manual_hold", {"symbol": symbol.upper(), "on": body.on}, u["username"]))
+
+
+@app.post("/api/orders/{oid}/cancel")
+def manual_cancel(oid: str, u: dict = Depends(owner)):
+    if not re.fullmatch(r"[0-9a-fA-F-]{8,64}", oid):
+        fail("bad order id")
+    return ok("Cancel sent to the broker.", command=command("manual_cancel", {"order_id": oid}, u["username"]))
+
+
+class ReconcileIn(BaseModel):
+    symbol: str | None = Field(default=None, pattern=SYMBOL)
+
+
+@app.post("/api/reconcile/accept")
+def reconcile_accept(body: ReconcileIn, u: dict = Depends(owner)):
+    return ok("Reconciling.", command=command("reconcile_accept", {"symbol": body.symbol}, u["username"]))
+
+
+class OnIn(BaseModel):
+    on: bool
+
+
+@app.post("/api/settings/auto-reconcile")
+def set_auto_reconcile(body: OnIn, u: dict = Depends(owner)):
+    c = conn()
+    db.kv_set(c, manual.AUTO_KEY, body.on)
+    audit.log(c, "settings.auto_reconcile", u["username"], {"on": body.on})
+    return ok("Trades made in Alpaca are now booked automatically." if body.on
+              else "Auto-reconcile is off: differences wait for you on the Positions page.")
+
+
+@app.get("/api/commands/{cid}")
+def command_status(cid: int, u: dict = Depends(user)):
+    r = db.row(conn(), "SELECT id, kind, status, result, processed_at FROM commands WHERE id=?", (cid,))
+    if not r:
+        fail("no such command", 404)
+    return r
 
 
 @app.get("/api/trades/{tid}")

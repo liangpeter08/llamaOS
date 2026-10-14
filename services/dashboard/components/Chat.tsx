@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { get, post } from "@/lib/api";
 import { Notice } from "./ui";
 import { isOwner, useSession } from "./session";
+import { useT } from "@/lib/i18n";
 
 interface Msg {
   id: number;
@@ -24,6 +25,7 @@ export function Chat({ prefix, intro }: { prefix: string; intro: string }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const t = useT();
 
   useEffect(() => {
     get<{ messages: Msg[] }>(`/api/chats/${thread}`).then((r) => setMsgs(r.messages)).catch(() => {});
@@ -51,7 +53,7 @@ export function Chat({ prefix, intro }: { prefix: string; intro: string }) {
         {msgs.length === 0 && <p className="muted">{intro}</p>}
         {msgs.map((m) => (
           <div key={m.id} className={`msg ${m.role}`}>
-            <div className="who">{m.role === "user" ? "you" : m.model}</div>
+            <div className="who">{m.role === "user" ? t("you") : m.model}</div>
             {m.content}
           </div>
         ))}
@@ -59,13 +61,13 @@ export function Chat({ prefix, intro }: { prefix: string; intro: string }) {
       {error && <Notice kind="bad">{error}</Notice>}
       {isOwner(me) && (
         <form onSubmit={ask}>
-          <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="Does this make sense? What breaks it?" />
+          <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder={t("Does this make sense? What breaks it?")} />
           <div className="row" style={{ marginTop: 6 }}>
             <button className="primary" disabled={busy}>
-              {busy ? "Thinking…" : "Ask"}
+              {t(busy ? "Thinking…" : "Ask")}
             </button>
             <button type="button" onClick={() => { setThread(newThread(prefix)); setMsgs([]); }}>
-              New conversation
+              {t("New conversation")}
             </button>
           </div>
         </form>

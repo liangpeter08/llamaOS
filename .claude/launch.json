@@ -1,13 +1,62 @@
 {
   "version": "0.0.1",
   "configurations": [
-    {"name": "discovery-demo-models", "runtimeExecutable": "/usr/bin/env",
-     "runtimeArgs": ["DATABASE_URL=postgresql://llamaos:llamaos@127.0.0.1:5432/llamaos_discovery_demo", "RISK_FILE=/Users/pl/llamaOS/config/risk.example.yaml", "STRATEGIES_DIR=/private/tmp/claude-501/-Users-pl-llamaOS/dd6e0a27-60ea-4552-a702-0be12b88d6dd/scratchpad/demo_strategies", "MODELS_PORT=8091",
-                     "ANTHROPIC_API_KEY=", "/Users/pl/llamaOS/.venv/bin/python", "-m", "services.models"], "port": 8091},
-    {"name": "discovery-demo-api", "runtimeExecutable": "/usr/bin/env",
-     "runtimeArgs": ["DATABASE_URL=postgresql://llamaos:llamaos@127.0.0.1:5432/llamaos_discovery_demo", "RISK_FILE=/Users/pl/llamaOS/config/risk.example.yaml", "STRATEGIES_DIR=/private/tmp/claude-501/-Users-pl-llamaOS/dd6e0a27-60ea-4552-a702-0be12b88d6dd/scratchpad/demo_strategies", "API_PORT=8090",
-                     "MODELS_URL=http://127.0.0.1:8091", "/Users/pl/llamaOS/.venv/bin/python", "-m", "services.api"], "port": 8090},
-    {"name": "discovery-demo-dashboard", "runtimeExecutable": "/usr/bin/env",
-     "runtimeArgs": ["API_URL=http://127.0.0.1:8090", "npx", "--prefix", "/private/tmp/claude-501/-Users-pl-llamaOS/dd6e0a27-60ea-4552-a702-0be12b88d6dd/scratchpad/dash", "next", "dev", "/private/tmp/claude-501/-Users-pl-llamaOS/dd6e0a27-60ea-4552-a702-0be12b88d6dd/scratchpad/dash", "-p", "3010"], "port": 3010}
+    {
+      "name": "discovery-demo-models",
+      "runtimeExecutable": "/usr/bin/env",
+      "runtimeArgs": [
+        "DATABASE_URL=postgresql://llamaos:llamaos@127.0.0.1:5432/llamaos_discovery_demo",
+        "RISK_FILE=/Users/pl/llamaOS/config/risk.example.yaml",
+        "STRATEGIES_DIR=/private/tmp/claude-501/-Users-pl-llamaOS/dd6e0a27-60ea-4552-a702-0be12b88d6dd/scratchpad/demo_strategies",
+        "MODELS_PORT=8091",
+        "ANTHROPIC_API_KEY=",
+        "/Users/pl/llamaOS/.venv/bin/python",
+        "-m",
+        "services.models"
+      ],
+      "port": 8091
+    },
+    {
+      "name": "discovery-demo-api",
+      "runtimeExecutable": "/usr/bin/env",
+      "runtimeArgs": [
+        "DATABASE_URL=postgresql://llamaos:llamaos@127.0.0.1:5432/llamaos_discovery_demo",
+        "RISK_FILE=/Users/pl/llamaOS/config/risk.example.yaml",
+        "STRATEGIES_DIR=/private/tmp/claude-501/-Users-pl-llamaOS/dd6e0a27-60ea-4552-a702-0be12b88d6dd/scratchpad/demo_strategies",
+        "API_PORT=8090",
+        "MODELS_URL=http://127.0.0.1:8091",
+        "/Users/pl/llamaOS/.venv/bin/python",
+        "-m",
+        "services.api"
+      ],
+      "port": 8090
+    },
+    {
+      "name": "discovery-demo-dashboard",
+      "runtimeExecutable": "/usr/bin/env",
+      "runtimeArgs": [
+        "API_URL=http://127.0.0.1:8090",
+        "npx",
+        "--prefix",
+        "/private/tmp/claude-501/-Users-pl-llamaOS/dd6e0a27-60ea-4552-a702-0be12b88d6dd/scratchpad/dash",
+        "next",
+        "dev",
+        "/private/tmp/claude-501/-Users-pl-llamaOS/dd6e0a27-60ea-4552-a702-0be12b88d6dd/scratchpad/dash",
+        "-p",
+        "3010"
+      ],
+      "port": 3010
+    },
+    {
+      "name": "dashboard",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "/Users/pl/llamaOS/services/dashboard",
+        "run",
+        "dev"
+      ],
+      "port": 3000
+    }
   ]
 }

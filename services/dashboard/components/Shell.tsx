@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { post } from "@/lib/api";
 import { cls, et } from "@/lib/format";
+import { LangToggle, useT } from "@/lib/i18n";
 import { Logo } from "./Logo";
 import { Pill } from "./ui";
 import { useSession } from "./session";
@@ -12,6 +13,7 @@ const NAV: [string, string][] = [
   ["/", "Overview"],
   ["/approvals", "Trade approvals"],
   ["/portfolio", "Portfolio"],
+  ["/positions", "Positions"],
   ["/funds", "Funds"],
   ["/strategies", "Strategies"],
   ["/backtests", "Backtesting"],
@@ -29,6 +31,7 @@ const NAV2: [string, string][] = [
 export function Shell({ children }: { children: ReactNode }) {
   const path = usePathname();
   const { me, status } = useSession();
+  const t = useT();
   const on = (href: string) => (href === "/" ? path === "/" : path.startsWith(href));
   const sim = status?.sim || {};
 
@@ -39,7 +42,7 @@ export function Shell({ children }: { children: ReactNode }) {
 
   const link = ([href, label]: [string, string]) => (
     <Link key={href} href={href} className={cls(on(href) && "on")}>
-      {label}
+      {t(label)}
       {href === "/approvals" && !!status?.pending_count && <Pill kind="bad">{status.pending_count}</Pill>}
     </Link>
   );
@@ -50,7 +53,7 @@ export function Shell({ children }: { children: ReactNode }) {
         <Link href="/" className="brand" aria-label="llamaOS home">
           <Logo size={34} />
           <span>
-            llamaOS<small>{status?.sim.source === "alpaca_paper" ? "Alpaca paper" : "simulator"} · {status?.mode ?? "…"}</small>
+            llamaOS<small>{t(status?.sim.source === "alpaca_paper" ? "Alpaca paper" : "simulator")} · {status?.mode ? t(status.mode) : "…"}</small>
           </span>
         </Link>
         {NAV.map(link)}
@@ -58,27 +61,28 @@ export function Shell({ children }: { children: ReactNode }) {
         {NAV2.map(link)}
         <div className="sep" />
         <div className="who">
-          {me.username} · {me.role}
+          {me.username} · {t(me.role)}
         </div>
         <div style={{ padding: "0 8px" }}>
-          <button onClick={logout}>Log out</button>
+          <button onClick={logout}>{t("Log out")}</button>
         </div>
       </nav>
       <main>
         <div className="topbar">
-          <Pill kind="accent">SIMULATOR · {sim.session ?? "—"}</Pill>
+          <Pill kind="accent">{t("SIMULATOR")} · {sim.session ?? "—"}</Pill>
           <Pill>
-            {sim.phase ?? "not started"} · {status?.sim_now ? et(status.sim_now) : "—"} ET
+            {t(sim.phase ?? "not started")} · {status?.sim_now ? et(status.sim_now) : "—"} {t("ET")}
           </Pill>
-          {sim.paused && <Pill kind="warn">paused</Pill>}
-          {sim.waiting_for_approval && <Pill kind="warn">clock held for approval</Pill>}
+          {sim.paused && <Pill kind="warn">{t("paused")}</Pill>}
+          {sim.waiting_for_approval && <Pill kind="warn">{t("clock held for approval")}</Pill>}
           {status?.kill?.active && (
             <Pill kind="bad">
-              <span className="dot" /> KILL SWITCH ACTIVE
+              <span className="dot" /> {t("KILL SWITCH ACTIVE")}
             </Pill>
           )}
           <span className="grow" />
-          {me.role === "viewer" && <Pill>read-only</Pill>}
+          {me.role === "viewer" && <Pill>{t("read-only")}</Pill>}
+          <LangToggle />
         </div>
         {children}
       </main>

@@ -6,6 +6,7 @@ import { get, post } from "@/lib/api";
 import { pct, money, num, wall } from "@/lib/format";
 import { Card, Empty, Notice, Pill } from "@/components/ui";
 import { isOwner, useSession } from "@/components/session";
+import { useT } from "@/lib/i18n";
 
 interface Msg { id: number; ts: number; role: "user" | "assistant"; content: string; model: string; has_context?: boolean }
 interface Draft { yaml: string; ok: boolean; errors: string[]; warnings: string[]; id: string | null; kind: string | null; back_translation: string | null; hash: string }
@@ -44,7 +45,8 @@ function newThread() {
 }
 
 export default function NewStrategyPage() {
-  return <Suspense fallback={<p className="muted">Loading…</p>}><Designer /></Suspense>;
+  const t = useT();
+  return <Suspense fallback={<p className="muted">{t("Loading…")}</p>}><Designer /></Suspense>;
 }
 
 function Designer() {
@@ -52,6 +54,7 @@ function Designer() {
   const router = useRouter();
   const { me } = useSession();
   const owner = isOwner(me);
+  const t = useT();
   const [thread, setThread] = useState<string>(() => params.get("thread") || newThread());
   const improve = /^[0-9a-f]{64}$/.test(params.get("improve") ?? "") ? params.get("improve") : null;
   const [original, setOriginal] = useState<any>(null);
@@ -144,45 +147,42 @@ function Designer() {
     <>
       <div className="row between">
         <div>
-          <h1 style={{ marginBottom: 4 }}>{improving ? "Improve a strategy" : "New strategy"}</h1>
+          <h1 style={{ marginBottom: 4 }}>{t(improving ? "Improve a strategy" : "New strategy")}</h1>
           {improving ? (
             <p className="muted" style={{ marginTop: 0 }}>
-              Duplicating <Link href={`/strategies/${improving.hash}`}>{improving.sid} v{improving.version}</Link> with Kimi K3. Kimi sees its file,
-              backtest, decision records and trades, diagnoses what you describe and drafts an improved copy under a new id. Every draft is checked by the
-              validator; backtest and review it here, then save it as a new draft strategy. The original is not changed.
+              {t("Duplicating {link} with Kimi K3. Kimi sees its file, backtest, decision records and trades, diagnoses what you describe and drafts an improved copy under a new id. Every draft is checked by the validator; backtest and review it here, then save it as a new draft strategy. The original is not changed.",
+                { link: <Link href={`/strategies/${improving.hash}`}>{improving.sid} v{improving.version}</Link> })}
             </p>
           ) : (
             <p className="muted" style={{ marginTop: 0 }}>
-              Design it with Kimi K3: describe the idea, however rough. Kimi works through what&apos;s ambiguous or unsupported, points to similar
-              strategies you&apos;ve already backtested, suggests improvements and drafts the file. Every draft is checked by the validator; you can
-              backtest it here and save it as a new draft strategy.
+              {t("Design it with Kimi K3: describe the idea, however rough. Kimi works through what's ambiguous or unsupported, points to similar strategies you've already backtested, suggests improvements and drafts the file. Every draft is checked by the validator; you can backtest it here and save it as a new draft strategy.")}
             </p>
           )}
         </div>
         <div className="row">
-          <Link className="btn" href="/strategies">Back to strategies</Link>
-          <button onClick={() => { setThread(newThread()); router.replace("/strategies/new"); }}>New conversation</button>
+          <Link className="btn" href="/strategies">{t("Back to strategies")}</Link>
+          <button onClick={() => { setThread(newThread()); router.replace("/strategies/new"); }}>{t("New conversation")}</button>
         </div>
       </div>
 
       <div className="grid g21 mt">
-        <Card title="Design conversation">
+        <Card title={t("Design conversation")}>
           <div className="chat" style={{ maxHeight: "62vh", minHeight: 260 }}>
-            {!view && <p className="muted">Loading…</p>}
+            {!view && <p className="muted">{t("Loading…")}</p>}
             {view && starting && !busy && (
               <div>
                 {original && <OriginalSummary o={original} />}
-                <p className="muted">What&apos;s wrong with it, or what should the copy do better? For example:</p>
+                <p className="muted">{t("What's wrong with it, or what should the copy do better? For example:")}</p>
                 <div className="row">
-                  {IMPROVE_STARTERS.map((s) => <button key={s} onClick={() => setText(s)} style={{ fontSize: 12.5 }}>{s}</button>)}
+                  {IMPROVE_STARTERS.map((s) => <button key={s} onClick={() => setText(t(s))} style={{ fontSize: 12.5 }}>{t(s)}</button>)}
                 </div>
               </div>
             )}
             {view && msgs.length === 0 && !starting && !busy && (
               <div>
-                <p className="muted">Start with the idea in your own words. Some examples:</p>
+                <p className="muted">{t("Start with the idea in your own words. Some examples:")}</p>
                 <div className="row">
-                  {STARTERS.map((s) => <button key={s} onClick={() => setText(s)} style={{ fontSize: 12.5 }}>{s}</button>)}
+                  {STARTERS.map((s) => <button key={s} onClick={() => setText(t(s))} style={{ fontSize: 12.5 }}>{t(s)}</button>)}
                 </div>
               </div>
             )}
@@ -190,7 +190,7 @@ function Designer() {
             {busy === "chat" && (
               <div className="msg assistant muted">
                 <div className="who">kimi-k3</div>
-                Thinking… {elapsed}s {elapsed > 20 && "· drafting and validating can take a minute or two"}
+                {t("Thinking…")} {elapsed}s {elapsed > 20 && `· ${t("drafting and validating can take a minute or two")}`}
               </div>
             )}
             <div ref={end} />
@@ -200,62 +200,62 @@ function Designer() {
             <form onSubmit={(e) => { e.preventDefault(); send(text); }}>
               <textarea value={text} onChange={(e) => setText(e.target.value)} disabled={!!busy}
                 onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(text); } }}
-                placeholder={msgs.length ? "Answer, push back, or ask for a draft… (⌘/Ctrl+Enter to send)"
-                  : starting ? "Describe the problem with this strategy… (⌘/Ctrl+Enter to send)" : "Describe your strategy idea… (⌘/Ctrl+Enter to send)"} />
+                placeholder={t(msgs.length ? "Answer, push back, or ask for a draft… (⌘/Ctrl+Enter to send)"
+                  : starting ? "Describe the problem with this strategy… (⌘/Ctrl+Enter to send)" : "Describe your strategy idea… (⌘/Ctrl+Enter to send)")} />
               <div className="row" style={{ marginTop: 6 }}>
-                <button className="primary" disabled={!!busy || !text.trim()}>{busy === "chat" ? "Thinking…" : "Send"}</button>
-                {msgs.length > 0 && !d && <button type="button" disabled={!!busy} onClick={() => send("Draft the complete strategy file now with sensible defaults for anything still open, and list them as assumptions.")}>Ask for a draft</button>}
-                {d && <button type="button" disabled={!!busy} onClick={() => send("Review the current draft critically: what would you change to make it more robust, and why?")}>Critique the draft</button>}
+                <button className="primary" disabled={!!busy || !text.trim()}>{t(busy === "chat" ? "Thinking…" : "Send")}</button>
+                {msgs.length > 0 && !d && <button type="button" disabled={!!busy} onClick={() => send("Draft the complete strategy file now with sensible defaults for anything still open, and list them as assumptions.")}>{t("Ask for a draft")}</button>}
+                {d && <button type="button" disabled={!!busy} onClick={() => send("Review the current draft critically: what would you change to make it more robust, and why?")}>{t("Critique the draft")}</button>}
               </div>
             </form>
-          ) : <p className="muted">Viewers can read design conversations; only the owner can design strategies.</p>}
+          ) : <p className="muted">{t("Viewers can read design conversations; only the owner can design strategies.")}</p>}
         </Card>
 
         <div className="grid" style={{ alignContent: "start" }}>
-          <Card title="Current draft">
-            {!d ? <Empty>No draft yet. Kimi drafts the file once the important choices are settled, or when you ask.</Empty> : (
+          <Card title={t("Current draft")}>
+            {!d ? <Empty>{t("No draft yet. Kimi drafts the file once the important choices are settled, or when you ask.")}</Empty> : (
               <>
                 <div className="row">
-                  {d.ok ? <Pill kind="good">valid</Pill> : <Pill kind="bad">{d.errors.length} validator error{d.errors.length > 1 ? "s" : ""}</Pill>}
+                  {d.ok ? <Pill kind="good">{t("valid")}</Pill> : <Pill kind="bad">{t(d.errors.length > 1 ? "{n} validator errors" : "{n} validator error", { n: d.errors.length })}</Pill>}
                   {d.id && <Pill>{d.id}</Pill>}
-                  {d.kind && <Pill kind={d.kind === "portfolio" ? "accent" : ""}>{d.kind}</Pill>}
+                  {d.kind && <Pill kind={d.kind === "portfolio" ? "accent" : ""}>{t(d.kind)}</Pill>}
                   <Pill><span className="mono">{d.hash.slice(0, 10)}</span></Pill>
                 </div>
                 {!d.ok && <Notice kind="bad"><ul>{d.errors.map((e) => <li key={e}>{e}</li>)}</ul></Notice>}
                 {d.warnings.length > 0 && <Notice kind="warn">{d.warnings.map((w) => <div key={w}>{w}</div>)}</Notice>}
                 {d.back_translation && (
                   <>
-                    <h3>What the rules say</h3>
+                    <h3>{t("What the rules say")}</h3>
                     <pre style={{ maxHeight: 260 }}>{d.back_translation}</pre>
                   </>
                 )}
-                <details style={{ marginTop: 8 }}><summary>Strategy file</summary><pre style={{ maxHeight: 360 }}>{d.yaml}</pre></details>
+                <details style={{ marginTop: 8 }}><summary>{t("Strategy file")}</summary><pre style={{ maxHeight: 360 }}>{d.yaml}</pre></details>
                 {owner && (
                   <>
                     <div className="row" style={{ marginTop: 10 }}>
-                      <button disabled={!d.ok || !!busy} onClick={backtest}>{busy === "backtest" ? "Backtesting…" : "Backtest draft"}</button>
-                      <button disabled={!d.ok || !!busy} onClick={panel}>{busy === "panel" ? `Panel reviewing… ${elapsed}s` : "Run review panel"}</button>
+                      <button disabled={!d.ok || !!busy} onClick={backtest}>{t(busy === "backtest" ? "Backtesting…" : "Backtest draft")}</button>
+                      <button disabled={!d.ok || !!busy} onClick={panel}>{busy === "panel" ? `${t("Panel reviewing…")} ${elapsed}s` : t("Run review panel")}</button>
                     </div>
-                    <p className="muted" style={{ fontSize: 12, margin: "4px 0 0" }}>The panel is four Kimi K3 agents (Analyst, Researcher, Trader, Risk Team) reviewing this exact draft in parallel{bt ? ", with its backtest" : "; backtest first so they can use the results"}.</p>
+                    <p className="muted" style={{ fontSize: 12, margin: "4px 0 0" }}>{t(bt ? "The panel is four Kimi K3 agents (Analyst, Researcher, Trader, Risk Team) reviewing this exact draft in parallel, with its backtest." : "The panel is four Kimi K3 agents (Analyst, Researcher, Trader, Risk Team) reviewing this exact draft in parallel; backtest first so they can use the results.")}</p>
                     {bt && <BacktestSummary bt={bt} />}
-                    <h3>Save</h3>
+                    <h3>{t("Save")}</h3>
                     <div className="row">
-                      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name (optional)" maxLength={80} style={{ flex: 1, minWidth: 140 }} />
-                      <button className="primary" disabled={!d.ok || !!busy} onClick={save}>{busy === "save" ? "Saving…" : "Save as draft strategy"}</button>
+                      <input value={name} onChange={(e) => setName(e.target.value)} placeholder={t("Name (optional)")} maxLength={80} style={{ flex: 1, minWidth: 140 }} />
+                      <button className="primary" disabled={!d.ok || !!busy} onClick={save}>{t(busy === "save" ? "Saving…" : "Save as draft strategy")}</button>
                     </div>
-                    <p className="muted" style={{ fontSize: 12 }}>Saving creates a new draft version; backtest, promote and fund it from its page. The conversation can go on toward a better version.</p>
+                    <p className="muted" style={{ fontSize: 12 }}>{t("Saving creates a new draft version; backtest, promote and fund it from its page. The conversation can go on toward a better version.")}</p>
                   </>
                 )}
               </>
             )}
           </Card>
-          <Card title="Recent design sessions">
-            {!sessions.length ? <Empty>None yet.</Empty> : (
+          <Card title={t("Recent design sessions")}>
+            {!sessions.length ? <Empty>{t("None yet.")}</Empty> : (
               <table><tbody>
                 {sessions.map((s) => (
                   <tr key={s.thread}>
                     <td><a href={`/strategies/new?thread=${s.thread}`} onClick={(e) => { e.preventDefault(); setThread(s.thread); router.replace(`/strategies/new?thread=${s.thread}`); }}>
-                      {(() => { const t = (s.title || "(untitled)").length > 70 ? `${s.title.slice(0, 70)}…` : s.title || "(untitled)"; return s.thread === thread ? <b>{t}</b> : t; })()}</a></td>
+                      {(() => { const title = (s.title || "").length > 70 ? `${s.title.slice(0, 70)}…` : s.title || t("(untitled)"); return s.thread === thread ? <b>{title}</b> : title; })()}</a></td>
                     <td className="muted" style={{ whiteSpace: "nowrap", fontSize: 12 }}>{wall(s.updated)}</td>
                   </tr>
                 ))}
@@ -265,14 +265,14 @@ function Designer() {
         </div>
       </div>
       {d && view?.reviews && Object.keys(view.reviews).length > 0 && (
-        <Card title="Review panel" className="mt">
+        <Card title={t("Review panel")} className="mt">
           <div className="row" style={{ marginBottom: 8 }}>
-            {ROLES.map(([k, name]) => view.reviews![k] && <Verdict key={k} name={name} r={view.reviews![k]} />)}
+            {ROLES.map(([k, name]) => view.reviews![k] && <Verdict key={k} name={t(name)} r={view.reviews![k]} />)}
             {owner && <button className="primary" disabled={!!busy} style={{ marginLeft: "auto" }}
               onClick={() => send("Apply the review panel's suggestions you agree with and give me a revised complete file. Say which points you rejected and why.")}>
-              Ask Kimi to apply the panel&apos;s suggestions</button>}
+              {t("Ask Kimi to apply the panel's suggestions")}</button>}
           </div>
-          <div className="grid g2">{ROLES.map(([k, name, focus]) => view.reviews![k] && <RoleCard key={k} name={name} focus={focus} r={view.reviews![k]} />)}</div>
+          <div className="grid g2">{ROLES.map(([k, name, focus]) => view.reviews![k] && <RoleCard key={k} name={t(name)} focus={t(focus)} r={view.reviews![k]} />)}</div>
         </Card>
       )}
     </>
@@ -284,14 +284,16 @@ const VERDICT: Record<string, ["good" | "warn" | "bad", string]> = {
 };
 
 function Verdict({ name, r }: { name: string; r: Review }) {
+  const t = useT();
   const who = name ? `${name}: ` : "";
-  if (!r.ok) return <Pill kind="bad">{who}failed</Pill>;
+  if (!r.ok) return <Pill kind="bad">{who}{t("failed")}</Pill>;
   const [kind, label] = VERDICT[r.verdict ?? ""] ?? ["", r.verdict ?? ""];
-  return <Pill kind={kind}>{who}{label} · {r.score}/10</Pill>;
+  return <Pill kind={kind}>{who}{t(label)} · {r.score}/10</Pill>;
 }
 
 function RoleCard({ name, focus, r }: { name: string; focus: string; r: Review }) {
   const sev = { high: "bad", medium: "warn", low: "" } as const;
+  const t = useT();
   return (
     <div className="card">
       <div className="row between">
@@ -301,17 +303,17 @@ function RoleCard({ name, focus, r }: { name: string; focus: string; r: Review }
       {!r.ok ? <Notice kind="bad">{r.error}</Notice> : (
         <>
           <p style={{ marginTop: 8 }}>{r.summary}</p>
-          {!!r.key_points?.length && (<><h3>Key points</h3><ul>{r.key_points.map((x, i) => <li key={i}>{x}</li>)}</ul></>)}
-          {!!r.positives?.length && (<><h3>Positives</h3><ul>{r.positives.map((x, i) => <li key={i} className="pos">{x}</li>)}</ul></>)}
+          {!!r.key_points?.length && (<><h3>{t("Key points")}</h3><ul>{r.key_points.map((x, i) => <li key={i}>{x}</li>)}</ul></>)}
+          {!!r.positives?.length && (<><h3>{t("Positives")}</h3><ul>{r.positives.map((x, i) => <li key={i} className="pos">{x}</li>)}</ul></>)}
           {!!r.concerns?.length && (
             <>
-              <h3>Concerns</h3>
-              <ul>{r.concerns.map((c, i) => <li key={i}><Pill kind={sev[c.severity]}>{c.severity}</Pill> {c.text}</li>)}</ul>
+              <h3>{t("Concerns")}</h3>
+              <ul>{r.concerns.map((c, i) => <li key={i}><Pill kind={sev[c.severity]}>{t(c.severity)}</Pill> {c.text}</li>)}</ul>
             </>
           )}
           {!!r.suggestions?.length && (
             <>
-              <h3>Suggested changes</h3>
+              <h3>{t("Suggested changes")}</h3>
               <ul>{r.suggestions.map((x, i) => <li key={i}>{x.text}{x.change && <pre style={{ margin: "4px 0" }}>{x.change}</pre>}</li>)}</ul>
             </>
           )}
@@ -323,6 +325,7 @@ function RoleCard({ name, focus, r }: { name: string; focus: string; r: Review }
 }
 
 function Message({ m }: { m: Msg }) {
+  const t = useT();
   const tag = m.role === "user" ? m.content.match(/^\[(validator|backtest|saved|panel)\]/)?.[1] : null;
   if (tag) {
     const body = m.content.replace(/^\[\w+\]\s*/, "");
@@ -330,14 +333,14 @@ function Message({ m }: { m: Msg }) {
       panel: "Review panel findings shared with Kimi" }[tag];
     return (
       <div className="msg" style={{ alignSelf: "center", maxWidth: "95%", fontSize: 12.5, background: "transparent", border: "1px dashed var(--border)" }}>
-        <div className="who">{label} · {wall(m.ts)}</div>
+        <div className="who">{label && t(label)} · {wall(m.ts)}</div>
         {tag === "backtest" || tag === "panel" ? <details><summary>{body.split("\n")[0]}</summary><pre>{body.split("\n").slice(1).join("\n")}</pre></details> : body}
       </div>
     );
   }
   return (
     <div className={`msg ${m.role}`}>
-      <div className="who">{m.role === "user" ? "you" : m.model}{m.has_context && " · with account context"}</div>
+      <div className="who">{m.role === "user" ? t("you") : m.model}{m.has_context && ` · ${t("with account context")}`}</div>
       <Rich text={m.content} />
     </div>
   );
@@ -364,36 +367,38 @@ function inline(s: string) {
 /** The strategy being duplicated, so the trader can describe its problem with the numbers in view. */
 function OriginalSummary({ o }: { o: any }) {
   const m = o.backtest?.metrics;
+  const t = useT();
   return (
     <div className="card" style={{ marginBottom: 10 }}>
       <b>{o.s.display_name || o.s.sid} <span className="muted">v{o.s.version}</span></b>{" "}
-      <Pill kind={o.kind === "portfolio" ? "accent" : ""}>{o.kind === "portfolio" ? "portfolio" : "intraday"}</Pill> <Pill>{o.s.status}</Pill>
+      <Pill kind={o.kind === "portfolio" ? "accent" : ""}>{t(o.kind === "portfolio" ? "portfolio" : "intraday")}</Pill> <Pill>{t(o.s.status)}</Pill>
       {m ? (
         <div className="row" style={{ marginTop: 6 }}>
-          {m.trades != null && <Pill>{m.trades} trades</Pill>}
-          {m.win_rate != null && <Pill>win {pct(m.win_rate, 0)}</Pill>}
-          {m.total_pnl != null && <Pill kind={m.total_pnl >= 0 ? "good" : "bad"}>P&amp;L {money(m.total_pnl, true)}{m.return_pct != null && ` (${pct(m.return_pct, 2, true)})`}</Pill>}
-          {m.max_drawdown != null && <Pill>max DD {pct(m.max_drawdown, 1)}</Pill>}
-          {m.sharpe_daily != null && <Pill>Sharpe {num(m.sharpe_daily)}</Pill>}
+          {m.trades != null && <Pill>{t("{n} trades", { n: m.trades })}</Pill>}
+          {m.win_rate != null && <Pill>{t("win {pct}", { pct: pct(m.win_rate, 0) })}</Pill>}
+          {m.total_pnl != null && <Pill kind={m.total_pnl >= 0 ? "good" : "bad"}>{t("P&L")} {money(m.total_pnl, true)}{m.return_pct != null && ` (${pct(m.return_pct, 2, true)})`}</Pill>}
+          {m.max_drawdown != null && <Pill>{t("max DD {pct}", { pct: pct(m.max_drawdown, 1) })}</Pill>}
+          {m.sharpe_daily != null && <Pill>{t("Sharpe")} {num(m.sharpe_daily)}</Pill>}
         </div>
-      ) : <p className="muted" style={{ fontSize: 12, margin: "6px 0 0" }}>Not backtested yet: Kimi will work from the file and any paper trades.</p>}
-      {o.back_translation && <details style={{ marginTop: 6 }}><summary>What the rules say</summary><pre style={{ maxHeight: 220 }}>{o.back_translation}</pre></details>}
+      ) : <p className="muted" style={{ fontSize: 12, margin: "6px 0 0" }}>{t("Not backtested yet: Kimi will work from the file and any paper trades.")}</p>}
+      {o.back_translation && <details style={{ marginTop: 6 }}><summary>{t("What the rules say")}</summary><pre style={{ maxHeight: 220 }}>{o.back_translation}</pre></details>}
     </div>
   );
 }
 
 function BacktestSummary({ bt }: { bt: any }) {
   const m = bt.metrics;
+  const t = useT();
   return (
     <div className="card" style={{ marginTop: 8 }}>
-      <div className="muted" style={{ fontSize: 12 }}>{bt.sessions} sessions {bt.from} → {bt.to} · {bt.seconds}s · shared with Kimi</div>
+      <div className="muted" style={{ fontSize: 12 }}>{t("{n} sessions", { n: bt.sessions })} {bt.from} → {bt.to} · {bt.seconds}s · {t("shared with Kimi")}</div>
       <div className="row" style={{ marginTop: 6 }}>
-        <Pill>{m.trades} trades</Pill>
-        {m.win_rate != null && <Pill>win {pct(m.win_rate, 0)}</Pill>}
-        <Pill kind={m.total_pnl >= 0 ? "good" : "bad"}>P&amp;L {money(m.total_pnl, true)} ({pct(m.return_pct, 2, true)})</Pill>
-        {m.benchmark_return_pct != null && <Pill>buy &amp; hold {pct(m.benchmark_return_pct, 2, true)}</Pill>}
-        <Pill>max DD {pct(m.max_drawdown, 1)}</Pill>
-        {m.sharpe_daily != null && <Pill>Sharpe {num(m.sharpe_daily)}</Pill>}
+        <Pill>{t("{n} trades", { n: m.trades })}</Pill>
+        {m.win_rate != null && <Pill>{t("win {pct}", { pct: pct(m.win_rate, 0) })}</Pill>}
+        <Pill kind={m.total_pnl >= 0 ? "good" : "bad"}>{t("P&L")} {money(m.total_pnl, true)} ({pct(m.return_pct, 2, true)})</Pill>
+        {m.benchmark_return_pct != null && <Pill>{t("buy & hold {pct}", { pct: pct(m.benchmark_return_pct, 2, true) })}</Pill>}
+        <Pill>{t("max DD {pct}", { pct: pct(m.max_drawdown, 1) })}</Pill>
+        {m.sharpe_daily != null && <Pill>{t("Sharpe")} {num(m.sharpe_daily)}</Pill>}
       </div>
       {bt.note && <p className="muted" style={{ fontSize: 12, marginBottom: 0 }}>{bt.note}</p>}
     </div>

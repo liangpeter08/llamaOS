@@ -1,6 +1,7 @@
 "use client";
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { get, setCsrf } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import type { Me, Status } from "@/lib/types";
 
 interface SessionCtx {
@@ -20,6 +21,7 @@ export function useSession(): SessionCtx {
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [me, setMe] = useState<Me | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
+  const t = useT();
 
   useEffect(() => {
     get<Me>("/api/me")
@@ -43,7 +45,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(id);
   }, [me, refresh]);
 
-  if (!me) return <p className="muted" style={{ padding: 24 }}>Loading…</p>;
+  if (!me) return <p className="muted" style={{ padding: 24 }}>{t("Loading…")}</p>;
   return <Ctx.Provider value={{ me, status, refresh }}>{children}</Ctx.Provider>;
 }
 

@@ -1,4 +1,6 @@
+"use client";
 // Small dependency-free SVG line chart with optional horizontal levels and point marks.
+import { useT } from "@/lib/i18n";
 
 type Levels = Partial<Record<"entry" | "stop" | "target", number | null | undefined>>;
 
@@ -19,11 +21,12 @@ export function LineChart({
   marks?: { index: number; kind: "entry" | "exit" }[];
   labels?: boolean;
 }) {
+  const t = useT();
   if (!values.length) {
     return (
-      <svg className="chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="no data">
+      <svg className="chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={t("no data")}>
         <text x={12} y={24} className="muted-text">
-          no data yet
+          {t("no data yet")}
         </text>
       </svg>
     );
@@ -53,7 +56,7 @@ export function LineChart({
           <line x1={pl} x2={width - pr} y1={y(v)} y2={y(v)} className={`lvl lvl-${name}`} />
           {labels && (
             <text x={width - pr + 4} y={y(v) + 4} className={`lvl-label lvl-${name}`}>
-              {name} {fmt(v)}
+              {t(name)} {fmt(v)}
             </text>
           )}
         </g>

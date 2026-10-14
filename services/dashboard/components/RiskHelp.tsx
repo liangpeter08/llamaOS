@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useT } from "@/lib/i18n";
 
 export function RiskHelp({label,details}: {label:string; details:{description:string;example:string;interaction:string}}) {
   const [open,setOpen]=useState(false);
@@ -9,6 +10,7 @@ export function RiskHelp({label,details}: {label:string; details:{description:st
   const panel=useRef<HTMLDivElement>(null);
   const timer=useRef<ReturnType<typeof setTimeout> | null>(null);
   const id=useId();
+  const t=useT();
   function show() {
     if(timer.current) clearTimeout(timer.current);
     const r=anchor.current?.getBoundingClientRect();
@@ -32,15 +34,15 @@ export function RiskHelp({label,details}: {label:string; details:{description:st
   },[open]);
   useEffect(()=>()=>{if(timer.current) clearTimeout(timer.current);},[]);
   return <>
-    <button ref={anchor} type="button" className="risk-help-trigger" onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={hide} onClick={show} aria-describedby={open ? id : undefined} aria-label={`About ${label}`}>
+    <button ref={anchor} type="button" className="risk-help-trigger" onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={hide} onClick={show} aria-describedby={open ? id : undefined} aria-label={t("About {label}",{label})}>
       {label} <span aria-hidden="true" className="risk-help-icon">ⓘ</span>
     </button>
     {open && createPortal(<div ref={panel} role="tooltip" id={id} className="risk-help-panel" onMouseEnter={()=>{if(timer.current) clearTimeout(timer.current);}} onMouseLeave={hide} style={{left:pos.left,top:Math.min(pos.top,Math.max(12,window.innerHeight-370)),width:pos.width,maxHeight:"min(350px, calc(100vh - 24px))"}}>
       <strong>{label}</strong>
-      <p>{details.description}</p>
-      <b>Example</b><p>{details.example}</p>
-      <b>Related limits &amp; behavior</b><p>{details.interaction}</p>
-      <small className="muted">Examples use illustrative values. Hover here to keep this open; press Escape to close.</small>
+      <p>{t(details.description)}</p>
+      <b>{t("Example")}</b><p>{t(details.example)}</p>
+      <b>{t("Related limits & behavior")}</b><p>{t(details.interaction)}</p>
+      <small className="muted">{t("Examples use illustrative values. Hover here to keep this open; press Escape to close.")}</small>
     </div>,document.body)}
   </>;
 }

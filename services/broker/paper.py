@@ -24,6 +24,8 @@ from core import risk_guard as G
 from dsl.evaluator import DayData, SignalBook
 from .alpaca import Alpaca, epoch, iso, price
 from .portfolio_desk import PortfolioDesk
+from .manual import ManualDesk, Retry
+from common import manual as M
 from common import funds
 from core import funds as F
 
@@ -77,6 +79,7 @@ class PaperBroker:
         self.last_bar = {}
         self.last_error = ""
         self.desk = PortfolioDesk(self.conn, self.api, self.risk)
+        self.manual = ManualDesk(self)  # owner trades and reconciliation with the Alpaca app
         self.sleeve_syms = {}  # symbol -> portfolio strategy hash holding it (held overnight, never flattened)
         self.sleeve_day_pnl = 0.0
         db.kv_set(self.conn, "risk.sha256", self.risk.sha256)
@@ -268,7 +271,7 @@ class PaperBroker:
                     if intent and entry and entry["filled_qty"]:
                         ep = entry["filled_value"] / entry["filled_qty"]
                         pnl = (px-ep) * delta * (1 if intent["side"] == "long" else -1)
-                        rps = abs(ep-intent["stop"])
+                        rps = abs(ep-intent["stop"]) if intent["stop"] is not None else 0  # manual trades may have no stop
                         er = json.loads(entry["raw"])
                         self.conn.execute("INSERT INTO trades(intent_id,sid,strategy_hash,symbol,side,qty,entry_ts,entry_price,exit_ts,exit_price,exit_kind,pnl,r_multiple,narrative)"
                                           " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -307,14 +310,14 @@ class PaperBroker:
             return self.api.order(oid)
         self.sleeve_syms = self.desk.owned()
         self.sleeve_day_pnl = self.desk.day_pnl(self.positions, self.day) if self.sleeve_syms else 0.0
-        for row in db.rows(self.conn, "SELECT p.* FROM paper_intents p JOIN intents i ON i.id=p.intent_id WHERE i.status IN ('submitting','submitted') OR (p.broker_id IS NOT NULL AND (i.ts>=? OR EXISTS (SELECT 1 FROM paper_orders o WHERE o.intent_id=i.id AND o.kind='entry' AND o.filled_qty>COALESCE((SELECT SUM(x.filled_qty) FROM paper_orders x WHERE x.intent_id=i.id AND x.kind!='entry'),0))))", (T.open_ts(self.day),)):
+        for row in db.rows(self.conn, "SELECT p.*, i.strategy_hash owner FROM paper_intents p JOIN intents i ON i.id=p.intent_id WHERE i.status IN ('submitting','submitted') OR (p.broker_id IS NOT NULL AND (i.ts>=? OR EXISTS (SELECT 1 FROM paper_orders o WHERE o.intent_id=i.id AND o.kind='entry' AND o.filled_qty>COALESCE((SELECT SUM(x.filled_qty) FROM paper_orders x WHERE x.intent_id=i.id AND x.kind!='entry'),0))))", (T.open_ts(self.day),)):
             order = lookup(row["broker_id"]) if row["broker_id"] else self.api.by_client_id(row["client_id"])
             if order:
                 self.conn.execute("UPDATE paper_intents SET broker_id=? WHERE intent_id=?", (order["id"], row["intent_id"]))
                 self.track_order(order, row["intent_id"], "entry")
                 status = "filled" if order["status"] == "filled" else "submitted" if order["status"] not in TERMINAL else "unfilled"
                 self.conn.execute("UPDATE intents SET status=? WHERE id=? AND status IN ('submitting','submitted')", (status, row["intent_id"]))
-                if order["status"] not in TERMINAL and time.time()-epoch(order["created_at"]) > self.risk.cancel_unfilled_after:
+                if order["status"] not in TERMINAL and row["owner"] != M.MANUAL and time.time()-epoch(order["created_at"]) > self.risk.cancel_unfilled_after:
                     self.api.cancel(order["id"])
         for row in db.rows(self.conn, "SELECT * FROM paper_orders WHERE kind NOT IN ('entry','stop','target')"):
             raw = json.loads(row["raw"])
@@ -326,6 +329,8 @@ class PaperBroker:
             ref = self.owner_intent(pos["symbol"])
             if not ref and pos["symbol"] not in self.sleeve_syms:
                 self.unmanaged = True
+        db.kv_set(self.conn, "paper.open_orders", [{k: o.get(k) for k in ("id", "symbol", "side", "qty", "filled_qty", "type", "order_class", "limit_price", "stop_price", "time_in_force", "status", "created_at", "client_order_id")}
+                                                   | {"legs": [{k: x.get(k) for k in ("id", "side", "type", "limit_price", "stop_price", "status")} for x in o.get("legs") or []]} for o in self.open_orders])
         self.persist_account()
         self.restore_runner_positions()
 
@@ -381,8 +386,9 @@ class PaperBroker:
         db.kv_set(self.conn,"account",{"equity":eq,"cash":cash,"start_equity":start,"day_pnl":eq-start,
                    "gross_exposure":sum(abs(float(p["market_value"])) for p in self.positions),"open_positions":len(self.positions),
                    "trades_today":self.state().trades_today,"sim_ts":time.time(),"source":"alpaca_paper"})
-        db.kv_set(self.conn,"reconcile",{"ok":not self.unmanaged and not self.desk.mismatch,"sim_ts":time.time(),"broker":"alpaca_paper",
-                   "unmanaged":self.unmanaged,"portfolio_mismatch":self.desk.mismatch or None})
+        items=self.manual.items
+        db.kv_set(self.conn,"reconcile",{"ok":not self.unmanaged and not self.desk.mismatch and not items,"sim_ts":time.time(),"broker":"alpaca_paper",
+                   "unmanaged":self.unmanaged,"portfolio_mismatch":self.desk.mismatch or None,"items":items,"auto":M.auto(self.conn)})
 
     def sleeve_ref(self, sym):
         h = self.sleeve_syms.get(sym)
@@ -510,7 +516,13 @@ class PaperBroker:
         for c in db.rows(self.conn,"SELECT * FROM commands WHERE status='pending' ORDER BY id"):
             payload=json.loads(c["payload"] or "{}")
             result="ok"
-            if c["kind"]=="kill":
+            if c["kind"] in M.COMMANDS:
+                try:
+                    result=self.manual.handle(c)
+                except Retry:
+                    continue  # stays pending; runs again next loop
+                self.sync()
+            elif c["kind"]=="kill":
                 self.kill(payload.get("reason") or "dashboard",c["issued_by"])
             elif c["kind"] in ("pause","resume"):
                 self.paused=c["kind"]=="pause"
@@ -553,6 +565,7 @@ class PaperBroker:
         self.sync();self.mark("sync")
         self.refresh_monitoring();self.mark("refresh_monitoring")
         self.commands();self.mark("commands")
+        self.manual.reconcile();self.mark("reconcile")
         db.kv_set(self.conn,"sim.now",now)  # existing models/dashboard consume this clock
         if time.time()-self.last_poll>=15:
             start=min((d.ts[-1] for d in [*self.days.values(),*self.refs.values()] if d.ts),default=T.open_ts(day))
@@ -575,11 +588,12 @@ class PaperBroker:
                 self.kill("daily loss limit")
                 ks=True
             if ks or time.time()>=self.flatten_ts:
+                holds=set() if ks else M.holds(self.conn)  # manual positions the owner holds overnight
                 for p in self.positions:
-                    if p["symbol"] not in self.sleeve_syms:  # sleeves hold overnight; the desk sells them on a kill
+                    if p["symbol"] not in self.sleeve_syms and p["symbol"] not in holds:  # sleeves hold overnight; the desk sells them on a kill
                         self.exit_position(p["symbol"],"kill" if ks else "flatten")
                 for o in self.open_orders:
-                    if o.get("order_class")=="bracket":
+                    if o.get("order_class")=="bracket" and o["symbol"] not in holds:
                         self.api.cancel(o["id"])
             else:
                 for p in self.positions:

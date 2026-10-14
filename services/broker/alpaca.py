@@ -161,6 +161,25 @@ class Alpaca:
                 return found
             raise
 
+    def submit(self, body: dict):
+        """Any order body (owner-placed trades); recovered by its durable client ID on uncertain failures."""
+        if os.environ.get("MODE", "paper") != "paper":
+            raise ValueError("Orders are disabled in record_only")
+        cid = body["client_order_id"]
+        try:
+            return self.request("POST", "/v2/orders", json=body)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code >= 500 or e.response.status_code in (409, 429):
+                found = self.by_client_id(cid)
+                if found:
+                    return found
+            raise
+        except (httpx.TimeoutException, httpx.NetworkError):
+            found = self.by_client_id(cid)
+            if found:
+                return found
+            raise
+
     def cancel(self, oid):
         return self.request("DELETE", f"/v2/orders/{oid}")
 

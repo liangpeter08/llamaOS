@@ -13,6 +13,7 @@ services:
 
   broker:
     build: .
+    image: llamaos-app:local
     user: "${APP_UID:-10001}:${APP_GID:-10001}"
     command: ["python", "-m", "services.broker"]
     environment: { BROKER_BACKEND: "alpaca", MODE: "paper" }
@@ -26,6 +27,7 @@ services:
 
   models:
     build: .
+    image: llamaos-app:local
     user: "${APP_UID:-10001}:${APP_GID:-10001}"
     command: ["python", "-m", "services.models"]
     env_file: [./secrets/db.env, ./secrets/models.env]   # KIMI_API_KEY; optional remote Laya/Gemini credentials
@@ -41,6 +43,7 @@ services:
 
   api:
     build: .
+    image: llamaos-app:local
     user: "${APP_UID:-10001}:${APP_GID:-10001}"
     command: ["python", "-m", "services.api"]
     env_file: [./secrets/db.env, ./secrets/web.env]      # SESSION_SECRET only; no model or broker keys
@@ -55,6 +58,7 @@ services:
 
   watchdog:
     build: .
+    image: llamaos-app:local
     user: "${APP_UID:-10001}:${APP_GID:-10001}"
     command: ["python", "-m", "services.broker.watchdog"]
     env_file: [./secrets/db.env, ./secrets/broker.env]
@@ -66,6 +70,7 @@ services:
 
   operations:
     build: .
+    image: llamaos-app:local
     user: "${APP_UID:-10001}:${APP_GID:-10001}"
     command: ["python", "-m", "services.operations"]
     env_file: [./secrets/db.env, ./secrets/alerts.env]
@@ -77,6 +82,7 @@ services:
 
   dashboard:
     build: { context: ./services/dashboard, args: { API_URL: "http://api:8080" } }
+    image: llamaos-dashboard:local
     expose: ["3000"]
     depends_on: [api]
     restart: unless-stopped

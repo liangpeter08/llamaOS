@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { post } from "@/lib/api";
 import { Notice, Pill } from "@/components/ui";
+import { useT } from "@/lib/i18n";
 
 type Hours = { enabled: boolean; start: string; end: string; weekdays_only: boolean };
 export type NewsClaudeStatus = { on: boolean; hours: Hours; active_now: boolean };
@@ -9,6 +10,7 @@ export type NewsClaudeStatus = { on: boolean; hours: Hours; active_now: boolean 
 // Owner switch for sending news to Kimi, plus optional active hours (US/Eastern).
 export function NewsToClaude({ status, owner, reload }: { status: NewsClaudeStatus; owner: boolean; reload: () => void }) {
   const [busy, setBusy] = useState(false);
+  const t = useT();
   const [msg, setMsg] = useState<{ kind: "ok" | "bad"; text: string } | null>(null);
   const [hours, setHours] = useState<Hours>(status.hours);
   const saved = status.hours;
@@ -32,33 +34,35 @@ export function NewsToClaude({ status, owner, reload }: { status: NewsClaudeStat
         <label className="row" style={{ gap: 6 }}>
           <input type="checkbox" checked={status.on} disabled={disabled}
             onChange={(e) => run("/api/settings/news-to-claude", { on: e.target.checked })} />
-          <b>Send news to Kimi</b>
+          <b>{t("Send news to Kimi")}</b>
         </label>
-        <Pill kind={status.active_now ? "good" : ""}>{status.active_now ? "Kimi active now" : "Kimi paused now"}</Pill>
+        <Pill kind={status.active_now ? "good" : ""}>{t(status.active_now ? "Kimi active now" : "Kimi paused now")}</Pill>
       </div>
       <div className="row" style={{ gap: 6, marginTop: 6, flexWrap: "wrap" }}>
         <label className="row" style={{ gap: 6 }}>
           <input type="checkbox" checked={hours.enabled} disabled={disabled || !status.on}
             onChange={(e) => { const h = { ...hours, enabled: e.target.checked }; setHours(h); saveHours(h); }} />
-          Only between
+          {t("Only between")}
         </label>
         <input type="time" value={hours.start} disabled={disabled || !status.on || !hours.enabled}
           onChange={(e) => setHours({ ...hours, start: e.target.value })} style={{ width: "7.5em" }} />
-        <span>and</span>
+        <span>{t("and")}</span>
         <input type="time" value={hours.end} disabled={disabled || !status.on || !hours.enabled}
           onChange={(e) => setHours({ ...hours, end: e.target.value })} style={{ width: "7.5em" }} />
-        <span className="muted">ET</span>
+        <span className="muted">{t("ET")}</span>
         <label className="row" style={{ gap: 6 }}>
           <input type="checkbox" checked={hours.weekdays_only} disabled={disabled || !status.on || !hours.enabled}
             onChange={(e) => setHours({ ...hours, weekdays_only: e.target.checked })} />
-          weekdays only
+          {t("weekdays only")}
         </label>
-        {hours.enabled && dirty && <button className="primary" disabled={disabled} onClick={() => saveHours(hours)}>Save hours</button>}
+        {hours.enabled && dirty && <button className="primary" disabled={disabled} onClick={() => saveHours(hours)}>{t("Save hours")}</button>}
       </div>
       <p className="muted" style={{ margin: "4px 0 0", fontSize: 12 }}>
-        {!status.on ? "Off: news is triaged by Laya, Gemini or the offline keyword model only. Strategy authoring, chat and discovery still use Kimi."
-          : saved.enabled ? `News triage may use Kimi (K2.7 quick and deep reads) only ${saved.start}–${saved.end} ET${saved.weekdays_only ? " on weekdays" : ""}; outside that window it falls back to Laya, Gemini or the offline model.`
-          : "News triage may use Kimi (K2.7 quick and deep reads) at any time when it is the configured provider."}
+        {!status.on ? t("Off: news is triaged by Laya, Gemini or the offline keyword model only. Strategy authoring, chat and discovery still use Kimi.")
+          : saved.enabled ? t(saved.weekdays_only
+            ? "News triage may use Kimi (K2.7 quick and deep reads) only {start}–{end} ET on weekdays; outside that window it falls back to Laya, Gemini or the offline model."
+            : "News triage may use Kimi (K2.7 quick and deep reads) only {start}–{end} ET; outside that window it falls back to Laya, Gemini or the offline model.", { start: saved.start, end: saved.end })
+          : t("News triage may use Kimi (K2.7 quick and deep reads) at any time when it is the configured provider.")}
       </p>
     </div>
   );

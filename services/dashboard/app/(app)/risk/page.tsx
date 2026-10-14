@@ -6,6 +6,7 @@ import { wall } from "@/lib/format";
 import { Card, Loading, Notice, Pill } from "@/components/ui";
 import { isOwner, useSession } from "@/components/session";
 import { RiskHelp } from "@/components/RiskHelp";
+import { useT } from "@/lib/i18n";
 
 const TITLES: Record<string, string> = {
   account: "Account", per_trade: "Per trade (intraday)", execution: "Execution", market: "Market hours & liquidity",
@@ -18,7 +19,7 @@ interface Control {
   details: { description: string; example: string; interaction: string };
 }
 
-const show = (v: any) => (typeof v === "boolean" ? (v ? "yes" : "no") : v == null ? "—" : String(v));
+const show = (v: any, t: (s: string) => string) => (typeof v === "boolean" ? t(v ? "yes" : "no") : v == null ? "—" : String(v));
 
 export default function Risk() {
   const { data, error, reload } = usePoll<any>("/api/risk", 10000);
@@ -28,6 +29,7 @@ export default function Risk() {
   const [msg, setMsg] = useState<{ kind: "ok" | "bad"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const owner = isOwner(me);
+  const t = useT();
   const bySection = useMemo(() => {
     const out: Record<string, Control[]> = {};
     for (const c of (data?.controls ?? []) as Control[]) (out[c.section] ??= []).push(c);
@@ -59,55 +61,54 @@ export default function Risk() {
       else n[c.key] = v;
       return n;
     });
-    if (!owner) return <b>{show(c.value)}</b>;
-    if (c.type === "bool") return <input aria-label={c.label} type="checkbox" checked={!!cur} onChange={(e) => set(e.target.checked)} />;
-    if (c.type === "choice") return <select aria-label={c.label} value={cur} onChange={(e) => set(e.target.value)}>{c.choices.map((x) => <option key={x}>{x}</option>)}</select>;
-    return <input aria-label={c.label} value={String(cur ?? "")} onChange={(e) => set(e.target.value)} style={{ width: 150 }} className="mono" />;
+    if (!owner) return <b>{show(c.value, t)}</b>;
+    if (c.type === "bool") return <input aria-label={t(c.label)} type="checkbox" checked={!!cur} onChange={(e) => set(e.target.checked)} />;
+    if (c.type === "choice") return <select aria-label={t(c.label)} value={cur} onChange={(e) => set(e.target.value)}>{c.choices.map((x) => <option key={x}>{x}</option>)}</select>;
+    return <input aria-label={t(c.label)} value={String(cur ?? "")} onChange={(e) => set(e.target.value)} style={{ width: 150 }} className="mono" />;
   }
 
   return (
     <>
-      <h1>Risk</h1>
-      <p className="muted">Hover over a setting name or its ⓘ icon for detailed help. You can also focus or tap the name.</p>
+      <h1>{t("Risk")}</h1>
+      <p className="muted">{t("Hover over a setting name or its ⓘ icon for detailed help. You can also focus or tap the name.")}</p>
       <p className="muted">
-        Live risk controls, stored in Postgres. {owner ? "Edit a value, give a reason and save; " : ""}the broker and watchdog apply changes within a few
-        seconds. Every change is validated as a whole, kept in the history below and written to the audit log. A control you haven&apos;t set
-        uses its factory default (<code>{data.path}</code> or the built-in default). Strategies can only tighten these. Resetting the kill switch
-        stays host-only.
+        {t("Live risk controls, stored in Postgres.")} {owner ? t("Edit a value, give a reason and save; the broker and watchdog apply changes within a few seconds.") : t("The broker and watchdog apply changes within a few seconds.")}{" "}
+        {t("Every change is validated as a whole, kept in the history below and written to the audit log. A control you haven't set uses its factory default ({path} or the built-in default). Strategies can only tighten these. Resetting the kill switch stays host-only.",
+          { path: <code>{data.path}</code> })}
       </p>
       {msg && <Notice kind={msg.kind}>{msg.text}</Notice>}
       {data.logged_sha256 && data.logged_sha256 !== data.risk.sha256 && (
-        <Notice kind="warn">The broker hasn&apos;t loaded the latest controls yet (it checks every loop; is it running?).</Notice>
+        <Notice kind="warn">{t("The broker hasn't loaded the latest controls yet (it checks every loop; is it running?).")}</Notice>
       )}
       {owner && changed > 0 && (
         <Card className="mt">
           <div className="row">
-            <b>{changed} unsaved change{changed > 1 ? "s" : ""}</b>
-            <input placeholder="reason (required)" value={reason} onChange={(e) => setReason(e.target.value)} style={{ flex: 1, minWidth: 220 }} />
-            <button className="primary" disabled={busy || reason.trim().length < 3} onClick={save}>{busy ? "Saving…" : "Save"}</button>
-            <button disabled={busy} onClick={() => setEdits({})}>Discard</button>
+            <b>{t(changed > 1 ? "{n} unsaved changes" : "{n} unsaved change", { n: changed })}</b>
+            <input placeholder={t("reason (required)")} value={reason} onChange={(e) => setReason(e.target.value)} style={{ flex: 1, minWidth: 220 }} />
+            <button className="primary" disabled={busy || reason.trim().length < 3} onClick={save}>{t(busy ? "Saving…" : "Save")}</button>
+            <button disabled={busy} onClick={() => setEdits({})}>{t("Discard")}</button>
           </div>
         </Card>
       )}
       <div className="grid g2 mt">
         {(data.sections as string[]).map((sec) => (
-          <Card key={sec} title={TITLES[sec] ?? sec}>
+          <Card key={sec} title={t(TITLES[sec] ?? sec)}>
             <table>
               <tbody>
                 {(bySection[sec] ?? []).map((c) => (
                   <tr key={c.key}>
                     <td style={{ width: "42%" }}>
-                      <RiskHelp label={c.label} details={c.details} />
-                      {c.help && <div className="muted" style={{ fontSize: 12 }}>{c.help}</div>}
+                      <RiskHelp label={t(c.label)} details={c.details} />
+                      {c.help && <div className="muted" style={{ fontSize: 12 }}>{t(c.help)}</div>}
                     </td>
                     <td>{input(c)}</td>
                     <td className="muted" style={{ fontSize: 12 }}>
                       {c.overridden ? (
                         <>
-                          <Pill kind="accent">set</Pill> by {c.updated_by} {wall(c.updated_at)} · default {show(c.default)}
-                          {owner && <button style={{ marginLeft: 6 }} onClick={() => setEdits((e) => ({ ...e, [c.key]: "default" }))}>reset</button>}
+                          <Pill kind="accent">{t("set")}</Pill> {t("by {who}", { who: c.updated_by })} {wall(c.updated_at)} · {t("default")} {show(c.default, t)}
+                          {owner && <button style={{ marginLeft: 6 }} onClick={() => setEdits((e) => ({ ...e, [c.key]: "default" }))}>{t("reset")}</button>}
                         </>
-                      ) : "default"}
+                      ) : t("default")}
                     </td>
                   </tr>
                 ))}
@@ -116,18 +117,18 @@ export default function Risk() {
           </Card>
         ))}
       </div>
-      <Card title="Change history" className="mt">
+      <Card title={t("Change history")} className="mt">
         <div className="table-wrap"><table>
-          <thead><tr><th>When</th><th>Control</th><th>From</th><th>To</th><th>By</th><th>Reason</th></tr></thead>
+          <thead><tr><th>{t("When")}</th><th>{t("Control")}</th><th>{t("From")}</th><th>{t("To")}</th><th>{t("By")}</th><th>{t("Reason")}</th></tr></thead>
           <tbody>
             {data.history.map((h: any) => (
-              <tr key={h.id}><td>{wall(h.ts)}</td><td className="mono">{h.key}</td><td>{show(JSON.parse(h.old_value ?? "null") ?? "default")}</td>
-                <td>{show(JSON.parse(h.new_value ?? "null") ?? "default")}</td><td>{h.actor}</td><td className="muted">{h.reason}</td></tr>
+              <tr key={h.id}><td>{wall(h.ts)}</td><td className="mono">{h.key}</td><td>{show(JSON.parse(h.old_value ?? "null") ?? t("default"), t)}</td>
+                <td>{show(JSON.parse(h.new_value ?? "null") ?? t("default"), t)}</td><td>{h.actor}</td><td className="muted">{h.reason}</td></tr>
             ))}
-            {!data.history.length && <tr><td colSpan={6} className="muted">No changes yet: every control is at its default.</td></tr>}
+            {!data.history.length && <tr><td colSpan={6} className="muted">{t("No changes yet: every control is at its default.")}</td></tr>}
           </tbody>
         </table></div>
-        <p className="muted mono" style={{ fontSize: 12 }}>effective checksum {data.risk.sha256} · revision {data.rev}</p>
+        <p className="muted mono" style={{ fontSize: 12 }}>{t("effective checksum {sha} · revision {rev}", { sha: data.risk.sha256, rev: data.rev })}</p>
       </Card>
     </>
   );

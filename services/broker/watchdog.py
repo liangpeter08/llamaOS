@@ -6,7 +6,7 @@ from datetime import datetime
 
 import httpx
 
-from common import audit,db,sleeves,timeutil as T,broker_accounts as BA
+from common import audit,db,manual,sleeves,timeutil as T,broker_accounts as BA
 from common.config import load_risk
 from .alpaca import Alpaca,epoch
 
@@ -52,7 +52,8 @@ def main():
                 # Portfolio sleeves hold overnight and aren't on the 1-minute feed: the deadline and
                 # stale-feed checks cover intraday positions only. A kill still closes everything.
                 sleeve=set(sleeves.owned_symbols(c))
-                intraday=[p for p in positions if p['symbol'] not in sleeve]
+                held=set(manual.holds(c))  # manual positions the owner holds overnight (a kill still closes them)
+                intraday=[p for p in positions if p['symbol'] not in sleeve and p['symbol'] not in held]
                 # Stale heartbeat/feed are warnings only: the kill switch is set by the owner, never by the watchdog.
                 late=now>T.open_ts(day)+risk.stale_feed_halt
                 problems={'heartbeat':late and (age is None or age>60),
@@ -72,7 +73,7 @@ def main():
                     orders=api.orders()
                     import json
                     if not ks.get('active') and reason=='calendar flatten deadline':
-                        orders=[o for o in orders if o['symbol'] not in sleeve]
+                        orders=[o for o in orders if o['symbol'] not in sleeve and o['symbol'] not in held]
                         closing=any(o.get('type')=='market' and now-epoch(o['created_at'])<60 for o in orders)
                         if (intraday or orders) and not closing:
                             for o in orders:api.cancel(o['id'])

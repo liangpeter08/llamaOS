@@ -54,6 +54,9 @@ if [ "$MEM_MB" -lt 6000 ] && ! swapon --show | grep -q /swapfile; then
 else
   echo "swap already present or host has >= 6 GB RAM"
 fi
+# Aliyun images ship vm.swappiness=0, which leaves swap unused until the OOM killer fires.
+sysctl -w vm.swappiness=10 >/dev/null
+echo 'vm.swappiness=10' > /etc/sysctl.d/99-llamaos-swap.conf
 
 log "Cloning/updating $REPO_URL ($BRANCH) -> $APP_DIR"
 if [ -d "$APP_DIR/.git" ]; then

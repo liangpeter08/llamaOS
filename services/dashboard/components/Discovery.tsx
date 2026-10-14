@@ -6,6 +6,7 @@ import { get, post } from "@/lib/api";
 import { usePoll } from "@/lib/hooks";
 import { cls, num, wall } from "@/lib/format";
 import { Card, Meter, Notice, Pill, StatusPill } from "./ui";
+import { useT } from "@/lib/i18n";
 
 // Search depth presets: generations of revision and the per-kind trial budget.
 export const DEPTHS = {
@@ -26,13 +27,15 @@ export const GATE: Record<string, string> = {
 };
 
 export function Weaknesses({ items }: { items: string[] }) {
-  if (!items?.length) return <span className="muted">none</span>;
+  const t = useT();
+  if (!items?.length) return <span className="muted">{t("none")}</span>;
   const counts = items.reduce<Record<string, number>>((m, w) => ({ ...m, [w]: (m[w] ?? 0) + 1 }), {});
-  return <>{Object.entries(counts).map(([w, n]) => <span key={w} className="tag">{WEAKNESS[w] ?? w}{n > 1 ? ` ×${n}` : ""}</span>)}</>;
+  return <>{Object.entries(counts).map(([w, n]) => <span key={w} className="tag">{t(WEAKNESS[w] ?? w)}{n > 1 ? ` ×${n}` : ""}</span>)}</>;
 }
 
 export function RunStatus({ status }: { status: string }) {
-  return <Pill kind={status === "completed" ? "good" : status === "failed" ? "bad" : "accent"}>{status}</Pill>;
+  const t = useT();
+  return <Pill kind={status === "completed" ? "good" : status === "failed" ? "bad" : "accent"}>{t(status)}</Pill>;
 }
 
 /** Start a run (fresh search or follow-up) and open its page. */
@@ -57,6 +60,7 @@ export function useStartRun() {
 function Preflight({ ticker, peers, onData }: { ticker: string; peers: string; onData: (d: any) => void }) {
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const t = useT();
   useEffect(() => {
     if (!ticker.trim()) { setData(null); onData(null); return; }
     const id = setTimeout(async () => {
@@ -70,24 +74,24 @@ function Preflight({ ticker, peers, onData }: { ticker: string; peers: string; o
     return () => clearTimeout(id);
   }, [ticker, peers]); // eslint-disable-line react-hooks/exhaustive-deps
   if (error) return <p className="neg disc-preflight">{error}</p>;
-  if (!data) return <p className="muted disc-preflight">Enter a ticker to see what stored data a run can use.</p>;
+  if (!data) return <p className="muted disc-preflight">{t("Enter a ticker to see what stored data a run can use.")}</p>;
   return (
     <div className="disc-preflight">
       {(["daily", "intraday"] as const).map((k) => {
         const x = data.kinds[k];
         return x?.ok
-          ? <Pill key={k} kind="good">{k}: {x.discovery} sessions to search + {x.holdout} sealed</Pill>
-          : <Pill key={k} kind="warn" title={x?.why}>{k}: not available</Pill>;
+          ? <Pill key={k} kind="good">{t(k)}: {t("{n} sessions to search + {h} sealed", { n: x.discovery, h: x.holdout })}</Pill>
+          : <Pill key={k} kind="warn" title={x?.why}>{t(k)}: {t("not available")}</Pill>;
       })}
       {data.peers.map((p: any) => (
-        <Pill key={p.symbol} kind={p.daily || p.intraday ? "" : "warn"} title={`${p.daily} daily sessions, ${p.intraday} days of 1-minute bars`}>
-          peer {p.symbol}{p.daily || p.intraday ? "" : ": no data"}
+        <Pill key={p.symbol} kind={p.daily || p.intraday ? "" : "warn"} title={t("{d} daily sessions, {i} days of 1-minute bars", { d: p.daily, i: p.intraday })}>
+          {t("peer {sym}", { sym: p.symbol })}{p.daily || p.intraday ? "" : `: ${t("no data")}`}
         </Pill>
       ))}
       {Object.values(data.kinds).some((x: any) => !x.ok) && (
         <div className="muted" style={{ marginTop: 4, fontSize: 12 }}>
-          {Object.entries(data.kinds).filter(([, x]: any) => !x.ok).map(([k, x]: any) => `${k}: ${x.why}`).join(" · ")}
-          {data.history_download ? " The paper broker can download missing history from a backtest of this ticker." : ""}
+          {Object.entries(data.kinds).filter(([, x]: any) => !x.ok).map(([k, x]: any) => `${t(k)}: ${x.why}`).join(" · ")}
+          {data.history_download ? ` ${t("The paper broker can download missing history from a backtest of this ticker.")}` : ""}
         </div>
       )}
     </div>
@@ -106,6 +110,7 @@ export function DiscoverForm({ onDone }: { onDone?: () => void }) {
   const [pf, setPf] = useState<any>(null);
   const { start, busy, error } = useStartRun();
   const usable = kinds.filter((k) => pf?.kinds?.[k]?.ok);
+  const t = useT();
   const toggle = (k: string) => setKinds((ks) => (ks.includes(k) ? ks.filter((x) => x !== k) : [...ks, k]));
   return (
     <form className="disc-form" onSubmit={(e) => {
@@ -116,35 +121,35 @@ export function DiscoverForm({ onDone }: { onDone?: () => void }) {
     }}>
       {error && <Notice kind="bad">{error}</Notice>}
       <div className="disc-fields">
-        <label className="bt-field"><span>Ticker</span>
+        <label className="bt-field"><span>{t("Ticker")}</span>
           <input value={ticker} onChange={(e) => setTicker(e.target.value.toUpperCase())} placeholder="AMD" maxLength={8} required autoFocus /></label>
-        <label className="bt-field"><span>Peers it may read</span>
+        <label className="bt-field"><span>{t("Peers it may read")}</span>
           <input value={peers} onChange={(e) => setPeers(e.target.value.toUpperCase())} placeholder="SPY,QQQ" />
-          <small>market or sector references for peer() rules; never traded</small></label>
-        <div className="bt-field"><span>Strategy kinds</span>
+          <small>{t("market or sector references for peer() rules; never traded")}</small></label>
+        <div className="bt-field"><span>{t("Strategy kinds")}</span>
           <div className="seg">
-            {["intraday", "daily"].map((k) => <button type="button" key={k} className={cls(kinds.includes(k) && "on")} aria-pressed={kinds.includes(k)} onClick={() => toggle(k)}>{k}</button>)}
+            {["intraday", "daily"].map((k) => <button type="button" key={k} className={cls(kinds.includes(k) && "on")} aria-pressed={kinds.includes(k)} onClick={() => toggle(k)}>{t(k)}</button>)}
           </div>
-          <small>intraday: 1-minute bars, flat by the close · daily: held overnight, one decision a day</small></div>
-        <div className="bt-field"><span>Search depth</span>
+          <small>{t("intraday: 1-minute bars, flat by the close · daily: held overnight, one decision a day")}</small></div>
+        <div className="bt-field"><span>{t("Search depth")}</span>
           <div className="seg">
-            {(Object.keys(DEPTHS) as Depth[]).map((d) => <button type="button" key={d} className={cls(depth === d && "on")} aria-pressed={depth === d} onClick={() => setDepth(d)}>{DEPTHS[d].label}</button>)}
+            {(Object.keys(DEPTHS) as Depth[]).map((d) => <button type="button" key={d} className={cls(depth === d && "on")} aria-pressed={depth === d} onClick={() => setDepth(d)}>{t(DEPTHS[d].label)}</button>)}
           </div>
-          <small>{DEPTHS[depth].hint}</small></div>
+          <small>{t(DEPTHS[depth].hint)}</small></div>
       </div>
       <Preflight ticker={ticker} peers={peers} onData={setPf} />
       <div className="row" style={{ marginTop: 10 }}>
-        <label className="row" style={{ gap: 4 }} title={pf && !pf.llm ? "No model key on the models service: offline templates only" : undefined}>
+        <label className="row" style={{ gap: 4 }} title={pf && !pf.llm ? t("No model key on the models service: offline templates only") : undefined}>
           <input type="checkbox" checked={claude && !!pf?.llm} disabled={!pf?.llm} onChange={(e) => setClaude(e.target.checked)} />
-          Kimi proposes and revises{pf && !pf.llm && <span className="muted"> (no key: templates only)</span>}
+          {t("Kimi proposes and revises")}{pf && !pf.llm && <span className="muted"> {t("(no key: templates only)")}</span>}
         </label>
-        <label className="row" style={{ gap: 4 }}><input type="checkbox" checked={save} onChange={(e) => setSave(e.target.checked)} /> Save holdout survivors as drafts</label>
-        <label className="row" style={{ gap: 4 }} title="Every valid, evaluated trial becomes its own draft strategy (can be many files)">
-          <input type="checkbox" checked={saveAll} onChange={(e) => setSaveAll(e.target.checked)} /> Save every evaluated candidate</label>
+        <label className="row" style={{ gap: 4 }}><input type="checkbox" checked={save} onChange={(e) => setSave(e.target.checked)} /> {t("Save holdout survivors as drafts")}</label>
+        <label className="row" style={{ gap: 4 }} title={t("Every valid, evaluated trial becomes its own draft strategy (can be many files)")}>
+          <input type="checkbox" checked={saveAll} onChange={(e) => setSaveAll(e.target.checked)} /> {t("Save every evaluated candidate")}</label>
         <span className="grow" />
         <button className="primary" disabled={busy || !usable.length || !!pf?.running}
-          title={pf?.running ? `Run #${pf.running} is still running` : !usable.length ? "No selected kind has enough stored data" : undefined}>
-          {busy ? "Starting…" : pf?.running ? `Run #${pf.running} running…` : "Start discovery"}
+          title={pf?.running ? t("Run #{id} is still running", { id: pf.running }) : !usable.length ? t("No selected kind has enough stored data") : undefined}>
+          {busy ? t("Starting…") : pf?.running ? t("Run #{id} running…", { id: pf.running }) : t("Start discovery")}
         </button>
       </div>
     </form>
@@ -155,14 +160,15 @@ export function DiscoverForm({ onDone }: { onDone?: () => void }) {
 export function RunsList({ limit = 8 }: { limit?: number }) {
   const { data } = usePoll<any>("/api/discovery", 3000);
   const runs: any[] = data?.runs?.slice(0, limit) ?? [];
-  if (!runs.length) return <p className="muted">No discovery runs yet.</p>;
+  const t = useT();
+  if (!runs.length) return <p className="muted">{t("No discovery runs yet.")}</p>;
   return (
     <div className="table-wrap"><table>
-      <thead><tr><th>Run</th><th>Ticker</th><th>Status</th><th>Progress</th><th className="num">Trials</th><th className="num">Passed gates</th><th className="num">Holdout pass</th><th>Started</th></tr></thead>
+      <thead><tr><th>{t("Run")}</th><th>{t("Ticker")}</th><th>{t("Status")}</th><th>{t("Progress")}</th><th className="num">{t("Trials")}</th><th className="num">{t("Passed gates")}</th><th className="num">{t("Holdout pass")}</th><th>{t("Started")}</th></tr></thead>
       <tbody>{runs.map((r) => (
         <tr key={r.id}>
-          <td><Link href={`/strategies/discover/${r.id}`}><b>#{r.id}</b></Link>{r.follow_up && <span className="tag" title={`follow-up of run #${r.parent_run_id ?? "?"}`}>follow-up</span>}</td>
-          <td>{r.ticker} <span className="muted">{(r.kinds || []).join(" + ")}</span></td>
+          <td><Link href={`/strategies/discover/${r.id}`}><b>#{r.id}</b></Link>{r.follow_up && <span className="tag" title={t("follow-up of run #{id}", { id: r.parent_run_id ?? "?" })}>{t("follow-up")}</span>}</td>
+          <td>{r.ticker} <span className="muted">{(r.kinds || []).map((k: string) => t(k)).join(" + ")}</span></td>
           <td><RunStatus status={r.status} /></td>
           <td style={{ minWidth: 160 }}>
             {r.status === "running" ? <><Meter frac={r.progress} /><span className="muted" style={{ fontSize: 12 }}>{r.stage}</span></>
@@ -170,7 +176,7 @@ export function RunsList({ limit = 8 }: { limit?: number }) {
               : <span className="muted" style={{ fontSize: 12 }}>{r.generator}</span>}
           </td>
           <td className="num">{r.trials || "—"}</td><td className="num">{r.trials ? r.passed_gates : "—"}</td>
-          <td className="num">{r.trials ? <span className={r.holdout_pass ? "pos" : ""}>{r.holdout_pass}{r.drafts ? ` · ${r.drafts} draft${r.drafts > 1 ? "s" : ""}` : ""}</span> : "—"}</td>
+          <td className="num">{r.trials ? <span className={r.holdout_pass ? "pos" : ""}>{r.holdout_pass}{r.drafts ? ` · ${t(r.drafts > 1 ? "{n} drafts" : "{n} draft", { n: r.drafts })}` : ""}</span> : "—"}</td>
           <td className="muted">{wall(r.created_at)}</td>
         </tr>
       ))}</tbody>
@@ -181,14 +187,15 @@ export function RunsList({ limit = 8 }: { limit?: number }) {
 /** The Strategies-page panel: generate + recent runs. */
 export function DiscoverPanel({ owner }: { owner: boolean }) {
   const [open, setOpen] = useState(false);
+  const t = useT();
   return (
     <Card className="mt disc-panel" title={
       <span className="row between" style={{ width: "100%" }}>
-        <span>Strategy discovery <span className="muted" style={{ fontWeight: 400 }}>· the bot proposes, backtests and revises single-ticker strategies; a sealed holdout decides what survives</span></span>
-        {owner && <button type="button" className={cls(!open && "primary")} onClick={() => setOpen(!open)}>{open ? "Close" : "Generate strategies…"}</button>}
+        <span>{t("Strategy discovery")} <span className="muted" style={{ fontWeight: 400 }}>· {t("the bot proposes, backtests and revises single-ticker strategies; a sealed holdout decides what survives")}</span></span>
+        {owner && <button type="button" className={cls(!open && "primary")} onClick={() => setOpen(!open)}>{t(open ? "Close" : "Generate strategies…")}</button>}
       </span>}>
       {open && owner && <DiscoverForm />}
-      <h3>Recent runs</h3>
+      <h3>{t("Recent runs")}</h3>
       <RunsList />
     </Card>
   );
@@ -198,14 +205,15 @@ export function DiscoverPanel({ owner }: { owner: boolean }) {
 export function IterateCard({ hash, d, owner }: { hash: string; d: any; owner: boolean }) {
   const [depth, setDepth] = useState<Depth>("quick");
   const { start, busy, error } = useStartRun();
+  const t = useT();
   if (!d) return null;
   const made = d.made_by;
   return (
-    <Card title="Discovery" className="mt">
+    <Card title={t("Discovery")} className="mt">
       {made && (
         <p style={{ marginTop: 0 }}>
-          Found by <Link href={`/strategies/discover/${made.run_id}`}>discovery run #{made.run_id}</Link> (trial #{made.trial_id})
-          {made.holdout && <>: sealed holdout Sharpe {num(made.holdout.sharpe)}{made.holdout.dsr?.dsr != null && <>, deflated Sharpe {num(made.holdout.dsr.dsr)}</>}</>}.
+          {t("Found by {link} (trial #{trial})", { link: <Link href={`/strategies/discover/${made.run_id}`}>{t("discovery run #{id}", { id: made.run_id })}</Link>, trial: made.trial_id })}
+          {made.holdout && <>{t(": sealed holdout Sharpe {v}", { v: num(made.holdout.sharpe) })}{made.holdout.dsr?.dsr != null && t(", deflated Sharpe {v}", { v: num(made.holdout.dsr.dsr) })}</>}.
         </p>
       )}
       {d.ticker ? (
@@ -214,19 +222,18 @@ export function IterateCard({ hash, d, owner }: { hash: string; d: any; owner: b
           <div className="row">
             <button className="primary" disabled={busy} onClick={() => start({ ticker: d.ticker, seed_hash: hash, kinds: [d.kind],
               generations: DEPTHS[depth].generations, max_trials: DEPTHS[depth].max_trials })}>
-              {busy ? "Starting…" : "Let the bot iterate on this strategy"}</button>
+              {t(busy ? "Starting…" : "Let the bot iterate on this strategy")}</button>
             <div className="seg">
-              {(Object.keys(DEPTHS) as Depth[]).map((x) => <button type="button" key={x} className={cls(depth === x && "on")} onClick={() => setDepth(x)}>{DEPTHS[x].label}</button>)}
+              {(Object.keys(DEPTHS) as Depth[]).map((x) => <button type="button" key={x} className={cls(depth === x && "on")} onClick={() => setDepth(x)}>{t(DEPTHS[x].label)}</button>)}
             </div>
           </div>
           <p className="muted" style={{ fontSize: 12 }}>
-            Starts from this file and revises it against its measured weaknesses on {d.ticker}&apos;s discovery sessions. Survivors become new drafts;
-            this version is never changed. The holdout is the same as earlier runs&apos;, so every earlier trial counts against the result.
+            {t("Starts from this file and revises it against its measured weaknesses on {ticker}'s discovery sessions. Survivors become new drafts; this version is never changed. The holdout is the same as earlier runs', so every earlier trial counts against the result.", { ticker: d.ticker })}
           </p>
         </>
-      ) : <p className="muted" style={{ margin: 0 }}>Discovery iterates single-ticker strategies; this one trades {d.kind === "daily" ? "a basket" : "the watchlist"}.</p>}
+      ) : <p className="muted" style={{ margin: 0 }}>{t(d.kind === "daily" ? "Discovery iterates single-ticker strategies; this one trades a basket." : "Discovery iterates single-ticker strategies; this one trades the watchlist.")}</p>}
       {!!d.follow_ups?.length && (
-        <p className="muted" style={{ marginBottom: 0 }}>Follow-up runs: {d.follow_ups.map((r: any, i: number) => (
+        <p className="muted" style={{ marginBottom: 0 }}>{t("Follow-up runs:")} {d.follow_ups.map((r: any, i: number) => (
           <span key={r.id}>{i ? ", " : ""}<Link href={`/strategies/discover/${r.id}`}>#{r.id}</Link> <StatusPill status={r.status} /></span>))}</p>
       )}
     </Card>
