@@ -28,7 +28,7 @@ services:
     build: .
     user: "${APP_UID:-10001}:${APP_GID:-10001}"
     command: ["python", "-m", "services.models"]
-    env_file: [./secrets/db.env, ./secrets/models.env]   # ANTHROPIC_API_KEY; optional remote Laya/Gemini credentials
+    env_file: [./secrets/db.env, ./secrets/models.env]   # KIMI_API_KEY; optional remote Laya/Gemini credentials
     environment: { MODELS_HOST: "0.0.0.0", BROKER_BACKEND: "alpaca", MODE: "paper", HF_HOME: "/app/data/model-cache" }
     volumes:
       - ./config:/app/config:ro
@@ -84,11 +84,12 @@ services:
 
   caddy:
     image: caddy:2-alpine
-    ports: ["443:443"]
-    volumes: ["./config/Caddyfile:/etc/caddy/Caddyfile:ro", "caddy_data:/data"]
+    ports: ["80:80", "443:443"]                # 80 only answers ACME challenges and redirects to HTTPS
+    volumes: ["./config/Caddyfile:/etc/caddy/Caddyfile:ro", "caddy_data:/data", "caddy_config:/config"]
     depends_on: [dashboard]
     restart: unless-stopped
 
 volumes:
   pgdata:
   caddy_data:
+  caddy_config:

@@ -16,7 +16,7 @@ function newThread(prefix: string) {
   return `${prefix}:${rand}`;
 }
 
-/** prefix: "strategy:<hash>" or "trade:<id>". Each conversation is a fresh Claude thread. */
+/** prefix: "strategy:<hash>" or "trade:<id>". Each conversation is a fresh Kimi thread. */
 export function Chat({ prefix, intro }: { prefix: string; intro: string }) {
   const { me } = useSession();
   const [thread, setThread] = useState(() => newThread(prefix));

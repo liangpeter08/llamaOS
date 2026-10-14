@@ -6,7 +6,7 @@ import { Notice, Pill } from "@/components/ui";
 type Hours = { enabled: boolean; start: string; end: string; weekdays_only: boolean };
 export type NewsClaudeStatus = { on: boolean; hours: Hours; active_now: boolean };
 
-// Owner switch for sending news to Claude, plus optional active hours (US/Eastern).
+// Owner switch for sending news to Kimi, plus optional active hours (US/Eastern).
 export function NewsToClaude({ status, owner, reload }: { status: NewsClaudeStatus; owner: boolean; reload: () => void }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "bad"; text: string } | null>(null);
@@ -32,9 +32,9 @@ export function NewsToClaude({ status, owner, reload }: { status: NewsClaudeStat
         <label className="row" style={{ gap: 6 }}>
           <input type="checkbox" checked={status.on} disabled={disabled}
             onChange={(e) => run("/api/settings/news-to-claude", { on: e.target.checked })} />
-          <b>Send news to Claude</b>
+          <b>Send news to Kimi</b>
         </label>
-        <Pill kind={status.active_now ? "good" : ""}>{status.active_now ? "Claude active now" : "Claude paused now"}</Pill>
+        <Pill kind={status.active_now ? "good" : ""}>{status.active_now ? "Kimi active now" : "Kimi paused now"}</Pill>
       </div>
       <div className="row" style={{ gap: 6, marginTop: 6, flexWrap: "wrap" }}>
         <label className="row" style={{ gap: 6 }}>
@@ -56,9 +56,9 @@ export function NewsToClaude({ status, owner, reload }: { status: NewsClaudeStat
         {hours.enabled && dirty && <button className="primary" disabled={disabled} onClick={() => saveHours(hours)}>Save hours</button>}
       </div>
       <p className="muted" style={{ margin: "4px 0 0", fontSize: 12 }}>
-        {!status.on ? "Off: news is triaged by Laya, Gemini or the offline keyword model only. Strategy authoring, chat and discovery still use Claude."
-          : saved.enabled ? `News triage may use Claude (Haiku quick reads, Sonnet deep reads on escalation) only ${saved.start}–${saved.end} ET${saved.weekdays_only ? " on weekdays" : ""}; outside that window it falls back to Laya, Gemini or the offline model.`
-          : "News triage may use Claude (Haiku quick reads, Sonnet deep reads on escalation) at any time when it is the configured provider."}
+        {!status.on ? "Off: news is triaged by Laya, Gemini or the offline keyword model only. Strategy authoring, chat and discovery still use Kimi."
+          : saved.enabled ? `News triage may use Kimi (K2.7 quick and deep reads) only ${saved.start}–${saved.end} ET${saved.weekdays_only ? " on weekdays" : ""}; outside that window it falls back to Laya, Gemini or the offline model.`
+          : "News triage may use Kimi (K2.7 quick and deep reads) at any time when it is the configured provider."}
       </p>
     </div>
   );

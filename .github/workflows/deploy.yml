@@ -1,0 +1,104 @@
+name: build-and-deploy
+
+# Builds the two images on a cloud runner (so the cheap ECS never compiles torch),
+# pushes them to the registry, then SSHes into the Hong Kong ECS and rolls them out.
+#
+# Runs automatically on push to main, and has a manual "Run workflow" button.
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   REGISTRY            e.g. registry.cn-hongkong.aliyuncs.com   (or ghcr.io)
+#   REGISTRY_NS         registry namespace / repo owner
+#   REGISTRY_USERNAME   registry login user
+#   REGISTRY_PASSWORD   registry login password
+#   ECS_HOST            public IP/hostname of the ECS
+#   ECS_USER            SSH user (Aliyun Ubuntu is usually root)
+#   ECS_SSH_KEY         PRIVATE half of a dedicated ed25519 key (public key in ECS authorized_keys)
+# Optional: ECS_PORT (default 22)
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to deploy (default: this commit's short SHA)"
+        required: false
+        default: ""
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ${{ secrets.REGISTRY }}
+  REGISTRY_NS: ${{ secrets.REGISTRY_NS }}
+
+jobs:
+  build:
+    if: ${{ vars.SKIP_DEPLOY != 'true' }}
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image tag
+        id: meta
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          echo "tag=${TAG:-${GITHUB_SHA::12}}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Build & push Python service image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_NS }}/llamaos-app:${{ steps.meta.outputs.tag }}
+            ${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_NS }}/llamaos-app:latest
+          cache-from: type=registry,ref=${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_NS }}/llamaos-app:buildcache
+          cache-to: type=registry,ref=${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_NS }}/llamaos-app:buildcache,mode=max
+
+      - name: Build & push dashboard image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./services/dashboard
+          file: ./services/dashboard/Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            API_URL=http://api:8080
+          tags: |
+            ${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_NS }}/llamaos-dashboard:${{ steps.meta.outputs.tag }}
+            ${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_NS }}/llamaos-dashboard:latest
+          cache-from: type=registry,ref=${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_NS }}/llamaos-dashboard:buildcache
+          cache-to: type=registry,ref=${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_NS }}/llamaos-dashboard:buildcache,mode=max
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Roll out over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.ECS_HOST }}
+          username: ${{ secrets.ECS_USER }}
+          key: ${{ secrets.ECS_SSH_KEY }}
+          port: ${{ secrets.ECS_PORT || 22 }}
+          script_stop: true
+          script_timeout: 10m
+          script: bash /opt/llamaos/scripts/deploy/deploy.sh ${{ needs.build.outputs.tag }}

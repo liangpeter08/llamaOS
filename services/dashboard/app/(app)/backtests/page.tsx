@@ -171,7 +171,7 @@ export default function BacktestsPage() {
               <select value={config.model_replay ?? "recorded"} onChange={e => { setConfig(c => c ? { ...c, model_replay: e.target.value as Config["model_replay"], confirm_model_cost: false } : c); setPreflight(null); }}>
                 <option value="recorded">Recorded signals (free; what was recorded live)</option>
                 <option value="offline">Offline model re-triage (free, deterministic, cruder)</option>
-                <option value="models">Live models: Laya, then Claude on escalation (paid, not deterministic)</option>
+                <option value="models">Live models: Laya, then Kimi on escalation (paid, not deterministic)</option>
               </select></Field>
             {numberInput("model_budget_usd", "Paid model budget · USD per run", 0, 200, 1, "Paid calls stop here; remaining stories use the offline model and the report counts them.", config.model_replay !== "models")}
           </div>
@@ -466,15 +466,15 @@ function ReplayEstimate({ r, confirmed, onConfirm }: { r: any; confirmed: boolea
     {(inf.news || inf.assumptions) && <table><tbody>
       {inf.news && <tr><td>News stories in the window</td><td className="num">{r.stories}{r.news_estimated ? " (estimated; not downloaded yet)" : ""}{r.cached ? ` · ${r.cached} already assessed` : ""}</td></tr>}
       {inf.assumptions && r.mode === "models" && <tr><td>Assumption assessments</td><td className="num">{r.assumption_sessions} sessions</td></tr>}
-      {r.mode === "models" && <tr><td>Estimated Claude cost</td><td className="num"><b>${r.claude_usd.toFixed(2)}</b>{r.providers.laya ? " (T1 on local Laya: free)" : " (T1 on Claude Haiku: Laya isn't running)"}</td></tr>}
+      {r.mode === "models" && <tr><td>Estimated Kimi cost</td><td className="num"><b>${r.claude_usd.toFixed(2)}</b>{r.providers.laya ? " (T1 on local Laya: free)" : " (T1 on Kimi K2.7: Laya isn't running)"}</td></tr>}
       {r.mode === "offline" && <tr><td>Estimated cost</td><td className="num">$0.00 (offline model)</td></tr>}
     </tbody></table>}
     {r.mode === "models" && !r.providers.available && <Notice kind="bad">The models service isn&apos;t running, so live-model replay can&apos;t start.</Notice>}
-    {r.mode === "models" && !r.providers.claude && r.providers.available && <Notice kind="warn">No Claude API key on the models service: escalations fall back to the offline model.</Notice>}
+    {r.mode === "models" && !r.providers.claude && r.providers.available && <Notice kind="warn">No Kimi API key on the models service: escalations fall back to the offline model.</Notice>}
     {r.over_budget && <Notice kind="warn">The estimate is above your budget: paid calls stop at the budget and the rest of the window uses the offline model.</Notice>}
     {r.high_cost && <Notice kind="warn">
       <label className="row"><input type="checkbox" checked={confirmed} onChange={e => onConfirm(e.target.checked)} />
-        I accept an estimated ${r.claude_usd.toFixed(2)} of Claude usage for this run (capped at the budget).</label>
+        I accept an estimated ${r.claude_usd.toFixed(2)} of Kimi usage for this run (capped at the budget).</label>
     </Notice>}
     {r.mode === "models" && <p className="muted">Paid answers aren&apos;t deterministic, and models trained after these dates may reflect hindsight even with point-in-time evidence.</p>}
   </>;

@@ -31,7 +31,7 @@ class Offline(RuntimeError):
 
 def _need_llm():
     if not llm.available():
-        raise Offline("Claude isn't configured: set ANTHROPIC_API_KEY for the models service to enable this.")
+        raise Offline("Kimi isn't configured: set KIMI_API_KEY for the models service to enable this.")
 
 
 # ---------------------------------------------------------------- chat
@@ -81,7 +81,7 @@ def trade_context(conn, trade_id: int) -> str:
 
 
 def chat(conn, thread: str, message: str, actor: str) -> dict:
-    """thread: 'strategy:<hash>:<n>' or 'trade:<id>:<n>'. Each thread is a fresh Claude conversation."""
+    """thread: 'strategy:<hash>:<n>' or 'trade:<id>:<n>'. Each thread is a fresh Kimi conversation."""
     _need_llm()
     kind, ref, _ = thread.split(":", 2)
     history = db.rows(conn, "SELECT role, content FROM chats WHERE thread=? ORDER BY id", (thread,))
@@ -158,7 +158,7 @@ def compiler_reference(risk) -> str:
 
 
 def compile_text(conn, request: str, actor: str, name: str = "") -> dict:
-    """English -> DSL draft via Claude Opus, validated; one repair round on validator errors."""
+    """English -> DSL draft via Kimi K3, validated; one repair round on validator errors."""
     _need_llm()
     risk = load_risk()
     model = _model_id("claude_opus")

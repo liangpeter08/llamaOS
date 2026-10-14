@@ -136,7 +136,7 @@ export function DiscoverForm({ onDone }: { onDone?: () => void }) {
       <div className="row" style={{ marginTop: 10 }}>
         <label className="row" style={{ gap: 4 }} title={pf && !pf.llm ? "No model key on the models service: offline templates only" : undefined}>
           <input type="checkbox" checked={claude && !!pf?.llm} disabled={!pf?.llm} onChange={(e) => setClaude(e.target.checked)} />
-          Claude proposes and revises{pf && !pf.llm && <span className="muted"> (no key: templates only)</span>}
+          Kimi proposes and revises{pf && !pf.llm && <span className="muted"> (no key: templates only)</span>}
         </label>
         <label className="row" style={{ gap: 4 }}><input type="checkbox" checked={save} onChange={(e) => setSave(e.target.checked)} /> Save holdout survivors as drafts</label>
         <label className="row" style={{ gap: 4 }} title="Every valid, evaluated trial becomes its own draft strategy (can be many files)">

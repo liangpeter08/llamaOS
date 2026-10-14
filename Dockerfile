@@ -10,6 +10,7 @@ COPY common ./common
 COPY core ./core
 COPY dsl ./dsl
 COPY backtest ./backtest
+COPY discovery ./discovery
 COPY services/__init__.py ./services/__init__.py
 COPY services/operations.py ./services/operations.py
 COPY services/broker ./services/broker

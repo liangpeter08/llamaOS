@@ -8,6 +8,5 @@ cryptography==46.0.7
 pyotp==2.10.0
 httpx==0.28.1
 itsdangerous==2.2.0
-anthropic==1.13.0
 pytest==9.1.1
 laya==0.4.1

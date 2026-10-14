@@ -232,7 +232,7 @@ def provider_status() -> list[dict]:
         "heuristic": "offline keyword model, always on",
     }
     return [{"name": n, "available": provider_available(n), "model": ("laya:" + os.environ.get("LAYA_MODEL", "typed-decisions")) if n == "laya" else _model_id(n) if n != "heuristic" else heuristic.MODEL_ID,
-             "note": notes.get(n, "needs ANTHROPIC_API_KEY")} for n in names]
+             "note": notes.get(n, "needs KIMI_API_KEY")} for n in names]
 
 
 def recent_headlines(conn, symbol: str, before_ts: int, limit: int = 8) -> list[dict]:

@@ -1,0 +1,33 @@
+# Production overrides — used on the Hong Kong ECS, never for local development.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Purpose:
+#   1. Every Python service and the dashboard run prebuilt images that GitHub Actions
+#      builds on a cloud runner and pushes to the registry (the cheap ECS never builds
+#      torch). Image coordinates come from the host's .env and the IMAGE_TAG env var:
+#         REGISTRY_NAMESPACE=registry.cn-hongkong.aliyuncs.com/<your-namespace>
+#         IMAGE_TAG=<12-char git sha>   (exported by scripts/deploy/deploy.sh)
+#   2. Caddy also publishes port 80 so it can finish the Let's Encrypt HTTP-01 challenge
+#      and redirect http:// -> https://. Open 80 AND 443 in the Aliyun security group.
+services:
+  broker:
+    image: ${REGISTRY_NAMESPACE}/llamaos-app:${IMAGE_TAG}
+    pull_policy: always
+  models:
+    image: ${REGISTRY_NAMESPACE}/llamaos-app:${IMAGE_TAG}
+    pull_policy: always
+  api:
+    image: ${REGISTRY_NAMESPACE}/llamaos-app:${IMAGE_TAG}
+    pull_policy: always
+  watchdog:
+    image: ${REGISTRY_NAMESPACE}/llamaos-app:${IMAGE_TAG}
+    pull_policy: always
+  operations:
+    image: ${REGISTRY_NAMESPACE}/llamaos-app:${IMAGE_TAG}
+    pull_policy: always
+  dashboard:
+    image: ${REGISTRY_NAMESPACE}/llamaos-dashboard:${IMAGE_TAG}
+    pull_policy: always
+  caddy:
+    ports: ["80:80", "443:443"]

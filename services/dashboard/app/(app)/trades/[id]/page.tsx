@@ -54,7 +54,7 @@ export default function TradePage() {
           ) : <Empty>No intent recorded.</Empty>}
         </Card>
       </div>
-      <Card title="Ask Claude about this trade" className="mt" id="chat">
+      <Card title="Ask Kimi about this trade" className="mt" id="chat">
         <Chat prefix={`trade:${t.id}`} intro="A new conversation seeded with this trade, its decision record and fills." />
       </Card>
     </>

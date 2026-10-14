@@ -44,15 +44,19 @@ class Alpaca:
         self.history_feed = os.environ.get("ALPACA_HISTORY_FEED", "sip")
         self._headers = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
         self._own_client = client is None
+        self._read_timeout = 10
         self.http = client or self._new_client()
 
     def _new_client(self):
-        return httpx.Client(headers=self._headers, timeout=15, follow_redirects=False)
+        # Fail fast on a stuck connection so one bad request doesn't hold the trading loop; the next loop retries.
+        # Clones (history downloads) keep a longer read timeout for large pages.
+        return httpx.Client(headers=self._headers, timeout=httpx.Timeout(self._read_timeout, connect=5), follow_redirects=False)
 
     def clone(self):
         """The same account on its own connection pool, so one thread's stuck request can't block another's."""
         other = object.__new__(Alpaca)
         other.__dict__.update(self.__dict__)
+        other._read_timeout = 30
         if self._own_client:
             other.http = other._new_client()
         return other

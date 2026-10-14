@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import signal
+import threading
 import time
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
@@ -30,6 +31,8 @@ log = logging.getLogger("paper")
 LOCK = 0x5041504552
 DAILY_FETCH_DAYS = 400  # calendar days of daily bars: enough for the DSL's 250-session daily features
 TERMINAL = {"filled", "canceled", "expired", "rejected", "replaced"}
+SLOW_TICK = 20  # seconds; a loop slower than this is logged with its per-phase timings
+ORDER_REFRESH = 20  # seconds between single-order lookups for orders no longer in the open-orders list
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS paper_intents(
  intent_id BIGINT PRIMARY KEY, body TEXT NOT NULL, client_id TEXT UNIQUE NOT NULL,
@@ -48,6 +51,8 @@ class PaperBroker:
         self.conn = conn or db.get()
         db.init(self.conn)
         self.conn.script(SCHEMA)
+        self.phases, self.phase_at = [], time.time()
+        self.open_ids, self.order_fetched = set(), {}
         if not self.conn.execute("SELECT pg_try_advisory_lock(?) AS locked", (LOCK,)).fetchone()["locked"]:
             raise RuntimeError("Another paper executor already owns this database")
         self.api = api or Alpaca()
@@ -288,10 +293,22 @@ class PaperBroker:
             self.conn.execute("DELETE FROM paper_external_exits WHERE broker_id=?",(external["broker_id"],))
         self.positions = self.api.positions()
         self.open_orders = self.api.orders()
+        open_by_id = {o["id"]: o for o in self.open_orders}
+        was_open, self.open_ids = self.open_ids, set(open_by_id)
+
+        def lookup(oid):
+            # Open orders (with nested legs) come from the one list call; others are fetched when they just left
+            # the list (filled/cancelled), and otherwise at most every ORDER_REFRESH seconds, to keep the loop short.
+            if oid in open_by_id:
+                return open_by_id[oid]
+            if oid not in was_open and time.time() - self.order_fetched.get(oid, 0) < ORDER_REFRESH:
+                return None
+            self.order_fetched[oid] = time.time()
+            return self.api.order(oid)
         self.sleeve_syms = self.desk.owned()
         self.sleeve_day_pnl = self.desk.day_pnl(self.positions, self.day) if self.sleeve_syms else 0.0
         for row in db.rows(self.conn, "SELECT p.* FROM paper_intents p JOIN intents i ON i.id=p.intent_id WHERE i.status IN ('submitting','submitted') OR (p.broker_id IS NOT NULL AND (i.ts>=? OR EXISTS (SELECT 1 FROM paper_orders o WHERE o.intent_id=i.id AND o.kind='entry' AND o.filled_qty>COALESCE((SELECT SUM(x.filled_qty) FROM paper_orders x WHERE x.intent_id=i.id AND x.kind!='entry'),0))))", (T.open_ts(self.day),)):
-            order = self.api.order(row["broker_id"]) if row["broker_id"] else self.api.by_client_id(row["client_id"])
+            order = lookup(row["broker_id"]) if row["broker_id"] else self.api.by_client_id(row["client_id"])
             if order:
                 self.conn.execute("UPDATE paper_intents SET broker_id=? WHERE intent_id=?", (order["id"], row["intent_id"]))
                 self.track_order(order, row["intent_id"], "entry")
@@ -301,8 +318,8 @@ class PaperBroker:
                     self.api.cancel(order["id"])
         for row in db.rows(self.conn, "SELECT * FROM paper_orders WHERE kind NOT IN ('entry','stop','target')"):
             raw = json.loads(row["raw"])
-            if raw["status"] not in TERMINAL:
-                self.track_order(self.api.order(row["broker_id"]), row["intent_id"], row["kind"])
+            if raw["status"] not in TERMINAL and (order := lookup(row["broker_id"])):
+                self.track_order(order, row["intent_id"], row["kind"])
         self.unmanaged = any(not o.get("client_order_id", "").startswith("llama-") and
                              not db.row(self.conn, "SELECT broker_id FROM paper_orders WHERE broker_id=?", (o["id"],)) for o in self.open_orders)
         for pos in self.positions:
@@ -520,25 +537,33 @@ class PaperBroker:
         db.kv_set(self.conn, "risk.sha256", self.risk.sha256)
         audit.log(self.conn, "risk.loaded", "broker", {"rev": rev, "sha256": self.risk.sha256})
 
+    def mark(self,phase):
+        """Record how long the loop spent in each phase, so a slow loop (stale heartbeat) names its cause."""
+        now=time.time()
+        self.phases.append((phase,round(now-self.phase_at,2)))
+        self.phase_at=now
+
     def tick(self):
         self.reload_risk()
-        self.clock=self.api.clock()
+        self.clock=self.api.clock();self.mark("clock")
         now=epoch(self.clock["timestamp"])
         day=T.et(now).date()
         if day!=self.day:
-            self.setup_day(day)
-        self.sync()
-        self.refresh_monitoring()
-        self.commands()
+            self.setup_day(day);self.mark("setup_day")
+        self.sync();self.mark("sync")
+        self.refresh_monitoring();self.mark("refresh_monitoring")
+        self.commands();self.mark("commands")
         db.kv_set(self.conn,"sim.now",now)  # existing models/dashboard consume this clock
         if time.time()-self.last_poll>=15:
             start=min((d.ts[-1] for d in [*self.days.values(),*self.refs.values()] if d.ts),default=T.open_ts(day))
             if self.syms and self.close_ts and time.time()>T.open_ts(day):
                 self.store_bars(self.api.bars(self.syms+[r for r in self.refs if r not in self.syms],"1Min",start,min(time.time()-2,self.close_ts)))
+                self.mark("bars")
             try:
                 self.signals_and_news(now)
             except httpx.HTTPError:
                 self.last_error="news feed unavailable"
+            self.mark("news")
             self.last_poll=time.time()
         ks=(db.kv_get(self.conn,"kill_switch") or {}).get("active")
         why=funds.monitor(self.conn,self.risk)
@@ -587,8 +612,10 @@ class PaperBroker:
                 self.approvals()
         else:
             self.conn.execute("UPDATE intents SET status='expired' WHERE status IN ('pending','approved') AND expires_wall<?",(time.time(),))
+        self.mark("exits_and_entries")
         intraday={p["symbol"] for p in self.positions if p["symbol"] not in self.sleeve_syms}|{o["symbol"] for o in self.open_orders if o.get("order_class")=="bracket"}
         self.desk.tick(self.clock,self.account_data,self.positions,self.close_ts,bool(ks),self.paused,intraday)
+        self.mark("portfolio_desk")
         db.kv_set(self.conn,"feed.last_bar",max(self.last_bar.values(),default=None))
         db.kv_set(self.conn,"feed.symbols",self.last_bar)
         db.kv_set(self.conn,"paper.error",None)
@@ -597,6 +624,14 @@ class PaperBroker:
                       "source":"alpaca_paper","paused":self.paused,"kill":bool(ks),"next_open":self.clock["next_open"],
                       "feed":self.api.feed,"error":self.last_error or self.desk.mismatch,"strategies":[r.s.id for r in self.runners.values()],
                       "portfolio":[s.id for _,s,_ in self.desk.strats.values()]})
+
+    def alive(self):
+        """Process liveness, separate from health.broker (written once per completed loop): lets the dashboard
+        tell a slow loop (network trouble) from a dead process."""
+        c=db.connect()
+        while not self.stop:
+            db.kv_set(c,"health.broker_process",{"ts":time.time()})
+            time.sleep(5)
 
     def run(self):
         try:
@@ -612,17 +647,23 @@ class PaperBroker:
                                                    "account":(BA.active(self.conn) or {}).get("label") or self.api.source})
         from .history_worker import HistoryWorker
         HistoryWorker(self.api.clone() if hasattr(self.api, "clone") else self.api).start()  # backtest data on demand, on its own DB and HTTP connections
+        threading.Thread(target=self.alive,name="liveness",daemon=True).start()
         while not self.stop:
             if BA.rev(self.conn)!=self.api.account_rev:
                 log.info("Alpaca account switched on the dashboard; restarting on the new account")
                 raise SystemExit(BA.RESTART)
+            started=self.phase_at=time.time();self.phases=[]
             try:
                 self.last_error=""
                 self.tick()
             except Exception as e:
                 self.last_error=type(e).__name__
-                log.error("Paper loop failed (%s); entries remain blocked until a successful refresh",type(e).__name__)
-                db.kv_set(self.conn,"paper.error",{"type":type(e).__name__,"ts":time.time()})
+                log.error("Paper loop failed (%s) after %s; entries remain blocked until a successful refresh",type(e).__name__,self.phases)
+                db.kv_set(self.conn,"paper.error",{"type":type(e).__name__,"ts":time.time(),"phases":self.phases})
+            took=time.time()-started
+            if took>SLOW_TICK:
+                log.warning("Paper loop took %.0fs: %s",took,self.phases)
+                db.kv_set(self.conn,"paper.slow_tick",{"ts":time.time(),"seconds":round(took,1),"phases":self.phases,"error":self.last_error})
             time.sleep(5)
 
 

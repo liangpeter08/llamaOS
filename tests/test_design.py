@@ -30,7 +30,7 @@ def test_design_turns_validate_and_repair(conn, claude):
     res = authoring.design(conn, THREAD, "buy breakouts on news", "owner")
     assert res["draft"] is None
     first = calls[0]
-    assert first["model"] == "claude-opus-5-5" and first["effort"] == "high" and first["cache"]
+    assert first["model"] == "kimi-k3" and first["effort"] == "high" and first["cache"]
     assert "existing_strategies" in first["messages"][0]["content"] and "buy breakouts on news" in first["messages"][0]["content"]
     assert "strategy architect" in first["system"] and "DSL reference" in first["system"]
 
@@ -119,7 +119,7 @@ def test_review_panel(conn, monkeypatch, tmp_path):
     assert r.status_code == 200, r.text
     v = r.json()
     assert sorted(x[0] for x in seen) == ["analyst", "researcher", "risk", "trader"]
-    assert all(m == "claude-opus-5-5" and schema for _, m, schema, _ in seen)
+    assert all(m == "kimi-k3" and schema for _, m, schema, _ in seen)
     assert any("RISK TEAM" in sysp for role, _, _, sysp in seen if role == "risk")
     assert v["reviews"]["risk"]["verdict"] == "approve_with_changes" and not v["reviews"]["trader"]["ok"]
     panel = v["messages"][-1]["content"]
@@ -200,3 +200,26 @@ def test_edit_saves_next_version_and_leaves_original(conn, monkeypatch, tmp_path
     assert c.post(f"/api/strategies/{src}/edit", json={"text": "dsl: 0.1\nid: x\n"}, headers=h).status_code == 400  # invalid
     other = text.replace("id: orb_news_long", "id: something_else", 1)
     assert "Keep id" in c.post(f"/api/strategies/{src}/edit", json={"text": other}, headers=h).json()["detail"]
+
+
+def test_editing_a_paper_strategy_switches_it_in_place(conn, monkeypatch, tmp_path):
+    from tests.test_api import login
+    from common import registry
+    from common.config import load_risk
+    (tmp_path / "strategies").mkdir()
+    monkeypatch.setattr(registry, "STRATEGIES_DIR", tmp_path / "strategies")
+    text = (ROOT / "strategies" / "orb_news_long.v1.yaml").read_text()
+    registry.write_new_version("orb_news_long", text)
+    registry.sync(conn, load_risk())
+    src = db.row(conn, "SELECT hash FROM strategies WHERE sid='orb_news_long'")["hash"]
+    registry.set_status(conn, src, "paper", "owner", paper_started_at=123.0)
+    conn.execute("UPDATE strategies SET mode='paper_auto', display_name='ORB' WHERE hash=?", (src,))
+    c, csrf, _ = login(conn)
+    r = c.post(f"/api/strategies/{src}/edit", json={"text": text.replace("dsl: 0.1", "dsl: 0.1\n# tuned by hand", 1)},
+               headers={"x-csrf-token": csrf})
+    assert r.status_code == 200, r.text
+    new = db.row(conn, "SELECT version, status, mode, paper_started_at, display_name FROM strategies WHERE hash=?", (r.json()["hash"],))
+    assert new == {"version": 2, "status": "paper", "mode": "paper_auto", "paper_started_at": 123.0, "display_name": "ORB"}
+    assert db.row(conn, "SELECT status FROM strategies WHERE hash=?", (src,))["status"] == "retired"
+    assert db.kv_get(conn, "monitoring.strategy." + r.json()["hash"]) is True
+    assert db.row(conn, "SELECT kind FROM commands ORDER BY id DESC LIMIT 1")["kind"] == "reload"

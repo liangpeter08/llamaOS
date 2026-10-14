@@ -175,6 +175,10 @@ def health(c) -> dict:
     for k in ("broker", "models", "watchdog", "operations", "triage"):
         age = db.kv_age(c, f"health.{k}")
         out[k] = {"age": age, "ok": age is not None and age < 30}
+    # The broker loop can run long on a bad network while the process is fine: "slow", not "down".
+    proc = db.kv_age(c, "health.broker_process")
+    out["broker"]["process_age"] = proc
+    out["broker"]["state"] = "up" if out["broker"]["ok"] else "slow" if proc is not None and proc < 30 else "down"
     out["reconcile"] = db.kv_get(c, "reconcile") or {}
     out["operations"] = {**out["operations"], **(db.kv_get(c,"health.operations") or {})}
     out["backup"] = db.kv_get(c, "backup.latest")
@@ -875,10 +879,11 @@ class EditIn(BaseModel):
 
 @app.post("/api/strategies/{h}/edit")
 def strategy_edit(h: str, body: EditIn, u: dict = Depends(owner)):
-    """Save an edited copy of this file as the next version (a new draft). The edited version is never changed in place:
-    approvals, backtests and trades stay pinned to its hash."""
+    """Save an edit. The file is written as the next version (versions are never changed in place, so backtests,
+    approvals and trades stay pinned to their hash); a running (paper) strategy switches to the edited version and
+    keeps its status, mode, allocation and monitoring, so the edit takes effect without promoting it again."""
     c = conn()
-    row = db.row(c, "SELECT sid, version FROM strategies WHERE hash=?", (h,))
+    row = db.row(c, "SELECT * FROM strategies WHERE hash=?", (h,))
     if not row:
         fail("no such strategy", 404)
     old = registry.text_of(c, h) or ""
@@ -896,8 +901,47 @@ def strategy_edit(h: str, body: EditIn, u: dict = Depends(owner)):
     path = registry.write_new_version(row["sid"], text)
     registry.sync(c, risk)
     nh = validate(path.read_text(), risk).hash
+    if row["display_name"]:
+        c.execute("UPDATE strategies SET display_name=? WHERE hash=?", (row["display_name"], nh))
     audit.log(c, "strategy.edited", u["username"], {"from": h, "sid": row["sid"], "version": row["version"], "to": path.name, "hash": nh})
-    return ok(f"Saved your edit as {path.name} (new draft version).", hash=nh, path=path.name)
+    if row["status"] != "paper":
+        return ok(f"Saved your edit as {path.name} (new draft version).", hash=nh, path=path.name)
+    why = _carry_blocker(c, h, v.strategy)
+    if why:
+        return ok(f"Saved your edit as {path.name} as a draft; {row['sid']} v{row['version']} keeps running because {why}. "
+                  "Promote the new version when ready.", hash=nh, path=path.name)
+    with db.tx(c):
+        monitoring.activate(c, v.strategy, u["username"])
+        db.kv_set(c, "monitoring.strategy." + nh, True)
+        enforce = db.kv_get(c, f"overlays.enforce.{h}")
+        if enforce is not None:
+            db.kv_set(c, f"overlays.enforce.{nh}", enforce)
+        v2 = getattr(v.strategy, "v2", None)
+        if v2 is not None and v2.overlays:
+            db.kv_set(c, f"scenario_catalog.pin.{nh}", v2.catalog_hash)
+        registry.set_status(c, nh, "paper", u["username"], paper_started_at=row["paper_started_at"] or time.time())
+        c.execute("UPDATE strategies SET mode=? WHERE hash=?", (row["mode"], nh))
+        registry.set_status(c, h, "retired", u["username"])
+        audit.log(c, "strategy.edited_in_place", u["username"], {"from": h, "to": nh, "sid": row["sid"], "mode": row["mode"]})
+    command("reload", {}, u["username"])
+    return ok(f"Saved as {path.name} and switched {row['sid']} to it: still in paper ({row['mode'].replace('_', ' ')}), "
+              "same allocation. Open positions from the previous version keep their exits.", hash=nh, path=path.name)
+
+
+def _carry_blocker(c, h: str, s) -> str | None:
+    """Why a running strategy can't switch to its edited version in place (None = it can)."""
+    v2 = getattr(s, "v2", None)
+    if v2 is not None:
+        if market_inputs.missing_feeds(s):
+            return "the edit needs an index feed that isn't configured"
+        if v2.review_required:
+            return "the edit's authoring.status needs your review before it can run"
+        if v2.overlays and not v2.catalog_hash:
+            return "config/scenario-catalog.yaml is missing"
+    if s.kind == "portfolio" and (sleeves.holdings(c, h)[0] or db.row(
+            c, f"SELECT id FROM portfolio_orders WHERE strategy_hash=? AND status IN ({','.join('?' * len(sleeves.OPEN))})", (h, *sleeves.OPEN))):
+        return "its portfolio sleeve holds positions or working orders, which stay with the version that placed them"
+    return None
 
 
 @app.post("/api/strategies/{h}/apply-diff")
@@ -1032,7 +1076,7 @@ def _summarize_backtest(rep: dict) -> dict:
 
 @app.post("/api/design/{thread}/backtest")
 def design_backtest(thread: str, body: DraftIn, u: dict = Depends(owner)):
-    """Backtest an unsaved draft and add the result to the conversation, so Claude can iterate on it."""
+    """Backtest an unsaved draft and add the result to the conversation, so Kimi can iterate on it."""
     c = conn()
     _design_thread(thread)
     risk = load_risk()
@@ -1406,11 +1450,11 @@ class NewsClaudeIn(BaseModel):
 
 @app.post("/api/settings/news-to-claude")
 def set_news_to_claude(body: NewsClaudeIn, u: dict = Depends(owner)):
-    """Owner switch: send news items to Claude for triage (off = Laya, Gemini or the offline keyword model only)."""
+    """Owner switch: send news items to Kimi for triage (off = Laya, Gemini or the offline keyword model only)."""
     c = conn()
     db.kv_set(c, news_claude.ON_KEY, body.on)
     audit.log(c, "settings.news_to_claude", u["username"], {"on": body.on})
-    return ok("News is now sent to Claude." if body.on else "News is no longer sent to Claude.")
+    return ok("News is now sent to Kimi." if body.on else "News is no longer sent to Kimi.")
 
 
 class NewsClaudeHoursIn(BaseModel):
@@ -1422,7 +1466,7 @@ class NewsClaudeHoursIn(BaseModel):
 
 @app.post("/api/settings/news-to-claude/hours")
 def set_news_to_claude_hours(body: NewsClaudeHoursIn, u: dict = Depends(owner)):
-    """Owner schedule: only send news to Claude between start and end (US/Eastern). Disabled = any time."""
+    """Owner schedule: only send news to Kimi between start and end (US/Eastern). Disabled = any time."""
     if not (news_claude.valid_hhmm(body.start) and news_claude.valid_hhmm(body.end)):
         fail("times must be HH:MM (24-hour)")
     c = conn()
@@ -1430,9 +1474,9 @@ def set_news_to_claude_hours(body: NewsClaudeHoursIn, u: dict = Depends(owner)):
     db.kv_set(c, news_claude.HOURS_KEY, hours)
     audit.log(c, "settings.news_to_claude_hours", u["username"], hours)
     if not body.enabled:
-        return ok("Active hours off: news goes to Claude whenever the switch is on.")
+        return ok("Active hours off: news goes to Kimi whenever the switch is on.")
     days = "weekdays" if body.weekdays_only else "every day"
-    return ok(f"News goes to Claude only {body.start}–{body.end} ET, {days}.")
+    return ok(f"News goes to Kimi only {body.start}–{body.end} ET, {days}.")
 
 
 # ---------------------------------------------------------------- Alpaca paper accounts

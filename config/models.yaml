@@ -9,9 +9,10 @@ tiers:
   authoring:
     providers: [claude_opus]
 models:
-  claude_haiku: claude-haiku-5-5
-  claude_sonnet: claude-sonnet-5-5
-  claude_opus: claude-opus-5-5
+  # Slot names are kept for strategy-file compatibility; all three are served by Kimi (Moonshot).
+  claude_haiku: kimi-k2.7-code
+  claude_sonnet: kimi-k2.7-code
+  claude_opus: kimi-k3
   gemini: ${GEMINI_MODEL}
 escalation:
   min_confidence: 0.6           # any key T1 answer below this escalates

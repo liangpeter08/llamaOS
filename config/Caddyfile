@@ -1,5 +1,10 @@
-# Replace with your hostname. Consider restricting to a VPN / Tailscale.
-trading.example.com {
+# Caddy obtains and renews the Let's Encrypt certificate itself. The DNS A records for both
+# names must point at the server before the first start. Consider restricting to a VPN / Tailscale.
+hesynth.xyz {
 	encode gzip
 	reverse_proxy dashboard:3000
+}
+
+www.hesynth.xyz {
+	redir https://hesynth.xyz{uri} permanent
 }

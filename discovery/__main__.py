@@ -1,7 +1,7 @@
 """python -m discovery TICKER [--peers SPY,QQQ] [--kinds intraday,daily] [--generations 3] [--no-save] [--offline]
 
 Runs single-ticker discovery against the stored data and prints the report. Claude proposes and revises
-candidates when ANTHROPIC_API_KEY is set (unless --offline); otherwise the offline templates do.
+candidates when KIMI_API_KEY is set (unless --offline); otherwise the offline templates do.
 """
 from __future__ import annotations
 

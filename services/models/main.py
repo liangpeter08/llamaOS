@@ -11,7 +11,6 @@ import os
 import threading
 import time
 
-import anthropic
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -61,13 +60,13 @@ def _offline(e: Exception):
     raise HTTPException(503, str(e))
 
 
-def _api_error(e: anthropic.APIError):
-    if isinstance(e, anthropic.APITimeoutError):
-        raise HTTPException(504, "Claude took too long to answer. Try again.") from None
-    if isinstance(e, anthropic.APIConnectionError):
-        raise HTTPException(503, "Couldn't reach the Claude API (network error). Check the connection and try again.") from None
+def _api_error(e: llm.APIError):
+    if isinstance(e, llm.APITimeoutError):
+        raise HTTPException(504, "Kimi took too long to answer. Try again.") from None
+    if isinstance(e, llm.APIConnectionError):
+        raise HTTPException(503, "Couldn't reach the Kimi API (network error). Check the connection and try again.") from None
     status = getattr(e, "status_code", 502)
-    raise HTTPException(503 if status in (429, 529) or status >= 500 else 502, f"Claude API error {status}: {e.message}") from None
+    raise HTTPException(503 if status in (429, 529) or status >= 500 else 502, f"Kimi API error {status}: {e.message}") from None
 
 
 @app.get("/health")
@@ -85,7 +84,7 @@ def chat(body: ChatIn):
         raise HTTPException(404, f"not found: {e}") from None
     except llm.LLMUnavailable as e:
         _offline(e)
-    except anthropic.APIError as e:
+    except llm.APIError as e:
         _api_error(e)
 
 
@@ -104,7 +103,7 @@ def design(body: DesignIn):
         raise HTTPException(400, "bad design thread id") from None
     except (authoring.Offline, llm.LLMUnavailable) as e:
         _offline(e)
-    except anthropic.APIError as e:
+    except llm.APIError as e:
         _api_error(e)
 
 
@@ -133,7 +132,7 @@ def compile_(body: CompileIn):
         return authoring.compile_text(conn(), body.text, body.actor, body.name)
     except (authoring.Offline, llm.LLMUnavailable) as e:
         _offline(e)
-    except anthropic.APIError as e:
+    except llm.APIError as e:
         _api_error(e)
 
 
@@ -153,7 +152,7 @@ def ideas_run(body: IdeasIn):
         raise HTTPException(409, str(e)) from None
     except llm.LLMUnavailable as e:
         _offline(e)
-    except anthropic.APIError as e:
+    except llm.APIError as e:
         _api_error(e)
 
 

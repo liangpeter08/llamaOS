@@ -401,3 +401,26 @@ def test_first_bar_of_the_session_is_stored(broker):
     t=T.open_ts(day)
     broker.store_bars({'AAPL':[{'t':__import__('datetime').datetime.fromtimestamp(t,__import__('datetime').timezone.utc).isoformat().replace('+00:00','Z'),'o':1,'h':1,'l':1,'c':1,'v':10}]})
     assert len(broker.days['AAPL'])==1
+
+
+def test_sync_reads_open_orders_from_the_list_and_throttles_single_lookups(broker,conn,monkeypatch):
+    broker.day=date(2026,10,9)
+    broker.track_order({**order(0,'new'),'id':'exit-1'},None,'exit')  # a non-terminal exit order sync must follow
+    calls=[]
+    open_list=[{**order(0,'new'),'id':'exit-1','client_order_id':'llama-x'}]
+    api=broker.api
+    api.account=lambda:{'equity':'100000','last_equity':'100000','cash':'100000','buying_power':'100000'}
+    api.positions=lambda:[]
+    api.orders=lambda:open_list
+    api.order=lambda oid:calls.append(oid) or {**order(0,'new'),'id':oid}
+    monkeypatch.setattr(broker,'persist_account',lambda:None)
+    broker.sync()
+    assert calls==[]  # still open: taken from the open-orders list
+    open_list.clear()
+    broker.sync()
+    assert calls==['exit-1']  # just left the list: fetched at once
+    broker.sync()
+    assert calls==['exit-1']  # not again until ORDER_REFRESH has passed
+    broker.order_fetched['exit-1']-=60
+    broker.sync()
+    assert calls==['exit-1','exit-1']

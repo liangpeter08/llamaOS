@@ -147,13 +147,13 @@ function Designer() {
           <h1 style={{ marginBottom: 4 }}>{improving ? "Improve a strategy" : "New strategy"}</h1>
           {improving ? (
             <p className="muted" style={{ marginTop: 0 }}>
-              Duplicating <Link href={`/strategies/${improving.hash}`}>{improving.sid} v{improving.version}</Link> with Claude Opus 5.5. Claude sees its file,
+              Duplicating <Link href={`/strategies/${improving.hash}`}>{improving.sid} v{improving.version}</Link> with Kimi K3. Kimi sees its file,
               backtest, decision records and trades, diagnoses what you describe and drafts an improved copy under a new id. Every draft is checked by the
               validator; backtest and review it here, then save it as a new draft strategy. The original is not changed.
             </p>
           ) : (
             <p className="muted" style={{ marginTop: 0 }}>
-              Design it with Claude Opus 5.5: describe the idea, however rough. Claude works through what&apos;s ambiguous or unsupported, points to similar
+              Design it with Kimi K3: describe the idea, however rough. Kimi works through what&apos;s ambiguous or unsupported, points to similar
               strategies you&apos;ve already backtested, suggests improvements and drafts the file. Every draft is checked by the validator; you can
               backtest it here and save it as a new draft strategy.
             </p>
@@ -189,7 +189,7 @@ function Designer() {
             {msgs.map((m) => <Message key={m.id} m={m} />)}
             {busy === "chat" && (
               <div className="msg assistant muted">
-                <div className="who">claude-opus-5-5</div>
+                <div className="who">kimi-k3</div>
                 Thinking… {elapsed}s {elapsed > 20 && "· drafting and validating can take a minute or two"}
               </div>
             )}
@@ -213,7 +213,7 @@ function Designer() {
 
         <div className="grid" style={{ alignContent: "start" }}>
           <Card title="Current draft">
-            {!d ? <Empty>No draft yet. Claude drafts the file once the important choices are settled, or when you ask.</Empty> : (
+            {!d ? <Empty>No draft yet. Kimi drafts the file once the important choices are settled, or when you ask.</Empty> : (
               <>
                 <div className="row">
                   {d.ok ? <Pill kind="good">valid</Pill> : <Pill kind="bad">{d.errors.length} validator error{d.errors.length > 1 ? "s" : ""}</Pill>}
@@ -236,7 +236,7 @@ function Designer() {
                       <button disabled={!d.ok || !!busy} onClick={backtest}>{busy === "backtest" ? "Backtesting…" : "Backtest draft"}</button>
                       <button disabled={!d.ok || !!busy} onClick={panel}>{busy === "panel" ? `Panel reviewing… ${elapsed}s` : "Run review panel"}</button>
                     </div>
-                    <p className="muted" style={{ fontSize: 12, margin: "4px 0 0" }}>The panel is four Claude Opus 5.5 agents (Analyst, Researcher, Trader, Risk Team) reviewing this exact draft in parallel{bt ? ", with its backtest" : "; backtest first so they can use the results"}.</p>
+                    <p className="muted" style={{ fontSize: 12, margin: "4px 0 0" }}>The panel is four Kimi K3 agents (Analyst, Researcher, Trader, Risk Team) reviewing this exact draft in parallel{bt ? ", with its backtest" : "; backtest first so they can use the results"}.</p>
                     {bt && <BacktestSummary bt={bt} />}
                     <h3>Save</h3>
                     <div className="row">
@@ -270,7 +270,7 @@ function Designer() {
             {ROLES.map(([k, name]) => view.reviews![k] && <Verdict key={k} name={name} r={view.reviews![k]} />)}
             {owner && <button className="primary" disabled={!!busy} style={{ marginLeft: "auto" }}
               onClick={() => send("Apply the review panel's suggestions you agree with and give me a revised complete file. Say which points you rejected and why.")}>
-              Ask Claude to apply the panel&apos;s suggestions</button>}
+              Ask Kimi to apply the panel&apos;s suggestions</button>}
           </div>
           <div className="grid g2">{ROLES.map(([k, name, focus]) => view.reviews![k] && <RoleCard key={k} name={name} focus={focus} r={view.reviews![k]} />)}</div>
         </Card>
@@ -315,7 +315,7 @@ function RoleCard({ name, focus, r }: { name: string; focus: string; r: Review }
               <ul>{r.suggestions.map((x, i) => <li key={i}>{x.text}{x.change && <pre style={{ margin: "4px 0" }}>{x.change}</pre>}</li>)}</ul>
             </>
           )}
-          {r.seconds != null && <p className="muted" style={{ fontSize: 11, marginBottom: 0 }}>claude-opus-5-5 · {r.seconds}s</p>}
+          {r.seconds != null && <p className="muted" style={{ fontSize: 11, marginBottom: 0 }}>kimi-k3 · {r.seconds}s</p>}
         </>
       )}
     </div>
@@ -326,8 +326,8 @@ function Message({ m }: { m: Msg }) {
   const tag = m.role === "user" ? m.content.match(/^\[(validator|backtest|saved|panel)\]/)?.[1] : null;
   if (tag) {
     const body = m.content.replace(/^\[\w+\]\s*/, "");
-    const label = { validator: "Validator feedback sent to Claude", backtest: "Backtest result shared with Claude", saved: "Saved",
-      panel: "Review panel findings shared with Claude" }[tag];
+    const label = { validator: "Validator feedback sent to Kimi", backtest: "Backtest result shared with Kimi", saved: "Saved",
+      panel: "Review panel findings shared with Kimi" }[tag];
     return (
       <div className="msg" style={{ alignSelf: "center", maxWidth: "95%", fontSize: 12.5, background: "transparent", border: "1px dashed var(--border)" }}>
         <div className="who">{label} · {wall(m.ts)}</div>
@@ -376,7 +376,7 @@ function OriginalSummary({ o }: { o: any }) {
           {m.max_drawdown != null && <Pill>max DD {pct(m.max_drawdown, 1)}</Pill>}
           {m.sharpe_daily != null && <Pill>Sharpe {num(m.sharpe_daily)}</Pill>}
         </div>
-      ) : <p className="muted" style={{ fontSize: 12, margin: "6px 0 0" }}>Not backtested yet: Claude will work from the file and any paper trades.</p>}
+      ) : <p className="muted" style={{ fontSize: 12, margin: "6px 0 0" }}>Not backtested yet: Kimi will work from the file and any paper trades.</p>}
       {o.back_translation && <details style={{ marginTop: 6 }}><summary>What the rules say</summary><pre style={{ maxHeight: 220 }}>{o.back_translation}</pre></details>}
     </div>
   );
@@ -386,7 +386,7 @@ function BacktestSummary({ bt }: { bt: any }) {
   const m = bt.metrics;
   return (
     <div className="card" style={{ marginTop: 8 }}>
-      <div className="muted" style={{ fontSize: 12 }}>{bt.sessions} sessions {bt.from} → {bt.to} · {bt.seconds}s · shared with Claude</div>
+      <div className="muted" style={{ fontSize: 12 }}>{bt.sessions} sessions {bt.from} → {bt.to} · {bt.seconds}s · shared with Kimi</div>
       <div className="row" style={{ marginTop: 6 }}>
         <Pill>{m.trades} trades</Pill>
         {m.win_rate != null && <Pill>win {pct(m.win_rate, 0)}</Pill>}

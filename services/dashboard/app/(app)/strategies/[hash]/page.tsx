@@ -158,12 +158,12 @@ export default function StrategyPage() {
             {!data.trades.length && <tr><td className="muted">None.</td></tr>}
           </tbody></table>
         </Card>}
-        <StrategyFile key={s.hash} hash={s.hash} text={data.text} owner={isOwner(me)} />
+        <StrategyFile key={s.hash} hash={s.hash} text={data.text} owner={isOwner(me)} running={s.status === "paper"} />
       </div>
 
-      <Card title="Ask Claude" className="mt" id="chat">
+      <Card title="Ask Kimi" className="mt" id="chat">
         <Chat prefix={`strategy:${s.hash}`}
-          intro="A new conversation, seeded with the strategy file, back-translation, backtest report and recent decision records. Claude can explain and critique, and propose changes only as a diff, which you can accept as a new draft version." />
+          intro="A new conversation, seeded with the strategy file, back-translation, backtest report and recent decision records. Kimi can explain and critique, and propose changes only as a diff, which you can accept as a new draft version." />
         {isOwner(me) && <ApplyDiff hash={s.hash} />}
       </Card>
 
@@ -317,20 +317,20 @@ function Duplicate({ s }: { s: any }) {
         Copy this file into a new, separate draft strategy (v1, own lifecycle and fund). The original and its versions are untouched.
       </p>
       {error && <Notice kind="bad">{error}</Notice>}
-      <div className="row">
-        <Link className="btn primary" href={`/strategies/new?improve=${s.hash}`}>Duplicate &amp; improve with Claude</Link>
-        <span className="muted">tell Claude what&apos;s wrong with it; it drafts a better copy you can backtest and review before saving</span>
-      </div>
-      <form className="row" style={{ marginTop: 10 }} onSubmit={duplicate}>
+      <form className="row" onSubmit={duplicate}>
         <input value={name} onChange={(e) => setName(e.target.value)} maxLength={80} required style={{ flex: 1, minWidth: 160 }} placeholder="Name of the copy" />
-        <button disabled={busy || !name.trim()}>{busy ? "Duplicating…" : "Duplicate as-is"}</button>
+        <button className="primary" disabled={busy || !name.trim()}>{busy ? "Duplicating…" : "Duplicate"}</button>
       </form>
+      <div className="row" style={{ marginTop: 10 }}>
+        <Link className="btn" href={`/strategies/new?improve=${s.hash}`}>Duplicate &amp; improve with Kimi</Link>
+        <span className="muted">optional: tell Kimi what&apos;s wrong with it and it drafts a better copy</span>
+      </div>
     </Card>
   );
 }
 
-// View the file, or edit it: saving writes the next version as a new draft (this version is never changed).
-function StrategyFile({ hash, text, owner }: { hash: string; text: string; owner: boolean }) {
+// View the file, or edit it. Saving writes the next version; a running strategy switches to it and keeps running.
+function StrategyFile({ hash, text, owner, running }: { hash: string; text: string; owner: boolean; running: boolean }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(text);
@@ -352,12 +352,16 @@ function StrategyFile({ hash, text, owner }: { hash: string; text: string; owner
       {owner && !editing && <button type="button" onClick={() => { setDraft(text); setEditing(true); }}>Edit</button>}</span>}>
       {!editing ? <pre style={{ maxHeight: 480 }}>{text}</pre> : (
         <>
-          <p className="muted" style={{ marginTop: 0 }}>Saving creates the next version as a new draft. This version, its backtests and approvals stay unchanged.</p>
+          <p className="muted" style={{ marginTop: 0 }}>
+            {running
+              ? "Saving switches this strategy to your edit right away: it stays in paper trading with the same mode and allocation. Open positions keep their exits. The current file is kept as the previous version."
+              : "Saving creates the next version as a new draft. This version, its backtests and approvals stay unchanged."}
+          </p>
           {error && <Notice kind="bad">{error}</Notice>}
           <textarea className="mono" value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false}
             style={{ width: "100%", minHeight: 420, fontSize: 12 }} />
           <div className="row" style={{ marginTop: 8 }}>
-            <button className="primary" disabled={busy || draft === text} onClick={save}>{busy ? "Saving…" : "Save as new version"}</button>
+            <button className="primary" disabled={busy || draft === text} onClick={save}>{busy ? "Saving…" : running ? "Save and apply" : "Save as new version"}</button>
             <button type="button" disabled={busy} onClick={() => { setEditing(false); setError(null); }}>Cancel</button>
           </div>
         </>
@@ -385,7 +389,7 @@ function ApplyDiff({ hash }: { hash: string }) {
       <summary>Accept a proposed diff as a new draft version</summary>
       {msg && <Notice kind={msg.kind}>{msg.text}</Notice>}
       <form onSubmit={apply}>
-        <textarea className="mono" value={diff} onChange={(e) => setDiff(e.target.value)} required placeholder="Paste the ```diff block from Claude's answer (without the fences)" />
+        <textarea className="mono" value={diff} onChange={(e) => setDiff(e.target.value)} required placeholder="Paste the ```diff block from Kimi's answer (without the fences)" />
         <button>Create new draft from diff</button>
       </form>
     </details>

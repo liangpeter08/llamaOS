@@ -48,7 +48,7 @@ export default function News() {
             </table></div>
           </Card>
           <div>
-            {data.news_claude && <Card title="Claude escalation"><NewsToClaude status={data.news_claude} owner={isOwner(me)} reload={reload} /></Card>}
+            {data.news_claude && <Card title="Kimi escalation"><NewsToClaude status={data.news_claude} owner={isOwner(me)} reload={reload} /></Card>}
             <Notes notes={data.notes} owner={isOwner(me)} reload={reload} />
           </div>
         </div>

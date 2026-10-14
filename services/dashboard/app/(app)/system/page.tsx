@@ -18,7 +18,8 @@ export default function System() {
       <div className="grid g3">
         <Card title="Services">
           <dl className="kv">
-            <dt>Broker</dt><dd><Pill kind={h.broker.ok ? "good" : "bad"}>{h.broker.ok ? "up" : "down"}</Pill> heartbeat {num(h.broker.age, 1)}s</dd>
+            <dt>Broker</dt><dd><Pill kind={h.broker.state === "up" ? "good" : h.broker.state === "slow" ? "warn" : "bad"}
+              title={h.broker.state === "slow" ? "Process is running but its loop is late, usually slow or failing Alpaca requests" : undefined}>{h.broker.state}</Pill> last loop {num(h.broker.age, 1)}s ago</dd>
             <dt>Models</dt><dd><Pill kind={h.models.ok ? "good" : "bad"}>{h.models.ok ? "up" : "down"}</Pill> heartbeat {num(h.models.age, 1)}s</dd>
             <dt>Feed</dt><dd>{data.source === "alpaca_paper" ? "Alpaca IEX" : "simulator"} · last bar {et(h.last_bar)} ET</dd>
             <dt>Reconcile</dt><dd>{h.reconcile?.sim_ts ? `${h.reconcile.ok ? "match" : "MISMATCH"} at ${et(h.reconcile.sim_ts)}` : "—"}</dd>

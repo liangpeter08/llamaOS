@@ -38,7 +38,7 @@ export default function Ideas() {
       <div className="row between">
         <div>
           <h1>Idea Lab</h1>
-          <p className="muted">Code measures event reactions; Claude (or the offline rules generator) proposes hypotheses; you curate. Every hypothesis is counted, so discount lucky finds.</p>
+          <p className="muted">Code measures event reactions; Kimi (or the offline rules generator) proposes hypotheses; you curate. Every hypothesis is counted, so discount lucky finds.</p>
         </div>
         <Card>
           <Stat label="Hypotheses" value={`tested ${data.counter.tested}, ${data.counter.survived} survived`} sub="survived = enough events and passed its one holdout score" />

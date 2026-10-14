@@ -84,7 +84,7 @@ function KindSection({ kind, r, trials, ticker, owner, drafts }: { kind: string;
 function Finalists({ r, ticker, owner, drafts, followUp, onlySeeds }: { r: any; ticker: string; owner: boolean; drafts: any[]; followUp: boolean; onlySeeds: boolean }) {
   const { start, busy, error } = useStartRun();
   if (!r.finalists.length) {
-    return <Card className="mt"><Empty>{onlySeeds ? "Nothing to revise: code found no weakness or losing regime to work on in the seed, so it stays as it was. With Claude enabled, the bot can still propose alternatives."
+    return <Card className="mt"><Empty>{onlySeeds ? "Nothing to revise: code found no weakness or losing regime to work on in the seed, so it stays as it was. With Kimi enabled, the bot can still propose alternatives."
       : followUp ? "No revision passed every gate on the discovery sessions, so the seeds stay as they were and nothing was re-scored on the holdout."
       : "No candidate passed every gate on the discovery sessions, so nothing was scored on the holdout."}
       {r.best && <> Best attempt: <b>#{r.best.trial_id} {r.best.title}</b> (score {num(r.best.score)}; weaknesses: {r.best.weaknesses.join(", ") || "none"}).

@@ -100,7 +100,7 @@ def test_paid_replay_stops_at_budget(conn, risk, monkeypatch):
         assert llm.REPLAY.get()  # replay calls run under their own quota
         seen.append(task)
         conn_.execute("INSERT INTO model_calls(ts, provider, model, task, latency_ms, ok, cost_usd) VALUES (?,?,?,?,?,?,?)",
-                      (time.time(), "anthropic", model, "replay." + task, 1, 1, 0.02))
+                      (time.time(), "kimi", model, "replay." + task, 1, 1, 0.02))
         conf = {"catalyst_confidence": 0.9, "direction_confidence": 0.9, "materiality_confidence": 0.9}
         if task == "t1":
             return "", {"new_info": True, "catalyst": "earnings", "direction": "positive", "materiality": "medium", "fundamental": True,
@@ -112,7 +112,7 @@ def test_paid_replay_stops_at_budget(conn, risk, monkeypatch):
                      "news": {"symbols": ["ACME"], "start_ts": start - 86400, "end_ts": start + 86400 * 2}})
     assert res["cost_usd"] >= 0.05 and res["fallback"] > 0  # paid calls stopped at the budget
     models = [r["model"] for r in db.rows(conn, "SELECT model FROM news_assessments WHERE mode='models' ORDER BY news_id")]
-    assert models[0].startswith("claude") and models[-1].startswith("heuristic")
+    assert models[0].startswith("kimi") and models[-1].startswith("heuristic")
 
 
 def test_assumption_replay_blocks_buys_for_critical_assumptions(conn, risk, monkeypatch):

@@ -1,0 +1,68 @@
+dsl: 0.1
+id: oilu
+version: 1
+source:
+  text: >-
+    create a strategy that trade top 10 tech companies every 10 minutes, it looks for local
+    minimums and try to buy and look for tops and try to short using best day trading
+    strategies at 1 min intervals
+  compiled_by: claude-opus-5-5
+  prompt: architect@v1
+assumptions:
+  - "Trader: also short; no 20-day trend filter; trade every name; signals are day lows/highs and RSI."
+  - "NOT SUPPORTED: one file trading both directions. This is the LONG half; a mirrored short file (day highs, RSI turning down) is drafted separately."
+  - "NOT SUPPORTED: checking 'every 10 minutes'. Rules run on every 1-minute bar; 'local' means the last 10 bars (lookback = 10)."
+  - "NOT SUPPORTED: top 10 tech. AVGO, ORCL, NFLX have no 1-minute bars and aren't on the watchlist, so the universe is the 8 names with intraday data: AAPL, AMD, AMZN, GOOGL, META, MSFT, NVDA, TSLA."
+  - "'Best day trading strategies' = one concrete rule: the day's low is tested in the last 10 bars, then RSI(14) crosses back above 30, while price is stretched at least 1% below VWAP."
+  - "Near the day low = the lowest low of the last 10 bars is within 0.1% of the session low so far."
+  - "VWAP stretch kept to limit signal count (trade_everything, a similar RSI idea, lost 41% over 1,728 trades). With the trader's 100-trade cap it is now the main brake on frequency."
+  - "Stop = 0.1% below the 10-bar low, set once at entry."
+  - "Target = 2R; exit early when a bar closes back above VWAP; flat by 15:50 ET."
+  - "Risk 0.25% of equity per trade; entries 10:00-15:00 ET."
+  - "Trader: max 100 trades a day and 10 open positions. With 8 symbols, at most 8 positions can be open (worst case 2% of equity at risk at once)."
+  - "Liquidity filter: 20-day average dollar volume >= $500M (all 8 names pass today)."
+  - "No news signals: recorded only since 2026-09-07, too short to backtest."
+  - "Execution manual."
+suggestions:
+  - "Tight 10-bar stops make risk_per_share small, so position size will often be capped by the fund allocation, not by the 0.25% risk; check average notional in the backtest."
+  - "Consider a time exit (bars_held >= 60) if trades drift without hitting target, stop or VWAP."
+  - "The DSL can't cap trades per symbol per day; watch for repeated entries in one name on a trending-down day."
+  - "If the backtest shows many trades per session with negative avg R, lower max_trades_per_day or widen vwap_stretch before changing anything else."
+universe:
+  symbols: [AAPL, AMD, AMZN, GOOGL, META, MSFT, NVDA, TSLA]
+  filters:
+    - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_adv:      {value: 500_000_000, range: [100_000_000, 5_000_000_000]}
+  lookback:     {value: 10,   range: [5, 30]}
+  rsi_n:        {value: 14,   range: [7, 21]}
+  rsi_low:      {value: 30,   range: [20, 40]}
+  near_low:     {value: 0.1%, range: [0%, 0.5%]}
+  vwap_stretch: {value: 1%,   range: [0.3%, 3%]}
+  stop_buffer:  {value: 0.1%, range: [0%, 0.5%]}
+  target_r:     {value: 2.0,  range: [1.0, 4.0]}
+vars:
+  recent_low: lowest(low, lookback)
+  rsi_v: rsi(close, rsi_n)
+  stop_level: recent_low * (1 - stop_buffer)
+entry:
+  side: long
+  window: "10:00-15:00"
+  when_all:
+    - crosses_above(rsi_v, rsi_low)
+    - recent_low <= day_low * (1 + near_low)
+    - close <= vwap * (1 - vwap_stretch)
+sizing:
+  risk_per_trade: 0.25%
+exit:
+  stop: stop_level
+  target: entry_price + target_r * risk_per_share
+  flatten_at: "15:50"
+  when_any:
+    - crosses_above(close, vwap)
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 100
+  max_open_positions: 10

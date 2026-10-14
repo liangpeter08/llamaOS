@@ -104,3 +104,14 @@ def test_legacy_modes_migrate(conn):
     db.init(conn)
     assert {r["sid"]: r["mode"] for r in db.rows(conn, "SELECT sid, mode FROM strategies")} == \
         {"s1": "paper_manual", "s2": "paper_auto", "s3": "live_manual"}
+
+
+def test_broker_health_separates_slow_loop_from_dead_process(conn):
+    import time
+    from common import db
+    from services.api.app import health
+    assert health(conn)["broker"]["state"] == "down"
+    db.kv_set(conn, "health.broker_process", {"ts": time.time()})
+    assert health(conn)["broker"]["state"] == "slow"  # process alive, no recent completed loop
+    db.kv_set(conn, "health.broker", {"ts": time.time()})
+    assert health(conn)["broker"]["state"] == "up"

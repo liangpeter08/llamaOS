@@ -135,7 +135,7 @@ function ApprovalCard({ it, acct, risk, skew, onDone }: {
           <input placeholder="reason (optional)" value={reason} onChange={(e) => setReason(e.target.value)} style={{ flex: 1, minWidth: 180 }} />
           <button className="good" disabled={busy} onClick={() => decide("approve")}>Approve</button>
           <button disabled={busy} onClick={() => decide("reject")}>Reject</button>
-          <Link className="btn" href={`/strategies/${it.strategy_hash}#chat`}>Ask Claude</Link>
+          <Link className="btn" href={`/strategies/${it.strategy_hash}#chat`}>Ask Kimi</Link>
         </div>
       )}
     </Card>
