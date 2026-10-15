@@ -12,6 +12,7 @@ from datetime import date, time as dtime
 from core import funds as F
 
 from . import audit, db, registry
+from . import strategy_pnl as P
 from . import timeutil as T
 from .config import RiskConfig
 
@@ -80,9 +81,9 @@ def ensure(conn, risk: RiskConfig, s, actor: str = "default", allocation: float 
         alloc = allocation if allocation is not None else default_allocation(s, risk)
     now = time.time()
     conn.execute("INSERT INTO strategy_funds(sid, allocation, alloc_usd, max_drawdown, daily_loss, status, base_usd, base_ts,"
-                 " peak_pnl, source, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(sid) DO NOTHING",
+                 " peak_pnl, base_pnl, source, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(sid) DO NOTHING",
                  (s.id, alloc, alloc_usd, cfg.strategy_max_drawdown, cfg.strategy_daily_loss if s.kind == "intraday" else None,
-                  "active", alloc_usd if alloc_usd is not None else alloc * eq, now, 0.0,
+                  "active", alloc_usd if alloc_usd is not None else alloc * eq, now, 0.0, P.lifetime_now(conn).get(s.id, 0.0),
                   "set" if actor != "default" else "default", actor, now))
     audit.log(conn, "funds.allocated", actor, {"sid": s.id, "allocation": alloc, "alloc_usd": alloc_usd, "source": actor})
     return db.row(conn, "SELECT * FROM strategy_funds WHERE sid=?", (s.id,))
@@ -109,21 +110,44 @@ def account(conn, risk: RiskConfig, strategies: dict | None = None) -> F.Account
         working += v
     today = T.ts_at(T.et(time.time()).date(), dtime(0, 0))  # since midnight ET
     rows = {r["sid"]: r for r in db.rows(conn, "SELECT * FROM strategy_funds")}
+    realized = P.Realized(conn)
+    life = P.lifetime_now(conn, realized)
+    at_today: dict[str, float] | None = None
     out: dict[str, F.StrategyFund] = {}
     for sid, s in strategies.items():
         r = rows.get(sid) or ensure(conn, risk, s)
-        realized = db.row(conn, "SELECT COALESCE(SUM(pnl),0) v FROM trades WHERE sid=? AND exit_ts>=?", (sid, int(r["base_ts"])))["v"]
-        realized_today = db.row(conn, "SELECT COALESCE(SUM(pnl),0) v FROM trades WHERE sid=? AND exit_ts>=?", (sid, int(max(today, r["base_ts"]))))["v"]
-        unreal = sum((p["last_price"] - p["avg_price"]) * p["qty"] for p in pos if p["sid"] == sid and p["last_price"] and p["avg_price"])
+        if r.get("base_pnl") is None:
+            r = backfill_base(conn, r, realized, life)
+        # since set / today = lifetime P&L now minus lifetime P&L then: a position opened before the base
+        # counts only for its move after it, and a sale after the base doesn't re-count earlier gains
+        if r["base_ts"] >= today:
+            start = r["base_pnl"]
+        else:
+            at_today = at_today if at_today is not None else P.lifetime_at(conn, today, realized)
+            start = at_today.get(sid, 0.0)
+        pnl = life.get(sid, 0.0) - r["base_pnl"]
         out[sid] = F.StrategyFund(
             sid=sid, kind=s.kind, allocation=share(r, eq), fixed_usd=r["alloc_usd"], source=r["source"], max_drawdown=r["max_drawdown"],
             daily_loss=r["daily_loss"], status=r["status"], reason=r["reason"] or "", base_usd=r["base_usd"],
-            base_ts=r["base_ts"], peak_pnl=max(r["peak_pnl"], realized + unreal), deployed=deployed_by.get(sid, 0.0),
-            pnl=realized + unreal, pnl_today=realized_today + unreal, reserved=r["reserved"] if r.get("reserved") is not None else 1.0)
+            base_ts=r["base_ts"], peak_pnl=max(r["peak_pnl"], pnl), deployed=deployed_by.get(sid, 0.0),
+            pnl=pnl, pnl_today=life.get(sid, 0.0) - start, reserved=r["reserved"] if r.get("reserved") is not None else 1.0)
     intraday = sum(f.deployed for f in out.values() if f.kind == "intraday")
     peak = max(float(db.kv_get(conn, "funds.peak_equity") or 0.0), eq)
     return F.Account(equity=eq, cash=cash, deployed=sum(deployed_by.values()), intraday_deployed=intraday,
                      working_buys=working, peak_equity=peak, strategies=out)
+
+
+def backfill_base(conn, r: dict, realized: P.Realized, life: dict[str, float]) -> dict:
+    """Fill base_pnl of a row set before it was recorded: the line's lifetime P&L at base_ts, from its trades and
+    the last equity mark then. Its stored peak was measured on the old basis (open P&L since entry, even from
+    before the base), so the peak is rebuilt from the marks since base_ts."""
+    sid = r["sid"]
+    base = P.lifetime_at(conn, r["base_ts"], realized).get(sid, 0.0)
+    peak = max([0.0, life.get(sid, 0.0) - base] + [m.get(sid, 0.0) - base for _, m in P.marks(conn, r["base_ts"], realized=realized)])
+    conn.execute("UPDATE strategy_funds SET base_pnl=?, peak_pnl=? WHERE sid=? AND base_pnl IS NULL", (base, peak, sid))
+    audit.log(conn, "funds.base_pnl_filled", "system", {"sid": sid, "base_ts": r["base_ts"], "base_pnl": round(base, 2),
+                                                         "peak_pnl": round(peak, 2), "old_peak_pnl": r["peak_pnl"]})
+    return {**r, "base_pnl": base, "peak_pnl": peak}
 
 
 def monitor(conn, risk: RiskConfig, actor: str = "broker") -> str:
@@ -187,14 +211,22 @@ def set_allocation(conn, risk: RiskConfig, s, allocation: float | None, max_draw
     ensure(conn, risk, s, actor, allocation, alloc_usd)
     acct = account(conn, risk, {s.id: s})
     pnl = acct.strategies[s.id].pnl
+    deployed = acct.strategies[s.id].deployed
     conn.execute("UPDATE strategy_funds SET allocation=?, alloc_usd=?, reserved=?, max_drawdown=?, daily_loss=?, base_usd=?, base_ts=?,"
-                 " peak_pnl=0, source='set', updated_by=?, updated_at=? WHERE sid=?",
+                 " peak_pnl=0, base_pnl=?, source='set', updated_by=?, updated_at=? WHERE sid=?",
                  (allocation, alloc_usd, reserved, max_drawdown, daily_loss if s.kind == "intraday" else None,
-                  alloc_usd if alloc_usd is not None else allocation * eq, time.time(), actor, time.time(), s.id))
+                  alloc_usd if alloc_usd is not None else allocation * eq, time.time(), P.lifetime_now(conn).get(s.id, 0.0),
+                  actor, time.time(), s.id))
     audit.log(conn, "funds.allocated", actor, {"sid": s.id, "allocation": allocation, "alloc_usd": alloc_usd, "reserved": reserved,
                                                 "max_drawdown": max_drawdown,
-                                                "daily_loss": daily_loss, "pnl_before_rebase": pnl})
+                                                "daily_loss": daily_loss, "pnl_before_rebase": pnl, "deployed": round(deployed, 2)})
     return []
+
+
+def over_note(conn, risk: RiskConfig, s) -> str:
+    """'' or a note that a line holds more than its allocation (shown when the owner lowers it below its holdings)."""
+    acct = account(conn, risk, {s.id: s})
+    return F.over_note(acct.strategies[s.id], acct.equity)
 
 
 def unallocated(conn, risk: RiskConfig, exclude: str | None = None) -> float:
@@ -232,13 +264,16 @@ def resume(conn, sid: str, actor: str):
     eq, _ = equity_now(conn)
     r = db.row(conn, "SELECT allocation, alloc_usd FROM strategy_funds WHERE sid=?", (sid,))
     conn.execute("UPDATE strategy_funds SET status='active', reason=NULL, paused_day=NULL, base_usd=?, base_ts=?, peak_pnl=0,"
-                 " updated_by=?, updated_at=? WHERE sid=?", (base_usd(r, eq), time.time(), actor, time.time(), sid))
+                 " base_pnl=?, updated_by=?, updated_at=? WHERE sid=?",
+                 (base_usd(r, eq), time.time(), P.lifetime_now(conn).get(sid, 0.0), actor, time.time(), sid))
     audit.log(conn, "funds.resumed", actor, {"sid": sid, "why": "owner"})
 
 
 def sleeve_capital(conn, s, equity: float) -> float:
     """Dollars a new portfolio sleeve starts with: its rules' capital, scaled down so its peak
-    (capital x max_holding) fits the strategy's fund allocation."""
+    (capital x max_holding) fits the strategy's fund allocation. Read once, at the sleeve's first session:
+    a later allocation change doesn't resize the sleeve (its targets and drawdown peak are in dollars), so
+    a lowered allocation only blocks its buys (core.funds.check_buy / over_note)."""
     rules = s.capital * equity
     r = db.row(conn, "SELECT allocation, alloc_usd FROM strategy_funds WHERE sid=?", (s.id,))
     if not r or not s.max_holding:

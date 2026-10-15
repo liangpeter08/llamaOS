@@ -627,7 +627,10 @@ class PaperBroker:
         else:
             self.conn.execute("UPDATE intents SET status='expired' WHERE status IN ('pending','approved') AND expires_wall<?",(time.time(),))
         self.mark("exits_and_entries")
-        intraday={p["symbol"] for p in self.positions if p["symbol"] not in self.sleeve_syms}|{o["symbol"] for o in self.open_orders if o.get("order_class")=="bracket"}
+        # an intraday line's open position, bracket or not-yet-sent entry keeps sleeves out of its symbol
+        intraday=({p["symbol"] for p in self.positions if p["symbol"] not in self.sleeve_syms or self.owner_intent(p["symbol"])}
+                  |{o["symbol"] for o in self.open_orders if o.get("order_class")=="bracket"}
+                  |{r["symbol"] for r in db.rows(self.conn,"SELECT DISTINCT symbol FROM intents WHERE status IN ('pending','approved','submitting','submitted')")})
         self.desk.tick(self.clock,self.account_data,self.positions,self.close_ts,bool(ks),self.paused,intraday)
         self.mark("portfolio_desk")
         db.kv_set(self.conn,"feed.last_bar",max(self.last_bar.values(),default=None))

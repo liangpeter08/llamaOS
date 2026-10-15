@@ -8,6 +8,7 @@ import type { Account } from "@/lib/types";
 import { useT } from "@/lib/i18n";
 import { PerformanceChart } from "@/components/PerformanceChart";
 import { StrategyControls } from "@/components/Allocation";
+import { StrategyPerformance } from "@/components/StrategyPerformance";
 import { Card, Empty, Loading, Meter, Notice, Pill, Stat } from "@/components/ui";
 import { isOwner, useSession } from "@/components/session";
 
@@ -59,6 +60,7 @@ function PortfolioTab() {
         height={360}
       />
       <div className="mt"><StrategyControls owner={isOwner(me)} /></div>
+      <div className="mt"><StrategyPerformance compact /></div>
     </>
   );
 }

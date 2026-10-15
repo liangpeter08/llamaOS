@@ -4,6 +4,7 @@ import { usePoll } from "@/lib/hooks";
 import { et, money, num, pct, pnlClass } from "@/lib/format";
 import { Card, Empty, Loading } from "@/components/ui";
 import { PerformanceChart } from "@/components/PerformanceChart";
+import { StrategyPerformance } from "@/components/StrategyPerformance";
 import { useT } from "@/lib/i18n";
 
 export default function Portfolio() {
@@ -11,7 +12,6 @@ export default function Portfolio() {
   const t = useT();
   if (!data) return <Loading error={error} />;
   const { acct, risk } = data;
-  const group = (g: Record<string, { n: number; pnl: number; wins: number }>) => Object.entries(g || {});
   return (
     <>
       <h1>{t("Portfolio")}</h1>
@@ -22,7 +22,8 @@ export default function Portfolio() {
         })}
       </p>
       <PerformanceChart title={t("Performance by strategy")} defaultRange="1M" />
-      <div className="grid g2 mt">
+      <div className="mt"><StrategyPerformance /></div>
+      <div className="mt">
         <Card title={t("Positions & bracket legs")}>
           {data.positions.length ? (
             <div className="table-wrap"><table>
@@ -34,23 +35,6 @@ export default function Portfolio() {
               ))}</tbody>
             </table></div>
           ) : <Empty>{t("Flat.")}</Empty>}
-        </Card>
-        <Card title={t("P&L by strategy")}>
-          <table>
-            <thead><tr><th>{t("Strategy")}</th><th className="num">{t("Trades")}</th><th className="num">{t("Win rate")}</th><th className="num">{t("P&L")}</th></tr></thead>
-            <tbody>
-              {group(data.by.strategy).map(([k, v]) => (
-                <tr key={k}><td>{k}</td><td className="num">{v.n}</td><td className="num">{pct(v.wins / v.n, 0)}</td><td className={`num ${pnlClass(v.pnl)}`}>{money(v.pnl, true)}</td></tr>
-              ))}
-              {!group(data.by.strategy).length && <tr><td colSpan={4} className="muted">{t("No trades yet.")}</td></tr>}
-            </tbody>
-          </table>
-          <h3>{t("By symbol")}</h3>
-          <table><tbody>
-            {group(data.by.symbol).map(([k, v]) => (
-              <tr key={k}><td>{k}</td><td className="num">{v.n}</td><td className={`num ${pnlClass(v.pnl)}`}>{money(v.pnl, true)}</td></tr>
-            ))}
-          </tbody></table>
         </Card>
       </div>
       <Card title={t("Closed trades")} className="mt">

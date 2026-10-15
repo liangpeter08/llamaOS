@@ -121,6 +121,18 @@ def room_usd(sid: str, kind: str, acct: Account, cfg: FundsRisk | None) -> float
     return max(0.0, room)
 
 
+def over_note(f: StrategyFund, equity: float) -> str:
+    """'' or why a line holds more than its allocation (it was lowered after the buys, or prices rose).
+
+    Positions are never sold to fit: every further buy fails strategy_allocation until it is back under."""
+    over = f.deployed - f.cap_usd(equity)
+    if over <= 1e-6:
+        return ""
+    return (f"{f.sid} holds ${f.deployed:,.0f}, ${over:,.0f} above its ${f.cap_usd(equity):,.0f} allocation: "
+            "nothing is sold to fit; its buys are blocked until it is back under (pause it to sell"
+            + (" the sleeve)" if f.kind == "portfolio" else ")"))
+
+
 def breach(f: StrategyFund) -> str:
     """'' or why the strategy must stop: drawdown pauses it, a daily loss pauses entries for the day."""
     if f.base_usd <= 0:

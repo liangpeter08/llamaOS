@@ -321,12 +321,12 @@ function RunDetail({ run, owner, restore, cancel }: { run: any; owner: boolean; 
           <Stat label={t("Max daily drawdown")} value={pct(m.max_drawdown)} sub={t("{n} sessions underwater", { n: m.max_drawdown_sessions })} />
           <Stat label={t("Daily Sharpe")} value={num(m.sharpe_daily)} sub={`Sortino ${num(m.sortino)}`} />
           <Stat label={t("Completed trades")} value={m.trades} sub={t("Win rate {w} · profit factor {pf}", { w: pct(m.win_rate, 1), pf: num(m.profit_factor) })} /></div>
-        <h3>{t("Equity · strategy vs {names}", { names: benchNames(run.config, report) || t("cash") })}</h3><EquityChart curve={report.equity_curve}
+        <h3>{t("Equity · strategy vs {names}", { names: benchNames(run.config, report) || t("cash") })}</h3><EquityChart curve={report.equity_curve} fills={(report.orders ?? report.fills ?? []).filter((f: any) => !symbol || f.symbol === symbol)}
           benchmarks={report.benchmark_curves?.length ? report.benchmark_curves : report.benchmark_curve?.length ? [{ name: run.config.benchmark || "cash", curve: report.benchmark_curve }] : []} start={report.starting_equity} />
         {(report.benchmark_curves?.length || 0) > 1 && <p className="muted" style={{ fontSize: 12 }}>
           {report.benchmark_curves.map((b: any) => `${t(benchLabel(b.name))} ${pct(b.return_pct, 2, true)}`).join(" · ")} · {t("strategy")} {pct(m.return_pct, 2, true)}</p>}
         <div className="row between muted"><span>{report.days[0]}</span><span>{report.days.at(-1)}</span></div>
-        {report.equity_curve[0]?.cash != null && <><h3>{t("Allocation · stock vs cash")}</h3><AllocationChart curve={report.equity_curve} intraday={report.kind === "intraday"} /></>}
+        {report.equity_curve[0]?.cash != null && <><h3>{t("Allocation · stock vs cash")}</h3><AllocationChart curve={report.equity_curve} intraday={report.kind === "intraday"} fills={(report.orders ?? report.fills ?? []).filter((f: any) => !symbol || f.symbol === symbol)} /></>}
         {report.signal_note && <p className="muted">{report.signal_note}</p>}
         {report.model_replay && <ReplaySummary m={report.model_replay} />}
         {report.cycles?.length > 1 && <details><summary>{t("Holding periods")} ({report.cycles.length})</summary><table>
@@ -407,7 +407,7 @@ function BenchmarkPicker({ value, indexes, symbols, onChange }: { value: string[
   );
 }
 
-function EquityChart({ curve, benchmarks, start }: { curve: any[]; benchmarks: { name: string; curve: any[] }[]; start: number }) {
+function EquityChart({ curve, benchmarks, start, fills = [] }: { curve: any[]; benchmarks: { name: string; curve: any[] }[]; start: number; fills?: any[] }) {
   const [hover, setHover] = useState<number | null>(null);
   const t = useT();
   if (!curve.length) return <Empty>{t("No evaluated sessions.")}</Empty>;
@@ -417,9 +417,12 @@ function EquityChart({ curve, benchmarks, start }: { curve: any[]; benchmarks: {
   const x = (i: number) => 16 + i / Math.max(curve.length - 1, 1) * 928;
   const y = (v: number) => 200 - (v - low) / span * 180;
   const points = (series: any[]) => series.map((p, i) => `${x(i)},${y(p.equity)}`).join(" ");
+  const trades = tradesByDay(curve, fills);
+  const ht = hover != null ? trades.get(hover) : undefined;
   return <div><div className="row muted" style={{ flexWrap: "wrap" }}><span className="bt-legend strategy">{t("Strategy")}</span>
+      <TradeLegend trades={trades} />
       {benchmarks.map((b, k) => <span key={b.name} className="bt-legend" style={{ ["--lc" as any]: BENCH_COLORS[k % 6] }}>{t(benchLabel(b.name))}</span>)}
-      {hover != null && <span>{curve[hover].day} · ${money(curve[hover].equity)}{benchmarks.map(b => b.curve[hover] ? ` · ${t(benchLabel(b.name))} $${money(b.curve[hover].equity)}` : "").join("")}</span>}</div>
+      {hover != null && <span>{curve[hover].day} · ${money(curve[hover].equity)}{benchmarks.map(b => b.curve[hover] ? ` · ${t(benchLabel(b.name))} $${money(b.curve[hover].equity)}` : "").join("")}{tradeText(ht, t)}</span>}</div>
     <svg viewBox="0 0 1000 230" className="chart bt-equity" role="img" aria-label={t("Strategy and benchmark equity by evaluated session")} onMouseLeave={() => setHover(null)} onMouseMove={e => {
       const rect = e.currentTarget.getBoundingClientRect(); setHover(Math.max(0, Math.min(curve.length - 1, Math.round(((e.clientX - rect.left) / rect.width * 1000 - 16) / 928 * (curve.length - 1)))));
     }}>
@@ -427,11 +430,44 @@ function EquityChart({ curve, benchmarks, start }: { curve: any[]; benchmarks: {
       <line x1={16} x2={944} y1={y(start)} y2={y(start)} className="lvl lvl-base" />
       {benchmarks.map((b, k) => b.curve.length > 0 && <polyline key={b.name} fill="none" points={points(b.curve)} className="bt-benchmark" style={{ stroke: BENCH_COLORS[k % 6] }} />)}
       <polyline fill="none" points={points(curve)} className="series" />
+      <TradeMarks trades={trades} curve={curve} x={x} y={i => y(curve[i].equity)} />
       {hover != null && <><line x1={x(hover)} x2={x(hover)} y1={16} y2={210} className="lvl lvl-base" /><circle cx={x(hover)} cy={y(curve[hover].equity)} r={4} fill="var(--accent)" /></>}
     </svg></div>;
 }
 
-function AllocationChart({ curve, intraday }: { curve: any[]; intraday: boolean }) {
+type DayTrades = Map<number, { buy: number; sell: number }>;
+
+// Group fills by session so each day gets at most one buy and one sell marker.
+function tradesByDay(curve: any[], fills: any[]): DayTrades {
+  const dayIndex = new Map(curve.map((p, i) => [p.day, i]));
+  const trades: DayTrades = new Map();
+  for (const f of fills) {
+    const i = dayIndex.get(f.day);
+    if (i == null || (f.side !== "buy" && f.side !== "sell")) continue;
+    const m = trades.get(i) || { buy: 0, sell: 0 };
+    m[f.side as "buy" | "sell"]++;
+    trades.set(i, m);
+  }
+  return trades;
+}
+
+const tradeText = (m: { buy: number; sell: number } | undefined, t: (s: string) => string) =>
+  m ? ` · ${[m.buy && `${m.buy} ${t("Buy")}`, m.sell && `${m.sell} ${t("Sell")}`].filter(Boolean).join(" / ")}` : "";
+
+function TradeLegend({ trades }: { trades: DayTrades }) {
+  const t = useT();
+  return trades.size > 0 ? <><span style={{ color: "var(--pos, #16a34a)" }}>▲ {t("Buy")}</span><span style={{ color: "var(--neg, #dc2626)" }}>▼ {t("Sell")}</span></> : null;
+}
+
+function TradeMarks({ trades, curve, x, y }: { trades: DayTrades; curve: any[]; x: (i: number) => number; y: (i: number) => number }) {
+  const t = useT();
+  return <>{[...trades].map(([i, m]) => { const cx = x(i), cy = y(i); return <g key={i}>
+    {m.buy > 0 && <path d={`M${cx},${cy + 5} l-5,9 h10 z`} fill="var(--pos, #16a34a)"><title>{`${curve[i].day} · ${m.buy} ${t("Buy")}`}</title></path>}
+    {m.sell > 0 && <path d={`M${cx},${cy - 5} l-5,-9 h10 z`} fill="var(--neg, #dc2626)"><title>{`${curve[i].day} · ${m.sell} ${t("Sell")}`}</title></path>}
+  </g>; })}</>;
+}
+
+function AllocationChart({ curve, intraday, fills = [] }: { curve: any[]; intraday: boolean; fills?: any[] }) {
   const [hover, setHover] = useState<number | null>(null);
   const t = useT();
   // Intraday positions are flat by the close, so plot each session's peak holding instead.
@@ -444,14 +480,16 @@ function AllocationChart({ curve, intraday }: { curve: any[]; intraday: boolean 
   const top = rows.map((r, i) => `${x(i)},${y(r.frac)}`).join(" ");
   const h = hover != null ? rows[hover] : null;
   const avg = rows.reduce((a, r) => a + r.frac, 0) / rows.length;
-  return <div><div className="row muted"><span className="bt-legend stock">{t(intraday ? "Peak stock in session" : "Stock")}</span><span className="bt-legend cash">{t("Cash")}</span>
-    {h ? <span>{h.day} · {t("stock ${v} ({p})", { v: money(h.stock), p: pct(h.frac, 1) })} · {t("cash ${v} ({p})", { v: money(h.cash), p: pct(1 - h.frac, 1) })}</span> : <span>{t("Average in stock {p}", { p: pct(avg, 1) })}</span>}</div>
+  const trades = tradesByDay(curve, fills);
+  return <div><div className="row muted"><span className="bt-legend stock">{t(intraday ? "Peak stock in session" : "Stock")}</span><span className="bt-legend cash">{t("Cash")}</span><TradeLegend trades={trades} />
+    {h ? <span>{h.day} · {t("stock ${v} ({p})", { v: money(h.stock), p: pct(h.frac, 1) })} · {t("cash ${v} ({p})", { v: money(h.cash), p: pct(1 - h.frac, 1) })}{tradeText(trades.get(hover!), t)}</span> : <span>{t("Average in stock {p}", { p: pct(avg, 1) })}</span>}</div>
     <svg viewBox="0 0 1000 200" className="chart bt-alloc" role="img" aria-label={t("Share of equity in stock versus cash by evaluated session")} onMouseLeave={() => setHover(null)} onMouseMove={e => {
       const rect = e.currentTarget.getBoundingClientRect(); setHover(Math.max(0, Math.min(rows.length - 1, Math.round(((e.clientX - rect.left) / rect.width * 1000 - 16) / 928 * (rows.length - 1)))));
     }}>
       <polygon points={`${x(0)},${y(1)} ${x(rows.length - 1)},${y(1)} ${x(rows.length - 1)},${y(0)} ${x(0)},${y(0)}`} className="bt-cash" />
       <polygon points={`${x(0)},${y(0)} ${top} ${x(rows.length - 1)},${y(0)}`} className="bt-stock" />
       {[0, .5, 1].map(t => <g key={t}><line x1={16} x2={944} y1={y(t)} y2={y(t)} className="bt-grid" /><text x={950} y={y(t) + 4} className="axis">{pct(t, 0)}</text></g>)}
+      <TradeMarks trades={trades} curve={curve} x={x} y={i => y(rows[i].frac)} />
       {h && <><line x1={x(hover!)} x2={x(hover!)} y1={16} y2={184} className="lvl lvl-base" /><circle cx={x(hover!)} cy={y(h.frac)} r={4} fill="var(--c1)" /></>}
     </svg></div>;
 }

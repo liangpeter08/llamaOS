@@ -227,6 +227,9 @@ CREATE TABLE IF NOT EXISTS strategy_funds(
 ALTER TABLE strategy_funds ADD COLUMN IF NOT EXISTS alloc_usd DOUBLE PRECISION;
 -- Share of the allocation held for the strategy while idle; the rest is drawn from the shared pool when it trades.
 ALTER TABLE strategy_funds ADD COLUMN IF NOT EXISTS reserved DOUBLE PRECISION NOT NULL DEFAULT 1;
+-- The line's lifetime P&L (realized + open) when base_ts was set; P&L since set = lifetime now - base_pnl.
+-- NULL on rows from before it existed: filled in from the trades and equity marks on the next read.
+ALTER TABLE strategy_funds ADD COLUMN IF NOT EXISTS base_pnl DOUBLE PRECISION;
 
 -- Owner-set risk controls (dashboard Risk page) over the factory defaults in config/risk.yaml.
 CREATE TABLE IF NOT EXISTS risk_settings(

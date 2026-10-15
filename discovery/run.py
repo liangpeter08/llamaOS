@@ -159,6 +159,23 @@ def sessions(conn, cfg: Config) -> dict:
     return out
 
 
+def fetch_missing(conn, cfg: Config, actor: str, note: Callable[[str], None], run_id: int) -> None:
+    """Ask the paper broker to download history for kinds that don't have enough stored sessions (as backtests do)."""
+    from types import SimpleNamespace
+    from common import history
+    short = [k for k, w in sessions(conn, cfg).items() if "error" in w]
+    if not short or not history.available(conn):
+        return
+    window = SimpleNamespace(start_date=None, end_date=None, min_history_sessions=60)
+    for kind in short:
+        spec = history.plan(conn, "portfolio" if kind == "daily" else "intraday", [cfg.ticker, *cfg.peers], [], window)
+        if spec:
+            note(history.describe(spec))
+            history.wait(conn, history.request(conn, spec, actor),
+                         lambda frac, msg: conn.execute("UPDATE discovery_runs SET stage=? WHERE id=?",
+                                                         (f"downloading {msg} ({frac:.0%})", run_id)))
+
+
 def _available_peers(conn, cfg: Config, kind: str, days: list[date]) -> list[str]:
     ok = []
     for p in cfg.peers:
@@ -445,6 +462,7 @@ def run(conn, cfg: Config, actor: str, generator=None, progress: Callable[[str],
                                          "peers": list(dict.fromkeys([*refs, *cfg.peers]))[:4]})
             conn.execute("UPDATE discovery_runs SET config=? WHERE id=?", (cfg.model_dump_json(), run_id))
         chain = ancestry(conn, cfg.parent_run_id)
+        fetch_missing(conn, cfg, actor, note, run_id)
         wins = sessions(conn, cfg)
         if "daily" in wins and risk.portfolio is None:
             wins["daily"] = {"error": "portfolio strategies are disabled on the Risk page, so daily strategies can't be built"}

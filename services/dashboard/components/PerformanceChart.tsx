@@ -170,6 +170,7 @@ export function PerformanceChart({
           <p className="muted" style={{ fontSize: 12, margin: "6px 0 0" }}>
             {data.sessions.some((s) => s.source === "replay") && <>{t("Unshaded sessions are {b}: the strategies now running, re-run over stored sessions with every intent auto-approved.", { b: <b>{t("replayed history")}</b> })} </>}
             {data.sessions.some((s) => s.source === "live") && <>{t("Shaded = {b}.", { b: <b>{t("live simulated session")}</b> })} </>}
+            {data.sessions.some((s) => s.source === "alpaca_paper") && <>{t("Shaded = {b}.", { b: <b>{t("Alpaca paper session")}</b> })} </>}
             {metric === "return" && t("Strategy lines are each strategy's P&L (realized + open) as a % of the account at the start of the range; they add up to Total.")}
           </p>
           <StrategyTable d={data} hidden={hidden} />
@@ -261,11 +262,11 @@ function Plot({ d, metric, hidden, height, loading }: { d: EquityData; metric: M
   }
 
   // shaded live sessions
-  const bands: { x0: number; x1: number }[] = [];
+  const bands: { x0: number; x1: number; paper: boolean }[] = [];
   d.sessions.forEach((s, k) => {
-    if (s.source !== "live") return;
+    if (s.source === "replay") return;
     const end = k + 1 < d.sessions.length ? d.sessions[k + 1].index : n - 1;
-    bands.push({ x0: x(s.index), x1: x(end) });
+    bands.push({ x0: x(s.index), x1: x(end), paper: s.source === "alpaca_paper" });
   });
 
   function pick(clientX: number) {
@@ -298,7 +299,7 @@ function Plot({ d, metric, hidden, height, loading }: { d: EquityData; metric: M
         {bands.map((b, k) => (
           <g key={k}>
             <rect x={b.x0} y={mt} width={Math.max(2, b.x1 - b.x0)} height={height - mt - mb} fill="var(--band)" />
-            {b.x1 - b.x0 > 40 && <text x={b.x0 + 4} y={mt + 11} className="bandlabel">{t("live sim")}</text>}
+            {b.x1 - b.x0 > 40 && <text x={b.x0 + 4} y={mt + 11} className="bandlabel">{t(b.paper ? "paper" : "live sim")}</text>}
           </g>
         ))}
         <g className="grid">
@@ -336,7 +337,7 @@ function Plot({ d, metric, hidden, height, loading }: { d: EquityData; metric: M
         <div className="tip" style={{ left: tipFlip ? x(h) - 200 : tipLeft, top: 8 }}>
           <div className="when">
             {new Date(d.ts[h] * 1000).toLocaleString(lang === "zh" ? "zh-CN" : "en-US", { timeZone: ET, weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })} {t("ET")}
-            {" · "}{t(d.source[h] === "replay" ? "replay" : "live sim")}
+            {" · "}{t(d.source[h] === "replay" ? "replay" : d.source[h] === "alpaca_paper" ? "paper" : "live sim")}
           </div>
           {[...series].reverse().map((s) => (
             <div className="r" key={s.key}>

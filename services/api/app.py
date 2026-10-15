@@ -15,7 +15,7 @@ import os
 import re
 import secrets
 import time
-from datetime import date, timedelta
+from datetime import date, time as dtime, timedelta
 from typing import Literal
 
 import httpx
@@ -27,6 +27,8 @@ from starlette.middleware.sessions import SessionMiddleware
 from backtest import engine as bt
 from common import audit, db, registry, sleeves, monitoring, broker_accounts as BA
 from common import funds, manual, market_inputs, news_claude, risk_settings as RS
+from common import strategy_pnl as P
+from common import timeutil as T
 from common.config import risk_defaults
 from core import funds as F
 from common.config import RiskConfig, load_risk, load_yaml, mode, risk_path
@@ -249,8 +251,46 @@ def _decimate(values: list[float], max_points: int) -> list[int]:
 
 
 def _strategy_order(c) -> list[str]:
-    """Stable label order (registry creation order) so a strategy keeps its color across ranges."""
-    return [f"{r['sid']} v{r['version']}" for r in c.execute("SELECT sid, version FROM strategies ORDER BY created_at, sid, version")]
+    """Stable order of strategy lines (registry creation order) so a strategy keeps its color across ranges."""
+    out: list[str] = []
+    for r in c.execute("SELECT sid FROM strategies ORDER BY created_at, sid, version"):
+        if r["sid"] not in out:
+            out.append(r["sid"])
+    return out
+
+
+def strategy_pnl_path(c, rows: list[dict]) -> list[dict[str, float]]:
+    """Cumulative P&L per strategy line at each equity_history row, from 0 at the start of `rows`.
+
+    Broker rows hold each line's session so far (trades closed this session + open positions marked now). Their
+    move is measured on lifetime P&L (trades closed before the session + that), so a position held overnight
+    counts once and its sale doesn't re-count gains already shown as open P&L. A replay session starts flat."""
+    realized = P.Realized(c)
+    prev_live: dict[str, float] | None = None
+    if rows and rows[0]["source"] != "replay":
+        before = db.row(c, "SELECT session, strat_pnl FROM equity_history WHERE source<>'replay' AND ts<? ORDER BY ts DESC LIMIT 1",
+                        (rows[0]["ts"],))
+        if before:
+            prev_live = P.row_lifetime(before, realized)
+    cum: dict[str, float] = {}
+    prev_replay: tuple[str, dict[str, float]] | None = None
+    out = []
+    for r in rows:
+        if r["source"] == "replay":
+            now = P.session_pnl(r["strat_pnl"])
+            ref = prev_replay[1] if prev_replay and prev_replay[0] == r["session"] else {}
+            prev_replay = (r["session"], now)
+        else:
+            now = P.row_lifetime(r, realized)
+            # first broker mark: measure from the trades closed before its session (nothing was open)
+            ref = prev_live if prev_live is not None else realized.all_before(P.session_open(r["session"]))
+            prev_live = now
+        for k in set(now) | set(ref):
+            d = now.get(k, 0.0) - ref.get(k, 0.0)
+            if d or k in cum:
+                cum[k] = cum.get(k, 0.0) + d
+        out.append(dict(cum))
+    return out
 
 
 @app.get("/api/equity")
@@ -265,43 +305,42 @@ def equity(range: str = "1M", start: str = "", end: str = "", u: dict = Depends(
     lo, hi = _range_bounds(range, first, last, start, end)
     rows = db.rows(c, "SELECT ts, source, session, equity, strat_pnl FROM equity_history"
                       " WHERE session >= ? AND session <= ? ORDER BY ts", (lo.isoformat(), hi.isoformat()))
-    live_sessions = {r["session"] for r in rows if r["source"] == "live"}
-    rows = [r for r in rows if r["source"] == "live" or r["session"] not in live_sessions]  # live wins over replay
+    live_sessions = {r["session"] for r in rows if r["source"] != "replay"}
+    rows = [r for r in rows if r["source"] != "replay" or r["session"] not in live_sessions]  # broker rows win over replay
     if not rows:
         return {"empty": True, "range": range, "lo": lo.isoformat(), "hi": hi.isoformat(),
                 "first": first.isoformat(), "last": last.isoformat()}
 
     prev = db.row(c, "SELECT equity FROM equity_history WHERE ts < ? ORDER BY ts DESC LIMIT 1", (rows[0]["ts"],))
     replay_info = db.kv_get(c, "equity.replay") or {}
-    base = prev["equity"] if prev else float(replay_info.get("start") or load_yaml("sim.yaml").get("starting_equity", 100_000))
+    if prev:
+        base = prev["equity"]
+    elif rows[0]["source"] != "replay":  # the broker's first mark: the account as it was, not the simulator's start
+        base = rows[0]["equity"]
+    else:
+        base = float(replay_info.get("start") or load_yaml("sim.yaml").get("starting_equity", 100_000))
 
-    # cumulative per-strategy P&L inside the range: earlier sessions' finals + this session so far
+    # cumulative per-strategy P&L inside the range
     order = _strategy_order(c)
+    cum = strategy_pnl_path(c, rows)
     labels: list[str] = []
-    carry: dict[str, float] = {}
-    last_pnl: dict[str, float] = {}
     cur_session = None
-    eq, cum, daily, starts = [], [], [], []
+    eq, daily, starts = [], [], []
     prev_close = base
     for k, r in enumerate(rows):
         if r["session"] != cur_session:
             if cur_session is not None:
-                for lbl, v in last_pnl.items():
-                    carry[lbl] = carry.get(lbl, 0.0) + v
                 daily[-1]["close"] = eq[-1]
-            cur_session, last_pnl = r["session"], {}
+            cur_session = r["session"]
             starts.append(k)
             daily.append({"session": r["session"], "source": r["source"], "open": prev_close})
-        pnl = json.loads(r["strat_pnl"] or "{}")
-        last_pnl = pnl
-        for lbl in pnl:
+        for lbl in cum[k]:
             if lbl not in labels:
                 labels.append(lbl)
         eq.append(r["equity"])
-        cum.append({lbl: carry.get(lbl, 0.0) + pnl.get(lbl, 0.0) for lbl in set(carry) | set(pnl)})
         prev_close = r["equity"]
     daily[-1]["close"] = eq[-1]
-    finals = {lbl: carry.get(lbl, 0.0) + last_pnl.get(lbl, 0.0) for lbl in set(carry) | set(last_pnl)}
+    finals = cum[-1]
     session_final: dict[str, dict] = {}
     # per-session strategy P&L for the table: difference of cumulative values at session ends
     ends = starts[1:] + [len(rows)]
@@ -348,6 +387,147 @@ def equity(range: str = "1M", start: str = "", end: str = "", u: dict = Depends(
                          "share": (finals.get(lbl, 0.0) / (end_eq - base)) if end_eq != base else None} for lbl in labels],
         "daily": [{k: v for k, v in d.items()} for d in daily],
         "replay": replay_info,
+    }
+
+
+# ---------------------------------------------------------------- strategy performance
+def _round_trips(rows: list[dict]) -> list[dict]:
+    """Closed trades grouped into round trips: the exit fills of one entry (partial exits, stop and target legs)
+    are one trade; each portfolio sleeve sale is one."""
+    groups: dict = {}
+    for t in rows:
+        key = ("i", t["intent_id"]) if t["intent_id"] is not None else ("t", t["id"])
+        g = groups.get(key)
+        if g is None:
+            g = groups[key] = {"id": t["id"], "sid": t["sid"] or "unmanaged", "symbol": t["symbol"], "side": t["side"] or "long",
+                               "qty": 0.0, "pnl": 0.0, "entry_ts": t["entry_ts"], "exit_ts": t["exit_ts"], "exit_kind": t["exit_kind"],
+                               "entry_price": t["entry_price"], "_exit_value": 0.0, "_r": 0.0, "_rq": 0.0, "fills": 0}
+        q = float(t["qty"] or 0)
+        g["qty"] += q
+        g["pnl"] += float(t["pnl"] or 0)
+        g["_exit_value"] += q * float(t["exit_price"] or 0)
+        g["fills"] += 1
+        if t["r_multiple"] is not None:
+            g["_r"] += float(t["r_multiple"]) * q
+            g["_rq"] += q
+        if t["exit_ts"] and (g["exit_ts"] is None or t["exit_ts"] >= g["exit_ts"]):
+            g["exit_ts"], g["exit_kind"] = t["exit_ts"], t["exit_kind"]
+    out = []
+    for g in groups.values():
+        g["exit_price"] = g.pop("_exit_value") / g["qty"] if g["qty"] else None
+        r, rq = g.pop("_r"), g.pop("_rq")
+        g["r"] = r / rq if rq else None
+        g["pnl"] = round(g["pnl"], 2)
+        g["fees"] = 0.0  # Alpaca paper charges no commission or regulatory fees; nothing is recorded per fill
+        out.append(g)
+    return sorted(out, key=lambda g: g["exit_ts"] or 0)
+
+
+@app.get("/api/performance/strategies")
+def strategy_performance(range: str = "ALL", start: str = "", end: str = "", u: dict = Depends(user)):
+    """Per strategy line: lifetime realized/open P&L, P&L since its allocation was set, and over the range its
+    P&L path (from the broker's equity marks), round-trip trades, drawdown and session P&L. Combined figures for
+    any selection are sums of these (the dashboard computes them)."""
+    if range not in RANGES:
+        fail(f"range must be one of {', '.join(RANGES)}")
+    c = conn()
+    risk = load_risk()
+    realized = P.Realized(c)
+    life = P.lifetime_now(c, realized)
+    unreal = P.unrealized(c)
+    acct = db.kv_get(c, "account") or {}
+    now = time.time()
+
+    # range over broker sessions (replayed history isn't real trading); without any, over the trades' days
+    sessions = [r["session"] for r in c.execute("SELECT DISTINCT session FROM equity_history WHERE source<>'replay' ORDER BY session")]
+    days = sessions or sorted({str(T.et(ts).date()) for ts in (t for v in realized.ts.values() for t in v)})
+    if not days:
+        days = [str(T.et(now).date())]
+    first, last = date.fromisoformat(days[0]), date.fromisoformat(days[-1])
+    lo, hi = _range_bounds(range, first, last, start, end)
+    t0 = T.ts_at(lo, dtime(0, 0))
+    t1 = T.ts_at(hi + timedelta(days=1), dtime(0, 0))
+    open_now = hi >= last  # the range reaches today: it ends at the current marks
+    at0 = P.lifetime_at(c, t0, realized)
+    at1 = life if open_now else P.lifetime_at(c, t1, realized)
+
+    # P&L path from the broker marks in the range, relative to the range start; ends at the current marks
+    marks = P.marks(c, t0, t1, realized)
+    if open_now:
+        marks.append((now, life))
+    pts = [(ts, {k: v - at0.get(k, 0.0) for k, v in m.items()}) for ts, m in marks]
+
+    # strategy lines: anything with a trade, a position, a mark or an allocation
+    funds_rows = {r["sid"]: r for r in fund_view(c, risk)["strategies"]} if risk.funds else {}
+    sids = set(realized.sids) | set(unreal) | set(funds_rows) | {k for _, m in pts for k in m}
+    meta = {r["sid"]: r for r in db.rows(c, "SELECT DISTINCT ON (sid) sid, hash, version, status, display_name FROM strategies"
+                                            " ORDER BY sid, version DESC")}
+    order = _strategy_order(c)
+    # lines with P&L first, in registry order: the same order (and so the same colors) as the equity chart
+    active = {k for k, v in life.items() if abs(v) >= 0.005} | {k for _, m in pts for k, v in m.items() if abs(v) >= 0.005}
+    sids_sorted = sorted(sids, key=lambda s: (s == "unmanaged", s not in active, order.index(s) if s in order else len(order), s))
+
+    trades = _round_trips(db.rows(c, "SELECT * FROM trades WHERE exit_ts>=? AND exit_ts<? ORDER BY exit_ts, id", (t0, t1)))
+
+    # session P&L per line: change of the path between the last marks of consecutive sessions
+    daily: list[dict] = []
+    prev: dict[str, float] = {}
+    for ts, m in pts:
+        day = str(T.et(ts).date())
+        if daily and daily[-1]["session"] == day:
+            daily[-1]["_end"] = m
+        else:
+            if daily:
+                prev = daily[-1]["_end"]
+            daily.append({"session": day, "_start": prev, "_end": m})
+    for d in daily:
+        s0, s1 = d.pop("_start"), d.pop("_end")
+        d["by_strategy"] = {k: round(s1.get(k, 0.0) - s0.get(k, 0.0), 2) for k in set(s0) | set(s1) if abs(s1.get(k, 0.0) - s0.get(k, 0.0)) >= 0.005}
+    daily = [d for d in daily if d["by_strategy"] or d["session"] in sessions]  # the closing "now" point on a non-session day
+    keep = _decimate([sum(m.values()) for _, m in pts], MAX_POINTS) if pts else []
+    eq0 = db.row(c, "SELECT equity FROM equity_history WHERE source<>'replay' AND ts<? ORDER BY ts DESC LIMIT 1", (t0,))
+    eq_first = db.row(c, "SELECT equity FROM equity_history WHERE source<>'replay' AND ts>=? ORDER BY ts LIMIT 1", (t0,))
+    base_equity = (eq0 or eq_first or {}).get("equity") or acct.get("equity")
+
+    rows = []
+    for sid in sids_sorted:
+        path = [m.get(sid, 0.0) for _, m in pts]
+        peak, mdd, mdd_at = 0.0, 0.0, None
+        for (ts, _), v in zip(pts, path):
+            peak = max(peak, v)
+            if peak - v > mdd:
+                mdd, mdd_at = peak - v, ts
+        f = funds_rows.get(sid)
+        m = meta.get(sid) or {}
+        cap = f["base_usd"] if f else None
+        rng = at1.get(sid, 0.0) - at0.get(sid, 0.0)
+        rows.append({
+            "sid": sid, "name": m.get("display_name"), "hash": m.get("hash"), "version": m.get("version"),
+            "registry_status": m.get("status"), "kind": f["kind"] if f else None,
+            "fund_status": f["status"] if f else None, "allocation_usd": f["allocation_usd"] if f else None,
+            "base_usd": cap, "base_ts": f["base_ts"] if f else None, "deployed": f["deployed"] if f else None,
+            "since_set": f["pnl"] if f else None, "since_set_pct": f["pnl_pct"] if f else None, "today": f["pnl_today"] if f else None,
+            "drawdown_now": f["drawdown"] if f else None, "max_drawdown_stop": f["max_drawdown"] if f else None,
+            "realized_total": round(realized.total(sid), 2), "unrealized": round(unreal.get(sid, 0.0), 2),
+            "lifetime": round(life.get(sid, 0.0), 2),
+            "open_positions": db.row(c, "SELECT COUNT(*) n FROM positions WHERE COALESCE(sid,'unmanaged')=?", (sid,))["n"],
+            "range_pnl": round(rng, 2),
+            "range_realized": round(realized.before(sid, t1) - realized.before(sid, t0), 2),
+            "range_return": rng / cap if cap else None,
+            "contribution": rng / base_equity if base_equity else None,
+            "max_dd_usd": round(mdd, 2), "max_dd_pct": mdd / cap if cap else None, "max_dd_at": mdd_at,
+            "fees": 0.0,
+        })
+    return {
+        "range": range, "lo": lo.isoformat(), "hi": hi.isoformat(), "first": first.isoformat(), "last": last.isoformat(),
+        "open_now": open_now, "base_equity": base_equity, "equity": acct.get("equity"), "strategies": rows, "trades": trades, "daily": daily,
+        "positions": [{"sid": p["sid"] or "unmanaged", "symbol": p["symbol"], "qty": p["qty"], "avg_price": p["avg_price"],
+                       "last_price": p["last_price"], "opened_ts": p["opened_ts"],
+                       "unrealized": round((p["last_price"] - p["avg_price"]) * P.signed_qty(p), 2) if p["last_price"] and p["avg_price"] else 0.0}
+                      for p in db.rows(c, "SELECT * FROM positions ORDER BY symbol")],
+        "ts": [pts[k][0] for k in keep],
+        "series": {r["sid"]: [round(pts[k][1].get(r["sid"], 0.0), 2) for k in keep] for r in rows},
+        "fees_note": "Alpaca paper charges no commission or regulatory fees, so fees are $0 on every fill.",
     }
 
 
@@ -1330,8 +1510,12 @@ def discovery_preflight(ticker: str, peers: str = "SPY,QQQ", u: dict = Depends(u
         llm_on = False
     if load_risk().portfolio is None:
         kinds["daily"] = {"ok": False, "why": "portfolio strategies are disabled on the Risk page"}
+    dl = history.available(c)
+    for k, x in kinds.items():  # the run downloads missing history first, so these kinds can still be searched
+        if not x["ok"] and dl and not (k == "daily" and load_risk().portfolio is None):
+            x["download"] = True
     running = db.row(c, "SELECT id FROM discovery_runs WHERE status='running' ORDER BY id DESC LIMIT 1")
-    return {"ticker": cfg.ticker, "kinds": kinds, "peers": peer_rows, "history_download": history.available(c),
+    return {"ticker": cfg.ticker, "kinds": kinds, "peers": peer_rows, "history_download": dl,
             "llm": llm_on, "running": running["id"] if running else None}
 
 
@@ -1832,7 +2016,8 @@ def funds_set(sid: str, body: FundIn, u: dict = Depends(owner)):
     what = (f"${usd:,.0f} fixed" if usd is not None else f"{share:.1%} of equity") + (
         f", {rsv:.0%} reserved (the rest from the shared pool)" if rsv < 1 else ", fully reserved")
     return ok(f"{sid}: allocation {what}, drawdown stop {dd:.0%} of it"
-              + (f", daily loss stop {dl:.0%}" if dl and s.kind == "intraday" else "") + ". Drawdown is measured from now.")
+              + (f", daily loss stop {dl:.0%}" if dl and s.kind == "intraday" else "") + ". Drawdown is measured from now."
+              + (f" {note}." if (note := funds.over_note(c, risk, s)) else ""))
 
 
 @app.post("/api/funds/{sid}/{action}")

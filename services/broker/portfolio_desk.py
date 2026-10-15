@@ -406,6 +406,11 @@ class PortfolioDesk:
         hist = db.rows(self.conn, "SELECT c, v FROM daily WHERE symbol=? AND day<? ORDER BY day DESC LIMIT 20", (o.symbol, str(day)))
         adv = sum(r["c"] * r["v"] for r in hist) / 20 if len(hist) == 20 else None
         checks = P.check_order(o, book, self.risk, adv)
+        if o.side == "buy":
+            # Alpaca nets a symbol into one position; two sleeves in it couldn't be told apart (paper.persist_account)
+            others = sleeves.symbol_owners(self.conn).get(o.symbol, set()) - {h}
+            checks.append(P.Check("not_other_sleeve_symbol", not others,
+                                  f"{o.symbol} is held by another portfolio sleeve" if others else "free"))
         if o.side == "buy" and self.risk.funds:
             sid = (db.row(self.conn, "SELECT sid FROM strategies WHERE hash=?", (h,)) or {}).get("sid", "")
             checks += F.check_buy(sid, "portfolio", o.qty * o.price, funds.account(self.conn, self.risk), self.risk.funds)

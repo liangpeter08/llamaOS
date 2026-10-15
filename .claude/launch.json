@@ -57,6 +57,35 @@
         "dev"
       ],
       "port": 3000
+    },
+    {
+      "name": "perf-demo-api",
+      "runtimeExecutable": "/usr/bin/env",
+      "runtimeArgs": [
+        "DATABASE_URL=postgresql://llamaos:llamaos@127.0.0.1:5432/llamaos_perf_demo",
+        "SESSION_SECRET=perf-demo-724c891bd081b2c7",
+        "API_PORT=8093",
+        "/Users/pl/llamaOS/.venv/bin/python",
+        "-m",
+        "services.api"
+      ],
+      "port": 8093
+    },
+    {
+      "name": "perf-demo-dashboard",
+      "runtimeExecutable": "/usr/bin/env",
+      "runtimeArgs": [
+        "API_URL=http://127.0.0.1:8093",
+        "npm",
+        "--prefix",
+        "/Users/pl/llamaOS/services/dashboard",
+        "run",
+        "dev",
+        "--",
+        "-p",
+        "3012"
+      ],
+      "port": 3012
     }
   ]
 }

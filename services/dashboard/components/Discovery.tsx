@@ -81,7 +81,7 @@ function Preflight({ ticker, peers, onData }: { ticker: string; peers: string; o
         const x = data.kinds[k];
         return x?.ok
           ? <Pill key={k} kind="good">{t(k)}: {t("{n} sessions to search + {h} sealed", { n: x.discovery, h: x.holdout })}</Pill>
-          : <Pill key={k} kind="warn" title={x?.why}>{t(k)}: {t("not available")}</Pill>;
+          : <Pill key={k} kind="warn" title={x?.why}>{t(k)}: {t(x?.download ? "will download history" : "not available")}</Pill>;
       })}
       {data.peers.map((p: any) => (
         <Pill key={p.symbol} kind={p.daily || p.intraday ? "" : "warn"} title={t("{d} daily sessions, {i} days of 1-minute bars", { d: p.daily, i: p.intraday })}>
@@ -91,7 +91,7 @@ function Preflight({ ticker, peers, onData }: { ticker: string; peers: string; o
       {Object.values(data.kinds).some((x: any) => !x.ok) && (
         <div className="muted" style={{ marginTop: 4, fontSize: 12 }}>
           {Object.entries(data.kinds).filter(([, x]: any) => !x.ok).map(([k, x]: any) => `${t(k)}: ${x.why}`).join(" · ")}
-          {data.history_download ? ` ${t("The paper broker can download missing history from a backtest of this ticker.")}` : ""}
+          {data.history_download ? ` ${t("Starting discovery downloads the missing history through the paper broker first.")}` : ""}
         </div>
       )}
     </div>
@@ -109,7 +109,7 @@ export function DiscoverForm({ onDone }: { onDone?: () => void }) {
   const [saveAll, setSaveAll] = useState(false);
   const [pf, setPf] = useState<any>(null);
   const { start, busy, error } = useStartRun();
-  const usable = kinds.filter((k) => pf?.kinds?.[k]?.ok);
+  const usable = kinds.filter((k) => pf?.kinds?.[k]?.ok || pf?.kinds?.[k]?.download);
   const t = useT();
   const toggle = (k: string) => setKinds((ks) => (ks.includes(k) ? ks.filter((x) => x !== k) : [...ks, k]));
   return (

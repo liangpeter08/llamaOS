@@ -34,16 +34,23 @@ def all_holdings(conn) -> dict[str, dict[str, Holding]]:
     return {h: replay_fills(rows)[0] for h, rows in by.items()}
 
 
-def owned_symbols(conn) -> dict[str, str]:
-    """symbol -> strategy hash, for every symbol a sleeve holds or has an order working in."""
-    out: dict[str, str] = {}
+def symbol_owners(conn) -> dict[str, set[str]]:
+    """symbol -> hashes of the sleeves that hold it or have an order working in it."""
+    out: dict[str, set[str]] = {}
     for h, hold in all_holdings(conn).items():
         for sym, x in hold.items():
             if x.qty > 0:
-                out[sym] = h
+                out.setdefault(sym, set()).add(h)
     for r in db.rows(conn, f"SELECT DISTINCT symbol, strategy_hash FROM portfolio_orders WHERE status IN {OPEN}"):
-        out.setdefault(r["symbol"], r["strategy_hash"])
+        out.setdefault(r["symbol"], set()).add(r["strategy_hash"])
     return out
+
+
+def owned_symbols(conn) -> dict[str, str]:
+    """symbol -> strategy hash, for every symbol a sleeve holds or has an order working in.
+
+    One owner per symbol: the desk's not_other_sleeve check keeps a second sleeve out of a held symbol."""
+    return {sym: min(hs) for sym, hs in symbol_owners(conn).items()}
 
 
 def locked_cash(conn, h: str) -> float:
