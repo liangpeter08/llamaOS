@@ -1703,4 +1703,18 @@ export const zh: Record<string, string> = {
   "{n}m": "{n} 分钟",
   "{n}h": "{n} 小时",
   "{n}d": "{n} 天",
+  // Strategy analysis
+  "Strategy analysis": "策略分析",
+  "Trade win %": "交易胜率",
+  "Day win %": "日胜率",
+  "Avg win/loss trade": "平均盈亏比(单笔)",
+  "Win %": "胜率",
+  "Avg win/loss": "平均盈亏",
+  "Recovery factor": "恢复因子",
+  "Consistency": "一致性",
+  "Strategy score": "策略评分",
+  "Daily net cumulative P&L": "每日累计净盈亏",
+  "Net daily P&L": "每日净盈亏",
+  "No trades for this strategy in this range yet.": "该区间内此策略暂无交易。",
+  "No sessions yet.": "暂无交易日。",
 };

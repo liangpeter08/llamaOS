@@ -257,3 +257,23 @@ tr.off td { color: var(--muted); }
 .lang-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .lang-toggle button { border: 0; border-radius: 0; padding: 3px 9px; font-size: 12px; background: none; color: var(--muted); }
 .lang-toggle button.on { background: var(--accent-weak); color: var(--accent); font-weight: 600; }
+
+/* Strategy analysis (strategy page) */
+.an-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.an-tile { display: flex; align-items: center; justify-content: space-between; gap: 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; min-height: 88px; }
+.an-value { font-size: 26px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.an-gauge { display: flex; flex-direction: column; align-items: center; }
+.an-chips { display: flex; gap: 6px; margin-top: -4px; font-size: 11px; font-weight: 600; }
+.an-chips span { min-width: 20px; text-align: center; border-radius: 10px; padding: 1px 6px; }
+.an-chips .good { background: var(--good-weak); color: var(--good); }
+.an-chips .even { background: var(--accent-weak); color: var(--accent); }
+.an-chips .bad { background: var(--bad-weak); color: var(--bad); }
+.an-wl { width: 110px; font-size: 12px; font-weight: 600; }
+.an-wl-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; margin-bottom: 6px; gap: 2px; }
+.an-wl-bar .g { background: var(--good); } .an-wl-bar .r { background: var(--bad); }
+.an-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; margin-top: 12px; }
+.an-panel { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; min-width: 0; }
+.an-panel h3 { margin: 0 0 8px; font-size: 14px; color: var(--text); text-transform: none; letter-spacing: 0; }
+.an-score { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.an-score-bar { flex: 1; position: relative; height: 6px; border-radius: 3px; background: linear-gradient(90deg, var(--bad), var(--warn), var(--good)); }
+.an-score-bar span { position: absolute; top: 50%; width: 12px; height: 12px; border-radius: 50%; background: var(--panel); border: 2px solid var(--text); transform: translate(-50%, -50%); }

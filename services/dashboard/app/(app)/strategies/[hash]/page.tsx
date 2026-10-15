@@ -13,6 +13,7 @@ import { OverlaysCard, PortfolioBacktest, SleeveCard } from "@/components/Portfo
 import { CategoryEditor, DeleteZone } from "@/components/Organize";
 import { AllocationInput, ReservedInput, allocText, allocValue, ceilingUsd, type AllocMode } from "@/components/Allocation";
 import { IterateCard } from "@/components/Discovery";
+import { StrategyAnalysis } from "@/components/StrategyAnalysis";
 import { useT, type T } from "@/lib/i18n";
 
 export default function StrategyPage() {
@@ -84,6 +85,7 @@ export default function StrategyPage() {
       </div>
 
       {!v.ok && <Notice kind="bad"><b>{t("Validator errors")}</b><ul>{v.errors.map((e: string) => <li key={e}>{e}</li>)}</ul></Notice>}
+      <StrategyAnalysis sid={s.sid} />
       <Card title={t("Ticker monitoring")} className="mt">
         <p>{t(portfolio ? "Required by this portfolio strategy" : "Shared watchlist used by this intraday strategy")}: {data.monitoring?.required.join(", ") || t("No tickers configured")}. <Link href="/watchlist">{t("Manage monitoring")}</Link></p>
         {!!data.monitoring?.unwatched.length && <Notice kind="warn">{t("Monitoring is off for {list}. This strategy cannot open new positions in those tickers. Held positions retain risk monitoring.", { list: data.monitoring.unwatched.join(", ") })}</Notice>}
