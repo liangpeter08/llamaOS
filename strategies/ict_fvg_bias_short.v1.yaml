@@ -1,0 +1,70 @@
+dsl: 0.1
+id: ict_fvg_bias_short
+version: 1
+source:
+  text: >-
+    ICT beginner model from YouTube (tGvi5xJRdVg): 1) read higher-timeframe market structure
+    for a directional bias, 2) mark key levels (previous day/week highs and lows) and fair value
+    gaps, 3) only take FVGs in the direction of the bias, 4) enter on a retracement into the FVG
+    with the stop beyond a swing point and the target at an opposing key level, 5) set and forget;
+    aim for winners several times larger than losers.
+  compiled_by: claude-opus-5-5
+  prompt: compiler@v2
+assumptions:
+  - "Short side: bias is bearish when yesterday's close is below its 20-session average (zscore_d < -bias_z) AND the 5-session return is below -bias_ret. Bullish-bias days are skipped (see ict_fvg_bias_long)."
+  - "Entry: the bar trades up into the open bearish gap (high >= gap bottom) and closes below its top (the gap holds)."
+  - "Stop: above the highest high of the last swing_n bars plus stop_buf (the latest intraday swing high). If price is already below the previous day's low there is no key level to target and no trade."
+  - "Needs allow_short on the Risk page."
+  - "Bias (steps 1-2): daily closes stand in for higher-timeframe swing structure, which the DSL cannot label directly."
+  - "FVG (step 3): fvg_*(fvg_n) returns the newest gap formed in the last fvg_n 1-min bars that price has not closed through yet, so later retests of an older gap count, not only the bar right after it forms."
+  - "Target (step 4): the opposing key level, the previous day's high/low (target_days 1; 5 = about the previous week). A trade is only taken when that level is at least min_rr times the risk away, which enforces the asymmetric risk-to-reward the video stresses."
+  - "Previous session (Asia/London) highs and lows are not available: data is US regular-hours 1-min bars only."
+  - "Trade management (step 5): none. Set and forget; positions flatten at 15:50 ET (intraday only)."
+  - "Risk 0.25% of equity per trade, at most 2 trades per day per the 'don't overtrade' advice."
+  - "The video's back-test stats (64% win rate, profit factor 5) are student results on discretionary trades and are NOT evidence for this mechanical version. Backtest before paper/live."
+suggestions:
+  - "Backtest min_rr at 1.5 and 3.0, swing_n at 10 and 30, and target_days 1 vs 5 (prior week) before paper trading."
+  - "Run the long and short files together so bias decides which side trades on a given day."
+universe:
+  symbols: [AAPL, AMD, AMZN, GOOGL, META, MSFT, NVDA, TSLA]
+  filters:
+    - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_adv:     {value: 1_000_000_000, range: [100_000_000, 10_000_000_000]}
+  bias_n:      {value: 20,    range: [10, 60]}
+  bias_ret_n:  {value: 5,     range: [2, 20]}
+  bias_z:      {value: 0,     range: [0, 1.0]}
+  bias_ret:    {value: 0%,    range: [0%, 5%]}
+  fvg_n:       {value: 60,    range: [5, 180]}
+  min_gap:     {value: 0.05%, range: [0.01%, 0.5%]}
+  swing_n:     {value: 20,    range: [5, 60]}
+  stop_buf:    {value: 0.05%, range: [0%, 0.5%]}
+  target_days: {value: 1,     range: [1, 10]}
+  min_rr:      {value: 2.0,   range: [1.0, 4.0]}
+vars:
+  gap_top: fvg_bear_top(fvg_n)
+  gap_bottom: fvg_bear_bottom(fvg_n)
+  stop_level: highest(high, swing_n) * (1 + stop_buf)
+  target_level: low_d(target_days)
+entry:
+  side: short
+  window: "09:50-14:30"
+  when_all:
+    - zscore_d(bias_n) < -bias_z
+    - ret_d(bias_ret_n) < -bias_ret
+    - gap_top - gap_bottom >= close * min_gap
+    - high >= gap_bottom
+    - close < gap_top
+    - close < stop_level
+    - close - target_level >= min_rr * (stop_level - close)
+sizing:
+  risk_per_trade: 0.25%
+exit:
+  stop: stop_level
+  target: target_level
+  flatten_at: "15:50"
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 2

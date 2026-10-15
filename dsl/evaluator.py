@@ -459,6 +459,17 @@ class Evaluator:
                 for k in range(1, len(hist))
             ]
             return sum(trs) / len(trs)
+        if fn in ("high_d", "low_d"):
+            n = self._int_arg(a[0], i)
+            hist = d.history[-n:] if n else []
+            if not n or len(hist) < n:
+                return None
+            return max(h.h for h in hist) if fn == "high_d" else min(h.l for h in hist)
+        if fn in ("fvg_bull_top", "fvg_bull_bottom", "fvg_bear_top", "fvg_bear_bottom"):
+            gap = self._fvg(fn.startswith("fvg_bull"), i, self._int_arg(a[0], i))
+            if gap is None:
+                return None
+            return gap[1] if fn.endswith("_top") else gap[0]
         if fn in ("crosses_above", "crosses_below"):
             if i < 1:
                 return None
@@ -477,6 +488,26 @@ class Evaluator:
                 j -= 1
             return float(n)
         raise KeyError(fn)
+
+    def _fvg(self, bull: bool, i: int, n: int | None) -> tuple[float, float] | None:
+        """(bottom, top) of the newest fair value gap still open as of bar i.
+
+        A bullish gap is a three-bar pattern with low[k] > high[k-2]; a bearish one has high[k] < low[k-2].
+        Only gaps completed on bars before i, within the last n bars, are seen, so bar i can be the retest.
+        A gap closes once a later bar (before i) closes through its far side (below a bullish gap's
+        bottom, above a bearish gap's top); an older open gap is used if the newest is closed.
+        """
+        d = self.d
+        if not n or n < 1:
+            return None
+        worst = None  # lowest (bull) / highest (bear) close of the bars after k, up to i-1
+        for k in range(i - 1, max(i - 1 - n, 1), -1):
+            if bull and d.l[k] > d.h[k - 2] and (worst is None or worst >= d.h[k - 2]):
+                return d.h[k - 2], d.l[k]
+            if not bull and d.h[k] < d.l[k - 2] and (worst is None or worst <= d.l[k - 2]):
+                return d.h[k], d.l[k - 2]
+            worst = d.c[k] if worst is None else (min(worst, d.c[k]) if bull else max(worst, d.c[k]))
+        return None
 
     def _ema(self, node: E.Call, i: int):
         n = self._int_arg(node.args[1], i)
