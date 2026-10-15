@@ -1,0 +1,58 @@
+dsl: 0.1
+id: gap_fade_down_long
+version: 1
+source:
+  text: >-
+    Small gap-down fade (mirror of gap_fade_up_short). Stocks that open modestly below
+    yesterday's close on no company news often recover part of the gap in the first hour, as
+    overnight positioning unwinds. Research basis is weaker than for gap-ups: Berkman, Koch,
+    Tuttle & Zhang (2012, JFQA) document the open-to-close reversal mainly after overnight
+    gains. Plastun et al. (2020, NAJEF) find gaps tend to continue, so this trades small,
+    no-news gaps only.
+  compiled_by: claude-opus-5-5
+  prompt: compiler@v2
+assumptions:
+  - "Small gap: open between min_gap (0.3%) and max_gap (1.5%) below yesterday's close."
+  - "No news: no fundamental headline since yesterday's close (news.fundamental, default false)."
+  - "Trigger: the first 5-minute candle closes up (close_at(5) > day_open) and a 1-minute bar then closes above the 5-minute high."
+  - "Target: yesterday's close (a full gap fill). Only traded when the fill is at least min_rr (1.0) x the risk away."
+  - "Stop: the day's low at entry minus stop_buf (0.05%)."
+  - "First-hour window (09:36-10:30) and flat by 11:30."
+suggestions:
+  - "Compare with gap_fade_up_short: if the down side does not hold up in backtests, run only the gap-up fade."
+universe:
+  from: {news_today: false}
+  filters:
+    - adv(20) >= min_adv
+    - gap <= -min_gap
+    - gap >= -max_gap
+timeframe: 1min
+params:
+  min_adv:    {value: 50_000_000, range: [10_000_000, 1_000_000_000]}
+  min_gap:    {value: 0.3%,  range: [0.1%, 1%]}
+  max_gap:    {value: 1.5%,  range: [0.5%, 3%]}
+  or_minutes: {value: 5,     range: [5, 15]}
+  stop_buf:   {value: 0.05%, range: [0%, 0.5%]}
+  min_rr:     {value: 1.0,   range: [0.5, 3.0]}
+signals:
+  news.fundamental: {from: news_agent@v1, max_age: since_prior_close, default: false}
+vars:
+  stop_level: day_low * (1 - stop_buf)
+entry:
+  side: long
+  window: "09:36-10:30"
+  when_all:
+    - close_at(or_minutes) > day_open
+    - crosses_above(close, or_high(or_minutes))
+    - prior_close - close >= min_rr * (close - stop_level)
+    - not news.fundamental
+sizing:
+  risk_per_trade: 0.25%
+exit:
+  stop: stop_level
+  target: prior_close
+  flatten_at: "11:30"
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 2

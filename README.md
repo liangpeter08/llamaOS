@@ -390,9 +390,9 @@ Strategies are YAML files with a small expression language. Hard limits are not 
 | Group | Builtins |
 |---|---|
 | Bars | `open high low close volume`, with `x[n]` meaning n bars back |
-| Session | `vwap`, `day_open`, `day_high`, `day_low`, `prior_close`, `gap`, `or_high(min)`, `or_low(min)` |
+| Session | `vwap`, `day_open`, `day_high`, `day_low`, `prior_close`, `gap`, `or_high(min)`, `or_low(min)`, `close_at(min)` (close at N minutes after the open), `on_interval(min)` (true on bars closing on each N-minute mark after the open) |
 | Indicators | `sma`, `ema`, `atr`, `rsi`, `highest`, `lowest`, `rvol(days)` |
-| Daily | `adv(days)`, `atr_d(n)`, `high_d(n)`, `low_d(n)` (highest high / lowest low of the prior n sessions; 1 = yesterday) |
+| Daily | `adv(days)`, `atr_d(n)`, `high_d(n)`, `low_d(n)` (highest high / lowest low of the prior n sessions; 1 = yesterday), `noise_d(n)` (average open-to-close move of the prior n sessions, scaled by sqrt(minutes since the open / 390): the typical move from the open by now) |
 | Fair value gaps | `fvg_bull_top(n)`, `fvg_bull_bottom(n)`, `fvg_bear_top(n)`, `fvg_bear_bottom(n)`: edges of the newest gap still open, formed in the last n bars |
 | Daily history (builtins@v2) | `ret_d(n)`, `vol_d(n)`, `vol_rank(n, m)`, `sma_d(n)`, `zscore_d(n)`, `highest_d(n)`, `lowest_d(n)`, `up_days(n)`, `corr_d(SYM, n)`, `beta_d(SYM, n)` |
 | Cross-symbol (builtins@v2) | `peer(SYM, expr)`: `expr` evaluated for another symbol at the same moment |

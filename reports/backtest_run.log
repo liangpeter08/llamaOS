@@ -1,0 +1,71 @@
+[data] feed=iex window 2024-01-01..2026-10-16 symbols=36
+[daily] AAPL: 950 days 2023-01-03..2026-10-15
+[daily] MSFT: 950 days 2023-01-03..2026-10-15
+[daily] NVDA: 950 days 2023-01-03..2026-10-15
+[daily] AMZN: 950 days 2023-01-03..2026-10-15
+[daily] META: 950 days 2023-01-03..2026-10-15
+[daily] GOOGL: 950 days 2023-01-03..2026-10-15
+[daily] TSLA: 950 days 2023-01-03..2026-10-15
+[daily] AMD: 950 days 2023-01-03..2026-10-15
+[daily] AVGO: 950 days 2023-01-03..2026-10-15
+[daily] NFLX: 950 days 2023-01-03..2026-10-15
+[daily] ORCL: 950 days 2023-01-03..2026-10-15
+[daily] QCOM: 950 days 2023-01-03..2026-10-15
+[daily] ADBE: 950 days 2023-01-03..2026-10-15
+[daily] CRM: 950 days 2023-01-03..2026-10-15
+[daily] INTC: 950 days 2023-01-03..2026-10-15
+[daily] MU: 950 days 2023-01-03..2026-10-15
+[daily] PLTR: 950 days 2023-01-03..2026-10-15
+[daily] COIN: 950 days 2023-01-03..2026-10-15
+[daily] MRNA: 950 days 2023-01-03..2026-10-15
+[daily] AFRM: 950 days 2023-01-03..2026-10-15
+[daily] UBER: 950 days 2023-01-03..2026-10-15
+[daily] RIVN: 950 days 2023-01-03..2026-10-15
+[daily] F: 950 days 2023-01-03..2026-10-15
+[daily] PYPL: 950 days 2023-01-03..2026-10-15
+[daily] DIS: 950 days 2023-01-03..2026-10-15
+[daily] BABA: 950 days 2023-01-03..2026-10-15
+[daily] NIO: 950 days 2023-01-03..2026-10-15
+[daily] SOFI: 950 days 2023-01-03..2026-10-15
+[daily] RBLX: 950 days 2023-01-03..2026-10-15
+[daily] DASH: 950 days 2023-01-03..2026-10-15
+[daily] ABNB: 950 days 2023-01-03..2026-10-15
+[daily] HOOD: 950 days 2023-01-03..2026-10-15
+[daily] SHOP: 950 days 2023-01-03..2026-10-15
+[daily] SMCI: 950 days 2023-01-03..2026-10-15
+[daily] LC: 868 days 2023-01-03..2026-06-18
+[daily] SPY: 950 days 2023-01-03..2026-10-15
+[intraday] 50/1224 chunks fetched
+[intraday] 100/1224 chunks fetched
+[intraday] 150/1224 chunks fetched
+[intraday] 200/1224 chunks fetched
+[intraday] 250/1224 chunks fetched
+[intraday] 300/1224 chunks fetched
+[intraday] 350/1224 chunks fetched
+[intraday] 400/1224 chunks fetched
+[intraday] 450/1224 chunks fetched
+[intraday] 500/1224 chunks fetched
+[intraday] 550/1224 chunks fetched
+[intraday] 600/1224 chunks fetched
+[intraday] 650/1224 chunks fetched
+[intraday] 700/1224 chunks fetched
+[intraday] 750/1224 chunks fetched
+[intraday] 800/1224 chunks fetched
+[intraday] 850/1224 chunks fetched
+[intraday] 900/1224 chunks fetched
+[intraday] 950/1224 chunks fetched
+[intraday] 1000/1224 chunks fetched
+[intraday] 1050/1224 chunks fetched
+[intraday] 1100/1224 chunks fetched
+[warn] LC 2026-07 failed: 'NoneType' object is not iterable
+[warn] LC 2026-08 failed: 'NoneType' object is not iterable
+[intraday] 1150/1224 chunks fetched
+[warn] LC 2026-09 failed: 'NoneType' object is not iterable
+[intraday] 1200/1224 chunks fetched
+[warn] LC 2026-10 failed: 'NoneType' object is not iterable
+{
+  "trades": 1046,
+  "net_total": 590.14,
+  "net_sharpe": 0.007,
+  "file": "/Users/pl/llamaOS/reports/backtest_evidence.json"
+}

@@ -1,0 +1,76 @@
+dsl: 0.1
+id: orb_stocks_in_play_pro_short
+version: 1
+source:
+  text: >-
+    Research: Zarattini, Barbon & Aziz (2024), "A Profitable Day Trading Strategy For The U.S.
+    Equity Market" (SSRN 4729284, Swiss Finance Institute Research Paper 24-98). An enhanced
+    5-minute opening-range breakout on "Stocks in Play": unusually high relative volume
+    (RVOL >= 2.0 here), price > $5, 14-day daily ATR > $0.50. Trade in the direction of the
+    first 5-minute candle: if it closes down by at least a fraction of a daily ATR, sell short a
+    break of its low. Entry is only allowed in the first hour (window 09:35-10:30 ET), because the
+    paper finds the edge concentrated in the opening hour. Stop at 0.10 x the 14-day daily ATR (the
+    paper's own stop), a 10R bracket target (a placeholder; the true exit is flatten at 15:50,
+    before the closing auction). Reported headline stats for the authors' top-20 Stocks in Play,
+    2016-2023, net of costs: Sharpe 2.81, 36% annual alpha, over 1,600% total return; an
+    independent QuantConnect replication reported Sharpe ~2.4, beta ~0. These are the authors' own
+    backtests, not evidence for this mechanical version on this watchlist.
+  compiled_by: llamaos-research
+  prompt: compiler@v2
+assumptions:
+  - "Direction: the first 5-minute candle is bearish when close_at(or_minutes) < day_open; bullish days are left to orb_stocks_in_play_pro_long."
+  - "Entry: a 1-minute bar CLOSES below the 5-minute low. The paper rests a stop-market order at the low, so live fills here are later and slightly worse; the accompanying backtest models the fill at the NEXT bar open to avoid look-ahead."
+  - "Entry window 09:35-10:30 ET: the paper shows the breakout edge is concentrated in the first hour after the open and decays through the day, so entries are cut off at 10:30. The DSL has no separate cutoff parameter; this is expressed purely by narrowing entry.window."
+  - "Stronger RVOL selectivity: rvol_min is 2.0 (range 1.0-10.0) versus 1.0 in orb5. The paper keeps the top 20 of ~7,000 names by first-5-minute relative volume; 2.0 is a stricter proxy for 'Stocks in Play' on a small watchlist, not a calibrated threshold."
+  - "Regime gate (UNPROVEN enhancement): references [SPY] and require peer(SPY, vol_rank(20,60)) >= volrank_min. volrank_min defaults to 0.0, which leaves the gate OFF (SPY's realized-vol percentile is always >= 0). This is a deliberately testable switch: high-vol regimes may be friendlier to momentum breakouts, but this gate is NOT a documented result of the paper and has not been validated here. Raise volrank_min (e.g. 0.5 = only trade when SPY's 20-day vol is in the upper half of its 60-day range) as an experiment, not a prior."
+  - "First-candle magnitude filter (UNPROVEN enhancement): (day_open - close_at(or_minutes)) >= candle_atr_min * atr_d(14). candle_atr_min defaults to 0.0 (filter off); at 0 the rule only asks for a down candle. Turn it up (e.g. 0.1) to require the first candle to move by at least 10% of a daily ATR, intended to skip weak/open indecisive candles. Threshold is unvalidated."
+  - "Stop: entry plus stop_atr (0.10) x the 14-day daily ATR, exactly as in the paper."
+  - "Exit: the paper holds to the close with no target. The bracket requires one, so target = entry - target_r (10) x risk_per_share (~one daily ATR); at 10R it almost never triggers intraday, and flatten_at 15:50 is the real exit on most days, deliberately 5 minutes before the risk flatten_by of 15:55 to avoid the closing auction."
+  - "Sizing: the paper risks 1% per trade with up to 4x leverage. Here 0.5% risk, capped by the account's max_position, so position sizes are much smaller."
+  - "Allow-short note: this side requires allow_short to be ON on the Risk page; against the factory risk controls (allow_short: false) the validator rejects this file by design. That rejection is expected, not a bug in the strategy text."
+  - "Headline numbers quoted in source.text are the authors' own backtests, not evidence for this mechanical version on this watchlist. Backtest before paper."
+suggestions:
+  - "Backtest the window: entries 09:35-10:30 versus the all-day 09:35-15:00 window, to confirm the opening-hour decay."
+  - "Test volrank_min 0.0 (off) versus 0.5/0.8 to see whether the SPY regime gate adds anything; treat any result as exploratory, not a proven edge."
+  - "Test candle_atr_min 0.0 versus 0.1/0.2 to see whether requiring a forceful first candle improves the breakout."
+  - "Compare rvol_min 2.0 against 1.0 on a larger, news-prone mid-cap universe; the edge is concentrated in Stocks in Play, not mega caps on quiet days."
+universe:
+  from: {news_today: false}
+  filters:
+    - prior_close >= min_price
+    - adv(14) >= min_adv
+    - atr_d(14) >= min_atr
+references: [SPY]
+timeframe: 1min
+params:
+  min_price:       {value: 5,          range: [5, 50]}
+  min_adv:         {value: 20_000_000, range: [10_000_000, 1_000_000_000]}
+  min_atr:         {value: 0.5,        range: [0.25, 5.0]}
+  or_minutes:      {value: 5,          range: [5, 30]}
+  rvol_n:          {value: 14,        range: [5, 30]}
+  rvol_min:        {value: 2.0,        range: [1.0, 10.0]}
+  stop_atr:        {value: 0.10,       range: [0.05, 0.5]}
+  target_r:        {value: 10,         range: [2, 20]}
+  volrank_min:     {value: 0.0,        range: [0.0, 1.0]}
+  candle_atr_min:  {value: 0.0,        range: [0.0, 1.0]}
+vars:
+  range_low: or_low(or_minutes)
+entry:
+  side: short
+  window: "09:35-10:30"
+  when_all:
+    - close_at(or_minutes) < day_open
+    - (day_open - close_at(or_minutes)) >= candle_atr_min * atr_d(14)
+    - peer(SPY, vol_rank(20, 60)) >= volrank_min
+    - crosses_below(close, range_low)
+    - rvol(rvol_n) >= rvol_min
+sizing:
+  risk_per_trade: 0.5%
+exit:
+  stop: entry_price + stop_atr * atr_d(14)
+  target: entry_price - target_r * risk_per_share
+  flatten_at: "15:50"
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 3

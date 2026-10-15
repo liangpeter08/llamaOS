@@ -404,6 +404,15 @@ class Evaluator:
             if not idx:
                 return None
             return max(d.h[j] for j in idx) if fn == "or_high" else min(d.l[j] for j in idx)
+        if fn == "on_interval":
+            n = self._int_arg(a[0], i)
+            return None if not n or n < 1 else (d.minute_index(i) + 1) % n == 0
+        if fn == "close_at":
+            n = self._int_arg(a[0], i)
+            if n is None or n < 1 or d.minute_index(i) < n - 1:
+                return None
+            idx = [j for j in range(min(len(d), n)) if d.minute_index(j) < n]
+            return d.c[idx[-1]] if idx else None
         if fn == "sma":
             w = self._window(a[0], i, self._int_arg(a[1], i))
             return sum(w) / len(w) if w else None
@@ -465,6 +474,13 @@ class Evaluator:
             if not n or len(hist) < n:
                 return None
             return max(h.h for h in hist) if fn == "high_d" else min(h.l for h in hist)
+        if fn == "noise_d":
+            n = self._int_arg(a[0], i)
+            hist = d.history[-n:] if n else []
+            if not n or len(hist) < n or any(h.o <= 0 for h in hist):
+                return None
+            move = sum(abs(h.c / h.o - 1) for h in hist) / n
+            return move * math.sqrt((d.minute_index(i) + 1) / T.BARS_PER_DAY)
         if fn in ("fvg_bull_top", "fvg_bull_bottom", "fvg_bear_top", "fvg_bear_bottom"):
             gap = self._fvg(fn.startswith("fvg_bull"), i, self._int_arg(a[0], i))
             if gap is None:

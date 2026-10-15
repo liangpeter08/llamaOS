@@ -1,0 +1,57 @@
+dsl: 0.1
+id: vwap_reversion_long
+version: 1
+source:
+  text: >-
+    VWAP mean reversion: VWAP is the intraday execution benchmark for institutional orders,
+    so large liquid names stretched far below it on no news tend to drift back toward it.
+    Buy when price is stretched more than stretch x the daily ATR below VWAP, RSI is
+    oversold and the bar turns up. Target VWAP, stop under the recent low. Evidence is
+    practitioner-level only (no peer-reviewed study of this exact rule); treat it as the
+    weakest of the research set and backtest carefully.
+  compiled_by: claude-opus-5-5
+  prompt: compiler@v2
+assumptions:
+  - "Stretched: close < vwap - stretch (0.35) x the 14-day daily ATR."
+  - "Oversold: the 14-bar 1-minute RSI is below rsi_lo (25); the turn is a bar that closes above the previous close."
+  - "No-news filter: skips symbols with a fundamental headline since yesterday's close (news.fundamental, default false when no signal). News-driven moves away from VWAP tend to trend, not revert."
+  - "Target: VWAP at the moment of entry (the bracket target is fixed at order time, it does not follow VWAP)."
+  - "Stop: the lowest low of the last swing_n (15) bars minus stop_atr (0.10) x daily ATR."
+  - "Window 10:00-15:00: the first 30 minutes are too volatile for VWAP to be a meaningful anchor."
+suggestions:
+  - "Backtest stretch 0.25 vs 0.5 and compare with vwap_trend_long: the two are opposite bets and should not both run on the same symbols."
+universe:
+  symbols: [AAPL, AMD, AMZN, GOOGL, META, MSFT, NVDA, TSLA]
+  filters:
+    - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_adv:  {value: 1_000_000_000, range: [100_000_000, 100_000_000_000]}
+  stretch:  {value: 0.35, range: [0.1, 1.0]}
+  rsi_n:    {value: 14,   range: [5, 30]}
+  rsi_lo:   {value: 25,   range: [10, 40]}
+  swing_n:  {value: 15,   range: [5, 60]}
+  stop_atr: {value: 0.10, range: [0.0, 0.5]}
+signals:
+  news.fundamental: {from: news_agent@v1, max_age: since_prior_close, default: false}
+vars:
+  stop_level: lowest(low, swing_n) - stop_atr * atr_d(14)
+entry:
+  side: long
+  window: "10:00-15:00"
+  when_all:
+    - close < vwap - stretch * atr_d(14)
+    - rsi(close, rsi_n) < rsi_lo
+    - close > close[1]
+    - close > stop_level
+    - not news.fundamental
+sizing:
+  risk_per_trade: 0.25%
+exit:
+  stop: stop_level
+  target: vwap
+  flatten_at: "15:50"
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 3

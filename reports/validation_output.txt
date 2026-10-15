@@ -1,0 +1,20 @@
+$ RISK_FILE=config/risk.example.yaml DATABASE_URL=postgresql://llamaos:llamaos@127.0.0.1:5432/llamaos_test .venv/bin/python - <<'PY'
+from pathlib import Path
+from dsl import loader, validator
+from common import config
+risk = config.load_risk()
+for f in ["orb_stocks_in_play_pro_long.v1.yaml","orb_stocks_in_play_pro_short.v1.yaml"]:
+    text = Path("strategies/"+f).read_text()
+    loader.load_text(text)  # strict parse, raises on anchors/aliases/tags/dupes
+    v = validator.validate(text, risk)
+    print("===", f, "ok=", v.ok)
+    for e in v.errors: print("  ERROR:", e)
+    for w in v.warnings: print("  warning:", w)
+    if v.strategy: print("  side=", v.strategy.side, "window=", v.strategy.entry_window, "flatten=", v.strategy.flatten_at, "lookback=", v.strategy.daily_lookback, "refs=", v.strategy.references)
+PY
+--- OUTPUT ---
+risk: allow_short= False entries= (datetime.time(9, 35), datetime.time(15, 30)) flatten_by= 15:55:00 max_risk= 0.01 max_trades_per_day= 10
+=== orb_stocks_in_play_pro_long.v1.yaml ok= True
+  side= long window= (datetime.time(9, 35), datetime.time(10, 30)) flatten= 15:50:00 lookback= 81 refs= ['SPY'] rpt= 0.005 limits= {'max_trades_per_day': 3.0}
+=== orb_stocks_in_play_pro_short.v1.yaml ok= False
+  ERROR: entry.side 'short' is not allowed: allow_short is off on the Risk page

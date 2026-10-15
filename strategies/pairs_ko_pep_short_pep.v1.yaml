@@ -1,0 +1,65 @@
+dsl: 0.1
+id: pairs_ko_pep_short_pep
+version: 1
+source:
+  text: >-
+    Intraday pairs trading, KO/PEP leg 2 of 4. Two highly correlated stocks diverge
+    intraday on index flows, sector-ETF rebalancing and single-stock order imbalances, then
+    tend to converge. Classic evidence: Gatev, Goetzmann & Rouwenhorst (2006, RFS),
+    "Pairs Trading: Performance of a Relative-Value Arbitrage Rule" (daily horizon). High-
+    frequency evidence: Bowen, Hutchinson & O'Sullivan (2010), "High-Frequency Equity Pairs
+    Trading: Transaction Costs, Speed of Execution, and Patterns in Returns" (FTSE 100, 60-min
+    bars): profitable gross, but 0.15% one-way costs cut net profit by more than half and a
+    one-hour execution delay made it negative. This leg: sell short PEP when it leads KO.
+  compiled_by: claude-opus-5-5
+  prompt: compiler@v2
+assumptions:
+  - "The DSL trades one symbol per file, so the pair is four files: PEP short here, with the opposite leg in pairs_ko_pep_long_ko. Legs fill independently and are sized by their own stops, so the book is only roughly dollar-neutral; if one leg is rejected the other runs alone."
+  - "Spread: (PEP return since yesterday's close) - beta x (KO return since yesterday's close), beta = beta_d(KO, 60) on daily returns."
+  - "Divergence: the spread is above plus div_mult (1.0) x PEP's 20-session daily volatility. Only when the 60-session daily correlation is at least min_corr (0.6)."
+  - "Exit on convergence: the spread is back within exit_frac (0.2) of the band. Protective bracket: stop stop_atr (0.5) x daily ATR, target target_r (3) x risk."
+  - "No-news filter: a fundamental headline on PEP means the divergence is information, not noise, so the trade is skipped."
+  - "Costs and speed decide this strategy (Bowen et al.): backtest with realistic slippage before paper."
+suggestions:
+  - "Add KO and PEP to the watchlist; the four files are restricted to them."
+  - "Other classic pairs to try with the same template: XOM/CVX, V/MA, HD/LOW."
+references: [KO]
+universe:
+  symbols: [PEP]
+  filters:
+    - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_adv:   {value: 100_000_000, range: [10_000_000, 10_000_000_000]}
+  beta_n:    {value: 60,  range: [20, 120]}
+  corr_n:    {value: 60,  range: [20, 120]}
+  vol_n:     {value: 20,  range: [10, 60]}
+  min_corr:  {value: 0.6, range: [0.3, 0.95]}
+  div_mult:  {value: 1.0, range: [0.3, 3.0]}
+  exit_frac: {value: 0.2, range: [0.0, 0.8]}
+  stop_atr:  {value: 0.5, range: [0.2, 2.0]}
+  target_r:  {value: 3,   range: [1, 10]}
+signals:
+  news.fundamental: {from: news_agent@v1, max_age: since_prior_close, default: false}
+vars:
+  spread: (close / prior_close - 1) - beta_d(KO, beta_n) * peer(KO, close / prior_close - 1)
+  band: div_mult * vol_d(vol_n)
+entry:
+  side: short
+  window: "09:45-15:00"
+  when_all:
+    - corr_d(KO, corr_n) >= min_corr
+    - spread >= band
+    - not news.fundamental
+sizing:
+  risk_per_trade: 0.25%
+exit:
+  stop: entry_price + stop_atr * atr_d(14)
+  target: entry_price - target_r * risk_per_share
+  flatten_at: "15:50"
+  when_any:
+    - spread <= exit_frac * band
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 2

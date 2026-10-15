@@ -30,7 +30,7 @@ MODES = {"manual", "auto", "paper", "paper_manual", "paper_auto", "live_manual",
 SYMBOL = re.compile(r"[A-Z][A-Z.]{0,5}")
 UNIVERSE_KEYS = {"from", "filters", "symbols"}
 # Daily-history builtins that existed before builtins@v2: name -> sessions needed for argument n
-HISTORY_FNS = {"adv": 0, "rvol": 0, "atr_d": 1, "high_d": 0, "low_d": 0}
+HISTORY_FNS = {"adv": 0, "rvol": 0, "atr_d": 1, "high_d": 0, "low_d": 0, "noise_d": 0}
 
 
 @dataclass

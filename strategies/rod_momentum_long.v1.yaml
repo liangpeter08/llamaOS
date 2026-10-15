@@ -1,0 +1,67 @@
+dsl: 0.1
+id: rod_momentum_long
+version: 1
+source:
+  text: >-
+    Research basis. (1) Baltussen, G., Da, Z., Lammers, S. & Martens, M. (2021), "Hedging Demand and
+    Market Intraday Momentum", Journal of Financial Economics 142(1), 377-403,
+    doi:10.1016/j.jfineco.2021.04.029: in 60+ futures (1974-2020) the return from the previous close to
+    30 minutes before the close (r_ROD) positively predicts the last 30 minutes; the effect is linked to
+    gamma hedging by option market makers and leveraged-ETF rebalancing, is stronger when dealer gamma is
+    more negative, and reverts over the next days; timing-strategy Sharpe ratios 0.87-1.73 before costs.
+    (2) Gao, L., Han, Y., Li, S. Z. & Zhou, G. (2018), "Market Intraday Momentum", Journal of Financial
+    Economics 129(2), 394-414, doi:10.1016/j.jfineco.2018.05.009: on SPY 1993-2013 the first half-hour
+    return predicts the last half hour, more strongly on volatile, high-volume, recession and macro-news
+    days, and in ten other ETFs. Rule: on SPY, QQQ and IWM, buy at 15:30 when the move from yesterday's
+    close is up by more than half a typical daily move; flat at 15:55. Pre-registration, backtest and
+    report: reports/rod_momentum/.
+  compiled_by: claude-opus-5-5
+  prompt: quant_research@v1
+assumptions:
+  - "NOT RECOMMENDED FOR APPROVAL. Own pre-registered backtest, 2016-01-04 to 2026-10-15, SPY/QQQ/IWM, Alpaca SIP 1-minute bars, long and short together: 4,588 trades, gross +0.55 bps (t 1.3), net -3.0 bps per trade after spread, 1 bp slippage per side and fees; Sharpe -1.4; positive in 1 of 11 years. Even with measured spreads and no slippage the net edge is about zero. The effect the papers report is not present at a 15:30-15:55 horizon in these ETFs in this period. See reports/rod_momentum/REPORT.md."
+  - "Signal: rest_of_day = close / prior_close - 1 on the bar that closes at 15:30 (on_interval(30) in the 15:29-15:30 window), the paper's r_ROD. This differs from intraday_momentum_last_half_hour_long, which uses only the first half hour (Gao et al.); Baltussen et al. find r_ROD the stronger predictor."
+  - "Threshold: rest_of_day > band_k (0.5) x vol_d(vol_n = 20), half a typical daily move. The papers trade the sign; the band skips small-move days where the expected late move is smaller than round-trip costs. band_k = 0 reproduces the sign rule."
+  - "Entry: the decision at the 15:30 bar close fills at the next bar's open (about 15:30), marketable limit, as core/exchange.py models it. The paper enters at 15:30."
+  - "Exit: flatten_at 15:55, the account's flatten_by. The papers hold to the 16:00 close (market-on-close), which this system cannot do; the backtest reports how much of the effect the last 5 minutes carry."
+  - "Bracket: stop stop_atr (0.5) x atr_d(14) and target target_r (4) x risk are protective only; the 25-minute time exit normally decides the trade."
+  - "Sizing: 0.25% risk per trade is not the binding limit: the account's 10% max_position caps each ETF at 10% of equity, so a typical trade moves equity by about 1 bp. No leverage; the papers' Sharpe ratios are scale-free but their returns are not comparable."
+  - "Correlation: SPY, QQQ and IWM move together (daily correlation roughly 0.8-0.95), so three simultaneous trades are close to one bet; limits allow at most one position per ETF and three in total."
+  - "Instruments: the papers' strongest evidence is in index futures (ES, NQ); this system trades only cash ETFs, so SPY, QQQ and IWM stand in for ES, NQ and RTY."
+  - "Long side only; the short mirror is rod_momentum_short and needs allow_short on the Risk page."
+  - "Approval: execution mode manual means each 15:30 entry needs approval within the 90-second expiry or it is missed. For a paper evaluation the owner may choose paper_auto; that is the owner's decision, not this file's."
+  - "Half-days: there is no 15:30 bar on early-close sessions, so the rule does not fire."
+suggestions:
+  - "Run in the Backtesting workspace on SPY, QQQ, IWM from 2016 with spread 1 bp, slippage 1 bp, and 2x/3x cost stress; compare with scripts/research_rod_momentum_backtest.py."
+  - "Backtest band_k 0, 0.25, 0.5 and 1.0 as separate trials and count every one of them."
+  - "Do not run alongside intraday_momentum_last_half_hour_long on the same symbols: both bet on the same afternoon move."
+  - "If the platform later supports market-on-close exits, test holding to 16:00 as the papers do."
+universe:
+  symbols: [SPY, QQQ, IWM]
+  filters:
+    - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_adv:  {value: 1_000_000_000, range: [100_000_000, 100_000_000_000]}
+  vol_n:    {value: 20,  range: [10, 60]}
+  band_k:   {value: 0.5, range: [0.0, 2.0]}
+  stop_atr: {value: 0.5, range: [0.2, 2.0]}
+  target_r: {value: 4,   range: [1, 10]}
+vars:
+  rest_of_day: close / prior_close - 1
+entry:
+  side: long
+  window: "15:29-15:30"
+  when_all:
+    - on_interval(30)
+    - rest_of_day > band_k * vol_d(vol_n)
+sizing:
+  risk_per_trade: 0.25%
+exit:
+  stop: entry_price - stop_atr * atr_d(14)
+  target: entry_price + target_r * risk_per_share
+  flatten_at: "15:55"
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 3
+  max_open_positions: 3

@@ -45,6 +45,20 @@ This rsyncs code, `config/` and the six `secrets/*.env` service files to `/opt/l
 strategy files without overwriting any on the server, and runs `docker compose up -d --build`. The
 first build takes about 10 minutes (torch and Next.js).
 
+### Strategy files only
+
+```bash
+deploy/sync-strategies.sh -n          # dry run: what is new, what conflicts
+deploy/sync-strategies.sh             # send new strategies/*.yaml to root@hesynth.xyz ($LLAMAOS_HOST overrides)
+deploy/sync-strategies.sh --watch orb5_*.yaml   # only these files, and put their tickers on the watchlist
+```
+
+No rebuild or restart. It sends only files the server doesn't have, refuses a file whose content
+differs from the server's copy (save it as a new version instead), then registers the new files as
+drafts and validates them inside the running `api` container, against the live risk controls and
+the deployed code. A file that uses a builtin newer than the deployed code fails there until you
+run `deploy/deploy.sh`.
+
 ## 5. Data
 
 Pick one:

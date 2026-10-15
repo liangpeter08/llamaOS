@@ -1,0 +1,60 @@
+dsl: 0.1
+id: orb5_stocks_in_play_long
+version: 1
+source:
+  text: >-
+    Research: Zarattini, Barbon & Aziz (2024), "A Profitable Day Trading Strategy For The U.S.
+    Equity Market" (SSRN 4729284, Swiss Finance Institute RP 24-98). 5-minute opening range
+    breakout restricted to "Stocks in Play" (unusually high relative volume, price > $5,
+    14-day ATR > $0.50). Trade in the direction of the first 5-minute candle: if it closes
+    up, buy a break of its high. Stop at 10% of the 14-day ATR, hold to the close. Reported
+    for the top 20 Stocks in Play, 2016-2023, net of costs: Sharpe 2.81, 36% annual alpha,
+    over 1,600% total return. QuantConnect replication: Sharpe ~2.4, beta ~0.
+  compiled_by: claude-opus-5-5
+  prompt: compiler@v2
+assumptions:
+  - "Direction: the first 5-minute candle is bullish when close_at(5) > day_open; bearish days are left to orb5_stocks_in_play_short."
+  - "Entry: a 1-minute bar CLOSES above the 5-minute high. The paper rests a stop-market order at the high, so live fills here are later and slightly worse."
+  - "Stocks in Play: the paper keeps the top 20 of ~7,000 names by first-5-minute relative volume (RVOL > 1). This file trades the watchlist with rvol(14) >= rvol_min instead; raise rvol_min if the watchlist grows."
+  - "Stop: entry minus stop_atr (0.10) x the 14-day daily ATR, as in the paper."
+  - "Exit: the paper holds to the close with no target. The bracket needs one, so the target is target_r (10) x risk, about one daily ATR; flatten_at 15:55 is the real exit on most days."
+  - "Sizing: the paper risks 1% per trade with up to 4x leverage. Here 0.5% risk, capped by the account's max_position, so position sizes are much smaller."
+  - "Results quoted above are the authors' own backtests, not evidence for this mechanical version on this watchlist. Backtest before paper."
+suggestions:
+  - "Backtest or_minutes 5 vs 15 and rvol_min 1.0 vs 2.0."
+  - "Add mid-cap names with frequent news to the watchlist: the edge is concentrated in Stocks in Play, not mega caps on quiet days."
+universe:
+  from: {news_today: false}
+  filters:
+    - prior_close >= min_price
+    - adv(14) >= min_adv
+    - atr_d(14) >= min_atr
+timeframe: 1min
+params:
+  min_price:  {value: 5,          range: [5, 50]}
+  min_adv:    {value: 20_000_000, range: [10_000_000, 1_000_000_000]}
+  min_atr:    {value: 0.5,        range: [0.25, 5.0]}
+  or_minutes: {value: 5,          range: [5, 30]}
+  rvol_n:     {value: 14,         range: [5, 30]}
+  rvol_min:   {value: 1.0,        range: [1.0, 10.0]}
+  stop_atr:   {value: 0.10,       range: [0.05, 0.5]}
+  target_r:   {value: 10,         range: [2, 20]}
+vars:
+  range_high: or_high(or_minutes)
+entry:
+  side: long
+  window: "09:35-15:00"
+  when_all:
+    - close_at(or_minutes) > day_open
+    - crosses_above(close, range_high)
+    - rvol(rvol_n) >= rvol_min
+sizing:
+  risk_per_trade: 0.5%
+exit:
+  stop: entry_price - stop_atr * atr_d(14)
+  target: entry_price + target_r * risk_per_share
+  flatten_at: "15:55"
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 3

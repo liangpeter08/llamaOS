@@ -1,0 +1,64 @@
+dsl: 0.1
+id: spy_noise_breakout_short
+version: 1
+source:
+  text: >-
+    Research: Zarattini, Aziz & Barbon (2024), "Beat the Market: An Effective Intraday
+    Momentum Strategy for S&P500 ETF (SPY)" (SSRN; Swiss Finance Institute). Each minute, a
+    "noise area" around the open is the average absolute move from the open at that time of
+    day over the last 14 sessions. The upper bound is max(open, previous close) x (1 + noise),
+    so a gap down raises it; the lower bound is min(open, previous close) x (1 - noise). Go short when SPY trades below the lower bound (a trend day
+    rather than noise); exit when price rises back above the lower of the lower bound and
+    VWAP; flat at the close. Tested May 2007-Apr 2024 on 1-minute SPY with $0.0035/share
+    commission and $0.001/share slippage. An open-source TradingView replication reports
+    positive but clearly weaker results than the paper.
+  compiled_by: claude-opus-5-5
+  prompt: compiler@v2
+assumptions:
+  - "Noise: noise_d(14), the average |close/open - 1| of the prior 14 daily sessions scaled by sqrt(minutes since the open / 390). The paper averages the actual move at each minute; the DSL has daily bars for prior sessions only, so this is a random-walk approximation of the same band."
+  - "Lower bound = min(day_open, prior_close) x (1 - band_mult x noise), written as two conditions, one per anchor."
+  - "Entries and the VWAP/boundary exit are checked only on bars closing at :00 and :30 (on_interval(check_min), 30 = the paper), from 10:00. Between checks only the bracket and the 15:55 flatten act."
+  - "Exit (paper's VWAP stop): a close above VWAP or above the lower bound, i.e. above the lower of the two."
+  - "Bracket: stop stop_atr (0.5) x daily ATR and target target_r (4) x risk are protective; the VWAP/boundary exit and the 15:55 flatten normally decide the trade."
+  - "Sizing: the paper targets 2% daily volatility with up to 4x leverage; here 0.25% risk per trade, capped by max_position."
+suggestions:
+  - "Backtest band_mult 0.8 / 1.0 / 1.2 and compare with intraday_momentum_last_half_hour_short, which bets on the same afternoon continuation."
+  - "Add SPY and QQQ to the watchlist; this file is restricted to them."
+universe:
+  symbols: [SPY, QQQ]
+  filters:
+    - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_adv:   {value: 1_000_000_000, range: [100_000_000, 100_000_000_000]}
+  noise_n:   {value: 14,  range: [5, 30]}
+  band_mult: {value: 1.0, range: [0.5, 2.0]}
+  stop_atr:  {value: 0.5, range: [0.2, 2.0]}
+  target_r:  {value: 4,   range: [1, 10]}
+  check_min: {value: 30,  range: [1, 60]}
+vars:
+  band: band_mult * noise_d(noise_n)
+  lower_open: day_open * (1 - band)
+  lower_prev: prior_close * (1 - band)
+entry:
+  side: short
+  window: "10:00-15:30"
+  when_all:
+    - on_interval(check_min)
+    - close < lower_open
+    - close < lower_prev
+    - close < vwap
+sizing:
+  risk_per_trade: 0.25%
+exit:
+  stop: entry_price + stop_atr * atr_d(14)
+  target: entry_price - target_r * risk_per_share
+  flatten_at: "15:55"
+  when_any:
+    - on_interval(check_min) and close > vwap
+    - on_interval(check_min) and close > lower_open
+    - on_interval(check_min) and close > lower_prev
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 3

@@ -1,0 +1,53 @@
+dsl: 0.1
+id: vwap_trend_short
+version: 1
+source:
+  text: >-
+    Research: Zarattini & Aziz (2023), "Volume Weighted Average Price (VWAP): The Holy Grail
+    for Day Trading Systems" (SSRN 4631351). On 1-minute QQQ bars, be long while price is
+    above the session VWAP and short while below, flipping on each cross; flat at the close.
+    Reported 2018-Sep 2023, net of commissions: $25k -> $192,656 (+671%), Sharpe 2.1, max
+    drawdown 9.4%, vs buy-and-hold QQQ +126%, Sharpe 0.7, drawdown 37%. Public QuantConnect
+    replications report lower results (one: Sharpe ~1.75).
+  compiled_by: claude-opus-5-5
+  prompt: compiler@v2
+assumptions:
+  - "Short side only; the long half of the flip is vwap_trend_long. Run both to reproduce the always-in-the-market system."
+  - "Entry: close below VWAP for confirm_bars (1 = the paper) consecutive 1-minute bars. Exit when a bar closes back above VWAP."
+  - "The paper trades from 09:30. Entries here start at 09:35 (the account's entry window)."
+  - "The paper has no stop or target. The bracket needs both, so stop is stop_atr (0.5) x daily ATR and target is target_r (4) x risk: wide enough that the VWAP exit normally fires first."
+  - "The paper invests 100% of capital per trade; here size comes from 0.25% risk and the account's max_position cap."
+  - "Whipsaw is the main cost: choppy days cross VWAP many times. max_trades_per_day caps it at 5; the paper has no cap."
+  - "Results quoted above are the authors' backtests; replications are weaker. Backtest before paper."
+suggestions:
+  - "Backtest confirm_bars 1 vs 3: it trades fewer whipsaws for a later entry."
+  - "Add QQQ and SPY to the watchlist; this file is restricted to them."
+universe:
+  symbols: [QQQ, SPY]
+  filters:
+    - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_adv:      {value: 1_000_000_000, range: [100_000_000, 100_000_000_000]}
+  confirm_bars: {value: 1,   range: [1, 10]}
+  stop_atr:     {value: 0.5, range: [0.2, 2.0]}
+  target_r:     {value: 4,   range: [1, 10]}
+vars:
+  below: close < vwap
+entry:
+  side: short
+  window: "09:35-15:30"
+  when_all:
+    - streak(below) >= confirm_bars
+sizing:
+  risk_per_trade: 0.25%
+exit:
+  stop: entry_price + stop_atr * atr_d(14)
+  target: entry_price - target_r * risk_per_share
+  flatten_at: "15:55"
+  when_any:
+    - close > vwap
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 5

@@ -1,0 +1,220 @@
+{
+  "sessions": 169,
+  "trades": 41,
+  "trades_per_day": 0.243,
+  "win_rate": 0.4634,
+  "net_pnl": -239.67,
+  "gross_pnl": 1.6,
+  "fees": 0.0,
+  "expectancy_usd": -5.85,
+  "expectancy_bps": -6.01,
+  "per_trade_tstat_bps": -0.682,
+  "daily_tstat": -0.584,
+  "sharpe_daily": -0.713,
+  "profit_factor": 0.774,
+  "avg_win_bps": 43.906,
+  "avg_loss_bps": -49.119,
+  "max_drawdown_pct": -0.49,
+  "final_equity": 99760.33,
+  "exits": {
+    "stop": 5,
+    "target": 0,
+    "flatten": 36
+  },
+  "bootstrap_daily_returns": {
+    "n_boot": 10000,
+    "block": 5,
+    "mean_daily_p5": -5.40289938634815e-05,
+    "mean_daily_p50": -1.678621077343427e-05,
+    "mean_daily_p95": 2.311200808754249e-05,
+    "p_mean_le_0": 0.7578,
+    "sharpe_p5": -2.953230969581578,
+    "sharpe_p50": -0.8782105702269513,
+    "p_sharpe_le_0": 0.7578
+  },
+  "in_sample": {
+    "from": "2026-02-12",
+    "to": "2026-07-10",
+    "sessions": 102,
+    "trades": 41,
+    "trades_per_day": 0.402,
+    "win_rate": 0.4634,
+    "net_pnl": -239.67,
+    "gross_pnl": 1.6,
+    "fees": 0.0,
+    "expectancy_usd": -5.85,
+    "expectancy_bps": -6.01,
+    "per_trade_tstat_bps": -0.682,
+    "daily_tstat": -0.583,
+    "sharpe_daily": -0.916,
+    "profit_factor": 0.774,
+    "avg_win_bps": 43.906,
+    "avg_loss_bps": -49.119,
+    "max_drawdown_pct": -0.49,
+    "final_equity": 99760.33,
+    "exits": {
+      "stop": 5,
+      "target": 0,
+      "flatten": 36
+    }
+  },
+  "holdout": {
+    "from": "2026-07-13",
+    "to": "2026-10-15",
+    "sessions": 67,
+    "trades": 0,
+    "trades_per_day": 0.0,
+    "win_rate": null,
+    "net_pnl": 0,
+    "gross_pnl": 0,
+    "fees": 0,
+    "expectancy_usd": null,
+    "expectancy_bps": null,
+    "per_trade_tstat_bps": null,
+    "daily_tstat": null,
+    "sharpe_daily": null,
+    "profit_factor": null,
+    "avg_win_bps": null,
+    "avg_loss_bps": null,
+    "max_drawdown_pct": 0.0,
+    "final_equity": 100000.0,
+    "exits": {
+      "stop": 0,
+      "target": 0,
+      "flatten": 0
+    }
+  },
+  "per_month": {
+    "2026-02": {
+      "trades": 4,
+      "net_pnl": -8.46,
+      "expectancy_bps": -2.328,
+      "win_rate": 0.75
+    },
+    "2026-03": {
+      "trades": 14,
+      "net_pnl": 14.5,
+      "expectancy_bps": 0.968,
+      "win_rate": 0.3571
+    },
+    "2026-04": {
+      "trades": 11,
+      "net_pnl": -14.4,
+      "expectancy_bps": -1.4,
+      "win_rate": 0.4545
+    },
+    "2026-05": {
+      "trades": 1,
+      "net_pnl": -47.34,
+      "expectancy_bps": -47.731,
+      "win_rate": 0.0
+    },
+    "2026-06": {
+      "trades": 11,
+      "net_pnl": -183.98,
+      "expectancy_bps": -17.047,
+      "win_rate": 0.5455
+    }
+  },
+  "regime_vol": {
+    "high_vol": {
+      "trades": 18,
+      "expectancy_bps": 12.619,
+      "win_rate": 0.6667,
+      "net_pnl": 222.95
+    },
+    "low_vol": {
+      "trades": 23,
+      "expectancy_bps": -20.589,
+      "win_rate": 0.3043,
+      "net_pnl": -462.63
+    }
+  },
+  "regime_market": {
+    "basket_down": {
+      "trades": 31,
+      "expectancy_bps": 0.996,
+      "win_rate": 0.5161,
+      "net_pnl": 31.08
+    },
+    "basket_up": {
+      "trades": 10,
+      "expectancy_bps": -27.729,
+      "win_rate": 0.3,
+      "net_pnl": -270.75
+    }
+  },
+  "per_symbol": {
+    "AAPL": {
+      "trades": 3,
+      "expectancy_bps": -20.9,
+      "win_rate": 0.3333,
+      "net_pnl": -61.59
+    },
+    "AMD": {
+      "trades": 5,
+      "expectancy_bps": 3.016,
+      "win_rate": 0.4,
+      "net_pnl": 14.67
+    },
+    "AMZN": {
+      "trades": 5,
+      "expectancy_bps": -1.646,
+      "win_rate": 0.6,
+      "net_pnl": -6.75
+    },
+    "GOOGL": {
+      "trades": 1,
+      "expectancy_bps": -11.681,
+      "win_rate": 0.0,
+      "net_pnl": -11.51
+    },
+    "META": {
+      "trades": 7,
+      "expectancy_bps": -17.347,
+      "win_rate": 0.4286,
+      "net_pnl": -120.63
+    },
+    "MSFT": {
+      "trades": 2,
+      "expectancy_bps": -22.334,
+      "win_rate": 0.0,
+      "net_pnl": -43.46
+    },
+    "NVDA": {
+      "trades": 5,
+      "expectancy_bps": -48.276,
+      "win_rate": 0.2,
+      "net_pnl": -237.85
+    },
+    "TSLA": {
+      "trades": 13,
+      "expectancy_bps": 17.585,
+      "win_rate": 0.6923,
+      "net_pnl": 227.45
+    }
+  },
+  "cost_stress": {
+    "1x": {
+      "trades": 41,
+      "net_pnl": -239.67,
+      "expectancy_bps": -6.01,
+      "sharpe_daily": -0.713,
+      "win_rate": 0.4634
+    },
+    "2x": {
+      "trades": 41,
+      "net_pnl": -466.24,
+      "expectancy_bps": -11.639,
+      "sharpe_daily": -1.368,
+      "win_rate": 0.4634
+    },
+    "3x": {
+      "trades": 41,
+      "net_pnl": -707.58,
+      "expectancy_bps": -17.615,
+      "sharpe_daily": -2.018,
+      "win_rate": 0.3902
+    }
+  }
+}

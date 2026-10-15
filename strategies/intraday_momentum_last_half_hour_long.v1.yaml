@@ -1,0 +1,51 @@
+dsl: 0.1
+id: intraday_momentum_last_half_hour_long
+version: 1
+source:
+  text: >-
+    Research: Gao, Han, Li & Zhou (2018), "Market Intraday Momentum", Journal of Financial
+    Economics 129(2), 394-414. On SPY (1993-2013) the return from the previous close to
+    10:00 ET predicts the return of the last half hour of the same day; the effect is
+    stronger on volatile, high-volume, recession and macro-news days and holds in ten other
+    liquid ETFs. Consistent with Bogousslavsky (2016) infrequent rebalancing and late-
+    informed trading; Baltussen, Da, Lammers & Martens (2021, JFE) tie it to end-of-day
+    hedging flows (gamma, leveraged ETFs). Rule: if the first half hour is up, buy for the
+    last half hour; flat at the close.
+  compiled_by: claude-opus-5-5
+  prompt: compiler@v2
+assumptions:
+  - "First-half-hour return: close_at(30) / prior_close - 1 (previous close to 10:00 ET), must exceed min_ret (0 = the paper's sign rule)."
+  - "Entry: the 15:29 or 15:30 bar close (the account's entries end at 15:30), filled at the next bar's open. The paper enters at 15:30."
+  - "Exit: flatten_at 15:55, the account's latest; the paper holds to 16:00, so the last 5 minutes of the effect are given up."
+  - "Stop stop_atr (0.3) x daily ATR and target target_r (3) x risk are protective only; the time exit normally decides the trade."
+  - "Effect size is small (R-squared about 2% in the paper); expect a low hit rate and small average gains, sensitive to costs."
+suggestions:
+  - "Gao et al. also find the 15:00-15:30 return adds predictive power; backtest requiring close > close_at(330) too."
+  - "Add SPY, QQQ, IWM and DIA to the watchlist; this file is restricted to them."
+universe:
+  symbols: [SPY, QQQ, IWM, DIA]
+  filters:
+    - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_adv:  {value: 500_000_000, range: [100_000_000, 100_000_000_000]}
+  min_ret:  {value: 0%,  range: [0%, 1%]}
+  stop_atr: {value: 0.3, range: [0.1, 1.0]}
+  target_r: {value: 3,   range: [1, 10]}
+vars:
+  first_half_hour: close_at(30) / prior_close - 1
+entry:
+  side: long
+  window: "15:29-15:30"
+  when_all:
+    - first_half_hour > min_ret
+sizing:
+  risk_per_trade: 0.25%
+exit:
+  stop: entry_price - stop_atr * atr_d(14)
+  target: entry_price + target_r * risk_per_share
+  flatten_at: "15:55"
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 4

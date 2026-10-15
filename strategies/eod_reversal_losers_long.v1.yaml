@@ -1,0 +1,82 @@
+dsl: 0.1
+id: eod_reversal_losers_long
+version: 1
+source:
+  text: >-
+    Research: Baltussen, Da & Soebhag (April 2025), "End-of-Day Reversal", working paper,
+    Erasmus University Rotterdam / University of Notre Dame,
+    https://academicweb.nd.edu/~zda/EOD.pdf. TAQ+CRSP common stocks, Jan 1993-Dec 2019,
+    price > $5 and market cap above the NYSE 10th percentile. A stock's return from the
+    previous close to 15:00 ET ("ROD3", skipping 15:00-15:30 to avoid microstructure noise)
+    strongly NEGATIVELY predicts its own 15:30-16:00 return in the cross-section:
+    value-weighted loser-minus-winner quintile spread 3.78 bps/day (t=10.69), equal-weighted
+    6.38 bps/day (t=17.30), Fama-French 6-factor alphas essentially unchanged; present in
+    almost every 3-year rolling window and among the largest, most liquid stocks (largest-
+    quintile long-short alpha 3.41 bps/day, t=10.61); robust to skipping the last 5 minutes
+    of the day (15:30-15:55 horizon, coefficient more negative, t=-8.76). The effect is
+    transitory price pressure (it reverts next day) and is ENTIRELY driven by intraday
+    losers bouncing into the close; documented drivers are end-of-day buy-the-dip purchases
+    by retail investors (attention-driven; stronger for losers) and a more than 3x stronger
+    end-of-day drop in new short positions on losers (overnight risk management by short
+    sellers). This file trades ONLY the long loser side, which is where the paper finds the
+    economics. It is distinct from, and complementary to, Gao, Han, Li & Zhou (2018, JFE)
+    market intraday momentum already deployed as intraday_momentum_last_half_hour_*: the
+    market level continues, the cross-section reverts (the authors show the reversal comes
+    from cross-stock autocovariance, and both can hold at once). Related canon: Heston,
+    Korajczyk & Sadka (2010, JF 65(4), 1369-1407) intraday cross-sectional patterns;
+    Berkman, Koch, Tuttle & Zhang (2012, JFQA) retail attention at the open; Lou, Polk &
+    Skouras (2019, JFE 134(1), 192-213) clientele-based return persistence. Cost caveat from
+    the authors themselves: the gross effect "might not be exploitable by many investors
+    after accounting for transaction costs"; this file uses the largest, tightest-spread
+    names and a 25-minute hold to maximize the chance that it survives.
+  compiled_by: kimi
+  prompt: quant_research@v1
+assumptions:
+  - "Predictor: rod3 = close_at(rod_minutes) / prior_close - 1 with rod_minutes 330, the close of the 15:00 ET bar; exactly the paper's ROD3 (previous close to 15:00), which skips 15:00-15:30 against bid-ask bounce."
+  - "Cross-section gap: DSL 0.1 has no cross-sectional rank builtin, so the paper's loser decile is approximated by an absolute, volatility-scaled threshold: rod3 <= drop_line, where drop_line = -drop_atr (0.25) x atr_d(14)/prior_close. A stock qualifies only when its day move to 15:00 is at least a quarter of its own daily ATR to the downside. The size of the down move is itself the attention trigger in the paper's mechanism, so no separate volume filter is used."
+  - "No rvol filter: an rvol(20) >= 1 attention filter was tested and removed. Stored 1-minute bar volume in this repository changes units on/after 2026-06-13 (sum of stored bars drops to ~1/30 of the daily table's volume; prices are unaffected), so the DSL's rvol (today's bar volume vs the daily-table average) degenerates to ~0.03 after that date and the filter silently blocks every entry. The paper does not condition on volume. See the research report's data-provenance section."
+  - "Timing: decision on the 15:29/15:30 bar close, filled at the next bar's open (~15:30-15:31); the paper enters at 15:30. Flatten at 15:55, the account's latest; the paper's own robustness check uses 15:30-15:55 and finds the effect intact, so the last 5 minutes are given up deliberately."
+  - "Long only: the paper shows the reversal is entirely driven by negative-ROD3 stocks; there is no evidence for fading winners, so no short file is shipped even though the account currently allows shorts."
+  - "Bracket: stop stop_atr (0.3) x atr_d(14) and target target_r (3) x risk are protective only; the 15:55 time exit normally decides the ~25-minute trade."
+  - "Sizing: risk_per_trade 0.25% of equity, capped by the risk controls' max_position; the paper's portfolios hold hundreds of names for 30 minutes, this file holds at most 3, so per-trade risk stays small."
+  - "Universe: the 8 mega-cap tech names with stored 1-minute data and extreme retail attention; spreads here are ~1 bp wide, which is the best case for a 3-4 bps gross effect. NOT SUPPORTED: the paper's full cross-section of thousands of stocks and value weighting."
+  - "Literature figures quoted above are the authors' results on TAQ 1993-2019, gross of costs, not evidence for this mechanical version on 8 names in 2026. Backtest net of costs before paper."
+suggestions:
+  - "Backtest drop_atr 0.15 / 0.25 / 0.40; prefer the fewest trades that keep the t-stat of daily net returns above 2."
+  - "Add ORCL, NFLX, AVGO (daily history already stored) and more high-attention large caps to the watchlist: the effect is cross-sectional, so more names means more days with a true extreme loser."
+  - "Reintroduce an attention/relative-volume filter only after the stored bar-volume units break of 2026-06-13 is repaired and rvol is verified to be well-behaved across the whole window."
+  - "Check correlation with intraday_momentum_last_half_hour_long before running both: on market-down days both buy, but this file buys relative losers, not the index."
+  - "Test an entry at 15:00-15:30 using rod3 at 15:00 with the SLH window skipped, i.e. exactly the paper's timing, versus entering earlier in SLH."
+universe:
+  symbols: [AAPL, AMD, AMZN, GOOGL, META, MSFT, NVDA, TSLA]
+  filters:
+    - prior_close >= min_price
+    - adv(20) >= min_adv
+timeframe: 1min
+params:
+  min_price:   {value: 5,           range: [5, 50]}
+  min_adv:     {value: 1_000_000_000, range: [100_000_000, 100_000_000_000]}
+  rod_minutes: {value: 330,         range: [300, 345]}
+  drop_atr:    {value: 0.25,        range: [0.10, 0.60]}
+  stop_atr:    {value: 0.3,         range: [0.1, 1.0]}
+  target_r:    {value: 3,           range: [1, 10]}
+vars:
+  rod3: close_at(rod_minutes) / prior_close - 1
+  atr_frac: atr_d(14) / prior_close
+  drop_line: -drop_atr * atr_frac
+entry:
+  side: long
+  window: "15:29-15:30"
+  when_all:
+    - rod3 <= drop_line
+sizing:
+  risk_per_trade: 0.25%
+exit:
+  stop: entry_price - stop_atr * atr_d(14)
+  target: entry_price + target_r * risk_per_share
+  flatten_at: "15:55"
+execution:
+  mode: manual
+limits:
+  max_trades_per_day: 3
+  max_open_positions: 3

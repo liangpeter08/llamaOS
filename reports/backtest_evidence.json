@@ -1,0 +1,192 @@
+{
+  "strategy": "orb_stocks_in_play_pro (enhanced Stocks-in-Play ORB)",
+  "source": "Zarattini, Barbon & Aziz 2024, SSRN 4729284 / SFI RP 24-98",
+  "data": {
+    "provider": "alpaca_v2",
+    "feed": "iex",
+    "window": [
+      "2024-01-01",
+      "2026-10-16"
+    ],
+    "trading_days": 700,
+    "symbols": [
+      "AAPL",
+      "MSFT",
+      "NVDA",
+      "AMZN",
+      "META",
+      "GOOGL",
+      "TSLA",
+      "AMD",
+      "AVGO",
+      "NFLX",
+      "ORCL",
+      "QCOM",
+      "ADBE",
+      "CRM",
+      "INTC",
+      "MU",
+      "PLTR",
+      "COIN",
+      "MRNA",
+      "AFRM",
+      "UBER",
+      "RIVN",
+      "F",
+      "PYPL",
+      "DIS",
+      "BABA",
+      "NIO",
+      "SOFI",
+      "RBLX",
+      "DASH",
+      "ABNB",
+      "HOOD",
+      "SHOP",
+      "SMCI",
+      "LC"
+    ]
+  },
+  "params": {
+    "open_range_minutes": 5,
+    "entry_window": "09:35-10:30",
+    "entry_last_minute": 60,
+    "flatten": "15:50",
+    "rvol_min": 2.0,
+    "stop_atr_mult": 0.1,
+    "target_r": 10.0,
+    "risk_pct": 0.005,
+    "account_$": 100000.0,
+    "max_trades_per_day": 3,
+    "volrank_min": 0.0,
+    "candle_atr_min": 0.0
+  },
+  "costs": {
+    "half_spread_bps_per_side": 2.0,
+    "slippage_bps_per_side": 3.0,
+    "round_trip_bps_1x": 10.0
+  },
+  "totals": {
+    "trades": 1046,
+    "longs": 524,
+    "shorts": 522,
+    "net_total_$": 590.14,
+    "gross_total_$": 156619.4
+  },
+  "by_year": {
+    "2024": {
+      "n": 339,
+      "win_rate": 0.2006,
+      "net_$": 16557.18,
+      "gross_$": 72125.81,
+      "expectancy_$/trade": 48.84,
+      "expectancy_bps_of_notional": 2.98,
+      "avg_rvol": 3.72
+    },
+    "2025": {
+      "n": 388,
+      "win_rate": 0.1418,
+      "net_$": -48143.86,
+      "gross_$": 9397.4,
+      "expectancy_$/trade": -124.08,
+      "expectancy_bps_of_notional": -8.37,
+      "avg_rvol": 3.4
+    },
+    "2026": {
+      "n": 319,
+      "win_rate": 0.2006,
+      "net_$": 32176.82,
+      "gross_$": 75096.19,
+      "expectancy_$/trade": 100.87,
+      "expectancy_bps_of_notional": 7.5,
+      "avg_rvol": 3.45
+    }
+  },
+  "by_side": {
+    "long": {
+      "n": 524,
+      "win_rate": 0.1756,
+      "net_$": 22047.1,
+      "gross_$": 102266.3,
+      "expectancy_$/trade": 42.07,
+      "expectancy_bps_of_notional": 2.75,
+      "avg_rvol": 3.44
+    },
+    "short": {
+      "n": 522,
+      "win_rate": 0.182,
+      "net_$": -21456.96,
+      "gross_$": 54353.1,
+      "expectancy_$/trade": -41.11,
+      "expectancy_bps_of_notional": -2.83,
+      "avg_rvol": 3.6
+    }
+  },
+  "by_regime": {
+    "high_vol_spy": {
+      "n": 489,
+      "win_rate": 0.1452,
+      "net_$": -68253.61,
+      "gross_$": -2443.55,
+      "expectancy_$/trade": -139.58,
+      "expectancy_bps_of_notional": -10.37,
+      "avg_rvol": 3.46
+    },
+    "low_vol_spy": {
+      "n": 557,
+      "win_rate": 0.2083,
+      "net_$": 68843.75,
+      "gross_$": 159062.95,
+      "expectancy_$/trade": 123.6,
+      "expectancy_bps_of_notional": 7.63,
+      "avg_rvol": 3.57
+    }
+  },
+  "by_spy_day": {
+    "spy_up": {
+      "n": 587,
+      "win_rate": 0.1738,
+      "net_$": -1250.29,
+      "gross_$": 87292.17,
+      "expectancy_$/trade": -2.13,
+      "expectancy_bps_of_notional": -0.14,
+      "avg_rvol": 3.41
+    },
+    "spy_down": {
+      "n": 459,
+      "win_rate": 0.1852,
+      "net_$": 1840.43,
+      "gross_$": 69327.23,
+      "expectancy_$/trade": 4.01,
+      "expectancy_bps_of_notional": 0.27,
+      "avg_rvol": 3.66
+    }
+  },
+  "daily_series": {
+    "net_sharpe_ann": 0.007,
+    "gross_sharpe_ann": 1.793,
+    "mean_daily_return": 8e-06,
+    "max_drawdown_$": -12274.18,
+    "t_stat": 0.011
+  },
+  "bootstrap": {
+    "mean_lo": -0.0015460977142857143,
+    "mean_hi": 0.0014681411428571428,
+    "sharpe_lo": -1.3419030469614925,
+    "sharpe_hi": 1.0978976568245722
+  },
+  "cost_stress": {
+    "1x": {
+      "net_total_$": 590.14,
+      "round_trip_bps": 10.0
+    },
+    "2x": {
+      "net_total_$": -155438.94,
+      "round_trip_bps": 20.0
+    },
+    "3x": {
+      "net_total_$": -311468.11,
+      "round_trip_bps": 30.0
+    }
+  }
+}

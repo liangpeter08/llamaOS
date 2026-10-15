@@ -23,7 +23,7 @@ Language rules, all enforced by the validator:
 Builtins:
 - Bar series, indexable as close[1] for one bar back: open, high, low, close, volume.
 - Session: vwap, day_open, day_high, day_low, prior_close, gap.
-- Functions: or_high(min), or_low(min), sma(x,n), ema(x,n), rsi(x,n), atr(n), highest(x,n), lowest(x,n), rvol(days), adv(days), atr_d(n), high_d(n), low_d(n), fvg_bull_top(n), fvg_bull_bottom(n), fvg_bear_top(n), fvg_bear_bottom(n), crosses_above(a,b), crosses_below(a,b), streak(cond).
+- Functions: or_high(min), or_low(min), close_at(min), on_interval(min), sma(x,n), ema(x,n), rsi(x,n), atr(n), highest(x,n), lowest(x,n), rvol(days), adv(days), atr_d(n), high_d(n), low_d(n), noise_d(n), fvg_bull_top(n), fvg_bull_bottom(n), fvg_bear_top(n), fvg_bear_bottom(n), crosses_above(a,b), crosses_below(a,b), streak(cond).
 - Position, allowed in exit.* only: entry_price, risk_per_share, bars_held. exit.stop must not use risk_per_share.
 
 Signals, all `from: news_agent@v1` except note.stance, which is `from: notes@v1`:

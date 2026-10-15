@@ -28,6 +28,8 @@ class FnSig:
 FUNCTIONS: dict[str, FnSig] = {
     "or_high": FnSig(("const",), "num", "High of the first N minutes; missing until the range completes"),
     "or_low": FnSig(("const",), "num", "Low of the first N minutes; missing until the range completes"),
+    "on_interval": FnSig(("const",), "bool", "True on the bar that closes on each N-minute mark after the open (N=30: 10:00, 10:30, ...)"),
+    "close_at": FnSig(("const",), "num", "Close of the first N minutes (the last bar inside them); missing until they complete"),
     "sma": FnSig(("expr", "const"), "num", "Simple moving average of x over N bars"),
     "ema": FnSig(("expr", "const"), "num", "Exponential moving average of x over N bars"),
     "rsi": FnSig(("expr", "const"), "num", "RSI of x over N bars (SMA-smoothed, 0-100)"),
@@ -39,6 +41,9 @@ FUNCTIONS: dict[str, FnSig] = {
     "atr_d": FnSig(("const",), "num", "Daily ATR over the prior N days"),
     "high_d": FnSig(("const",), "num", "Highest daily high over the prior N sessions (1 = yesterday's high)"),
     "low_d": FnSig(("const",), "num", "Lowest daily low over the prior N sessions (1 = yesterday's low)"),
+    "noise_d": FnSig(("const",), "num",
+                     "Typical move from the open by this minute: the average |close/open - 1| of the prior N sessions"
+                     " times sqrt(minutes since the open / 390)"),
     "fvg_bull_top": FnSig(("const",), "num",
                           "Top of the latest open bullish fair value gap formed in the last N bars; missing if none"),
     "fvg_bull_bottom": FnSig(("const",), "num",
