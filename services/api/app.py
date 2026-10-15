@@ -311,7 +311,9 @@ def equity(range: str = "1M", start: str = "", end: str = "", u: dict = Depends(
         return {"empty": True, "range": range, "lo": lo.isoformat(), "hi": hi.isoformat(),
                 "first": first.isoformat(), "last": last.isoformat()}
 
-    prev = db.row(c, "SELECT equity FROM equity_history WHERE ts < ? ORDER BY ts DESC LIMIT 1", (rows[0]["ts"],))
+    # the range starts from the last mark of the same account (a replay's simulated equity is not the broker's)
+    prev = db.row(c, "SELECT equity FROM equity_history WHERE ts < ? AND source = ? ORDER BY ts DESC LIMIT 1",
+                  (rows[0]["ts"], rows[0]["source"]))
     replay_info = db.kv_get(c, "equity.replay") or {}
     if prev:
         base = prev["equity"]
@@ -326,8 +328,15 @@ def equity(range: str = "1M", start: str = "", end: str = "", u: dict = Depends(
     labels: list[str] = []
     cur_session = None
     eq, daily, starts = [], [], []
+    flows = 0.0
     prev_close = base
     for k, r in enumerate(rows):
+        if k and r["source"] != rows[k - 1]["source"]:
+            # switching account (sim/replay <-> broker) is not P&L: book the jump, less the strategies' move, as a flow
+            moved = sum(cum[k].values()) - sum(cum[k - 1].values())
+            jump = r["equity"] - rows[k - 1]["equity"] - moved
+            flows += jump
+            prev_close += jump  # the session's change shows only its P&L
         if r["session"] != cur_session:
             if cur_session is not None:
                 daily[-1]["close"] = eq[-1]
@@ -367,6 +376,7 @@ def equity(range: str = "1M", start: str = "", end: str = "", u: dict = Depends(
         kept_starts.append(n)
     changes = [d for d in daily if d["change_pct"] is not None]
     end_eq = eq[-1]
+    change = end_eq - base - flows
     return {
         "range": range, "lo": lo.isoformat(), "hi": hi.isoformat(), "first": first.isoformat(), "last": last.isoformat(),
         "intraday": len(daily) == 1, "base": base,
@@ -377,14 +387,14 @@ def equity(range: str = "1M", start: str = "", end: str = "", u: dict = Depends(
         "strategy_pnl": {lbl: [round(cum[k].get(lbl, 0.0), 2) for k in keep] for lbl in labels},
         "sessions": [{"session": d["session"], "index": i, "source": d["source"]} for d, i in zip(daily, kept_starts)],
         "stats": {
-            "start": base, "end": end_eq, "change": end_eq - base, "change_pct": end_eq / base - 1,
+            "start": base, "end": end_eq, "change": change, "change_pct": change / base, "flows": flows,
             "high": max(eq), "low": min(eq), "max_drawdown": mdd, "sessions": len(daily),
             "best_day": max(changes, key=lambda d: d["change"], default=None),
             "worst_day": min(changes, key=lambda d: d["change"], default=None),
             "points": len(rows),
         },
         "by_strategy": [{"strategy": lbl, "pnl": round(finals.get(lbl, 0.0), 2), "return_pct": finals.get(lbl, 0.0) / base,
-                         "share": (finals.get(lbl, 0.0) / (end_eq - base)) if end_eq != base else None} for lbl in labels],
+                         "share": (finals.get(lbl, 0.0) / change) if change else None} for lbl in labels],
         "daily": [{k: v for k, v in d.items()} for d in daily],
         "replay": replay_info,
     }
